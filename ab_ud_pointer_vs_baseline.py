@@ -418,6 +418,13 @@ def main():
     ap.add_argument("--data_source", type=str, default="hf", choices=["hf","conllu","dummy"])
     ap.add_argument("--conllu_dir", type=str, default=None)
     ap.add_argument("--log_csv", type=str, default=None, help="CSV file to log results (auto-generated if not provided)")
+    # Evaluation options
+    ap.add_argument("--ignore_punct", action="store_true", help="Ignore punctuation in UAS/LAS computation")
+    ap.add_argument("--emit_conllu", action="store_true", help="Write predictions to CoNLL-U format")
+    ap.add_argument("--freeze_encoder", action="store_true", help="Freeze pretrained encoder (only train parsing head)")
+    # Parameter matching
+    ap.add_argument("--param_match", type=str, default=None, choices=[None, "baseline", "poh"], 
+                    help="Match parameter counts by adjusting FFN size")
     # baseline/PoH shared
     ap.add_argument("--heads", type=int, default=8)
     ap.add_argument("--d_ff", type=int, default=2048)
@@ -437,22 +444,73 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     d_model = AutoModel.from_pretrained(args.model_name).config.hidden_size
 
+    print(f"\n{'='*80}")
+    print(f"Loading data source: {args.data_source}")
+    print(f"{'='*80}")
+    
     train = get_data(args.data_source, "train", args.conllu_dir)
     dev   = get_data(args.data_source, "validation", args.conllu_dir)
+    
+    print(f"✓ Train set: {len(train)} examples")
+    print(f"✓ Dev set:   {len(dev)} examples")
+    
+    # Sample check
+    if len(train) > 0:
+        sample = train[0]
+        has_labels = "deprel" in sample and sample["deprel"]
+        print(f"✓ Sample fields: {list(sample.keys())}")
+        print(f"✓ Dependency labels: {'present' if has_labels else 'absent'}")
+    print(f"{'='*80}\n")
     
     # Build label vocabulary from training data
     label_vocab = build_label_vocab(train)
     n_labels = len(label_vocab)
     use_labels = n_labels > 0
     
-    baseline = BaselineParser(args.model_name, d_model, args.heads, args.d_ff, 
+    # Parameter matching: adjust FFN sizes to equalize param counts
+    baseline_d_ff = args.d_ff
+    poh_d_ff = args.d_ff
+    
+    if args.param_match:
+        # Create temporary models to measure params
+        temp_baseline = BaselineParser(args.model_name, d_model, args.heads, args.d_ff, 
+                                       n_labels=max(n_labels, 50), use_labels=use_labels)
+        temp_poh = PoHParser(args.model_name, d_model, args.heads, args.d_ff,
+                            halting_mode=args.halting_mode, max_inner_iters=args.max_inner_iters,
+                            routing_topk=args.routing_topk, combination=args.combination,
+                            n_labels=max(n_labels, 50), use_labels=use_labels)
+        
+        baseline_params = sum(p.numel() for p in temp_baseline.parameters())
+        poh_params = sum(p.numel() for p in temp_poh.parameters())
+        delta = poh_params - baseline_params
+        
+        if args.param_match == "baseline" and delta > 0:
+            # Boost baseline FFN to match PoH
+            # Rough estimate: each FFN layer adds 2*d_model*d_ff params
+            # So increase d_ff by delta / (4*d_model) approximately
+            baseline_d_ff = int(args.d_ff + delta / (4 * d_model))
+            print(f"⚙ Parameter matching: Boosting baseline d_ff to {baseline_d_ff} (from {args.d_ff})")
+        elif args.param_match == "poh" and delta > 0:
+            # Shrink PoH FFN
+            poh_d_ff = int(args.d_ff - delta / (4 * d_model))
+            print(f"⚙ Parameter matching: Reducing PoH d_ff to {poh_d_ff} (from {args.d_ff})")
+    
+    baseline = BaselineParser(args.model_name, d_model, args.heads, baseline_d_ff, 
                               n_labels=max(n_labels, 50), use_labels=use_labels).to(device)
-    poh      = PoHParser(args.model_name, d_model, args.heads, args.d_ff,
+    poh      = PoHParser(args.model_name, d_model, args.heads, poh_d_ff,
                          halting_mode=args.halting_mode,
                          max_inner_iters=args.max_inner_iters,
                          routing_topk=args.routing_topk,
                          combination=args.combination,
                          n_labels=max(n_labels, 50), use_labels=use_labels).to(device)
+    
+    # Freeze encoder if requested
+    if args.freeze_encoder:
+        print(f"⚙ Freezing encoder parameters")
+        for param in baseline.encoder.parameters():
+            param.requires_grad = False
+        for param in poh.encoder.parameters():
+            param.requires_grad = False
 
     # Count parameters
     baseline_params = sum(p.numel() for p in baseline.parameters())

@@ -51,14 +51,51 @@ flowchart TB
 ## Installation
 
 ```bash
+# Clone repository
+git clone https://github.com/Eran-BA/PoT.git
+cd PoT
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 
+## Quick Start (5 minutes)
+
+Run a complete experiment with dummy data to verify installation:
+
+```bash
+# 1. Quick sanity check (30 seconds)
+python ab_ud_pointer_vs_baseline.py --data_source dummy --epochs 2 --batch_size 8
+
+# 2. View the generated CSV log
+ls training_log_*.csv
+
+# 3. Plot results
+python plot_results.py training_log_*.csv
+```
+
+**Expected output:**
+```
+Config: epochs=2, bs=8, lr=5e-05, wd=0.01, warmup=0.05, seed=42
+Data: dummy, Train size: 128, Dev size: 48
+Label vocab size: 0 (LAS disabled)
+Baseline params: 67,110,913
+PoH params:      67,786,769 (+675,856)
+
+[Epoch 1]  BASE  train loss 4.7515 UAS 0.2500 (2.1s) | dev UAS 0.3333 (0.8s)
+[Epoch 1]  PoH   train loss 2.4897 UAS 0.6250 (2.3s) | dev UAS 0.6667 (0.9s) iters 3.00
+
+[Epoch 2]  BASE  train loss 2.2400 UAS 0.5000 (2.1s) | dev UAS 0.6667 (0.8s)
+[Epoch 2]  PoH   train loss 0.8710 UAS 0.7500 (2.3s) | dev UAS 1.0000 (0.9s) iters 3.00
+```
+
+---
+
 ## Usage
 
-### Quick Start
+### Basic Parser
 
-Run the basic parser:
+Run the standalone parser:
 
 ```bash
 python ud_pointer_parser.py --epochs 2 --batch_size 8 --halting_mode entropy --max_inner_iters 3 --routing_topk 2
@@ -130,6 +167,21 @@ python run_ablations.py --multiseed
 - `--data_source conllu`: Local CoNLL-U files
 - `--data_source dummy`: Small synthetic dataset for testing
 
+**Using Local CoNLL-U Files:**
+```bash
+# Download UD English EWT from https://universaldependencies.org/
+# Extract to a directory, e.g., ./ud_data/en_ewt/
+
+python ab_ud_pointer_vs_baseline.py \
+  --data_source conllu \
+  --conllu_dir ./ud_data/en_ewt/ \
+  --epochs 5 \
+  --batch_size 16
+
+# The script expects .conllu files in the directory:
+# ./ud_data/en_ewt/*.conllu
+```
+
 **PoH Parameters:**
 - `--max_inner_iters N`: Number of refinement iterations (1-3, default: 3)
 - `--routing_topk K`: Top-K head selection (0=soft mixture, 1-8=hard routing, default: 2)
@@ -143,6 +195,29 @@ python run_ablations.py --multiseed
 - `--batch_size INT`: Batch size (default: 8)
 - `--seed INT`: Random seed for reproducibility (default: 42)
 - `--log_csv FILE`: CSV file for logging results (auto-generated if not provided)
+
+**Advanced Options:**
+- `--param_match {baseline,poh}`: Automatically match parameter counts
+  - `baseline`: Boost baseline FFN to match PoH params
+  - `poh`: Reduce PoH FFN to match baseline params
+- `--freeze_encoder`: Freeze pretrained encoder (only train parsing layers)
+- `--ignore_punct`: Ignore punctuation tokens in UAS/LAS computation
+- `--emit_conllu`: Write predictions to CoNLL-U format for official evaluation
+
+### Parameter Matching for Fair Comparison
+
+To isolate routing benefits from parameter count:
+
+```bash
+# Boost baseline to match PoH parameters
+python ab_ud_pointer_vs_baseline.py --data_source hf --param_match baseline
+
+# Or shrink PoH to match baseline
+python ab_ud_pointer_vs_baseline.py --data_source hf --param_match poh
+
+# Freeze encoder to only train parsing head
+python ab_ud_pointer_vs_baseline.py --data_source hf --freeze_encoder
+```
 
 ## Model Comparison
 

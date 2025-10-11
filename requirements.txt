@@ -1,9 +1,17 @@
-torch
-torchvision
-torchaudio
-transformers
-datasets
-matplotlib
-seaborn
-pandas
-conllu
+# Core deep learning
+torch>=2.0.0,<3.0.0
+transformers>=4.35.0,<5.0.0
+datasets>=2.14.0,<3.0.0
+
+# Visualization
+matplotlib>=3.7.0,<4.0.0
+seaborn>=0.12.0,<1.0.0
+pandas>=2.0.0,<3.0.0
+
+# Data format
+conllu>=4.5.0,<5.0.0
+
+# Optional: torchvision and torchaudio only if needed for specific tasks
+# Uncomment if your model uses vision or audio components
+# torchvision>=0.15.0,<1.0.0
+# torchaudio>=2.0.0,<3.0.0
