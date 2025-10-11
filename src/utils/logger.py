@@ -80,13 +80,9 @@ def get_env_info(extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
 
     # Git commit (best-effort)
     try:
-        commit = (
-            subprocess.check_output(
-                ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL
-            )
-            .decode()
-            .strip()
-        )
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL
+        ).decode().strip()
     except Exception:
         commit = None
     info["git_commit"] = commit
