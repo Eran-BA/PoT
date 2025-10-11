@@ -206,7 +206,7 @@ def run_single_seed(args, seed):
             d_ff=args.d_model * 2,
             max_inner_iters=args.max_inner_iters,
             use_poh=True,
-            use_hrm=True,  # HRM-style last-iterate gradients
+            use_hrm=not args.use_full_bptt,  # HRM by default, full BPTT if flag set
         ).to(device)
 
     n_params = count_parameters(model)
@@ -279,6 +279,8 @@ def main():
     parser.add_argument("--d_model", type=int, default=128, help="Model dimension")
     parser.add_argument("--n_heads", type=int, default=4, help="Number of heads")
     parser.add_argument("--max_inner_iters", type=int, default=2, help="PoT iterations")
+    parser.add_argument("--use_full_bptt", action="store_true", 
+                        help="Use full BPTT (default: HRM last-iterate)")
     parser.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3, 4, 5],
                         help="Random seeds")
     parser.add_argument("--output_csv", type=str, default=None, help="Output CSV path")
@@ -292,7 +294,8 @@ def main():
     print(f"Training: {args.train_samples} samples, {args.epochs} epochs")
     print(f"Model: d_model={args.d_model}, n_heads={args.n_heads}")
     if args.model == "pot":
-        print(f"PoT: max_inner_iters={args.max_inner_iters}, grad_mode=last (HRM)")
+        grad_mode = "full BPTT" if args.use_full_bptt else "last (HRM)"
+        print(f"PoT: max_inner_iters={args.max_inner_iters}, grad_mode={grad_mode}")
     print(f"Seeds: {args.seeds}")
     print()
 
