@@ -316,6 +316,7 @@ for name, param in model.named_parameters():
 - Deep supervision with weighted per-iteration losses
 - Differentiable ACT halting (no `break` statements)
 - Full gradient flow through all iterations verified
+- HRM-style last-iterate gradients (constant memory)
 - Compatible with batch size 32 and standard training
 - Clean CLI switches and comprehensive logging
 
@@ -325,6 +326,13 @@ Run deep supervision on UD EWT and compare to standard training. This will defin
 📊 **Either outcome is publishable:**
 - If helps → "PoH w/ deep supervision achieves X% improvement"
 - If not → "PoH adapts computation to task complexity" (honest evaluation)
+
+📖 **Theory:**
+For mathematical justification of gradient modes, see **[GRADIENT_MODES_THEORY.md](GRADIENT_MODES_THEORY.md)**
+- When last-iterate is theoretically justified (contractive dynamics)
+- Why it works for both Sudoku (HRM) and dependency parsing
+- Implicit gradient view and Neumann series expansion
+- Memory vs accuracy tradeoffs
 
 🚀 **Ready to run experiments!**
 
