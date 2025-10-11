@@ -77,11 +77,31 @@ Given an array of random floats, predict where each element should be positioned
   - Residual connections with learned gating
   - Fewer iterations (2-3) for longer sequences
 
+## HRM-Style Last-Iterate Gradients
+
+Testing HRM-style gradients (backprop only through last iteration) to address vanishing gradient issues:
+
+| Array Length | Iterations | Mode | Test Accuracy | Perfect Sort Rate |
+|--------------|-----------|------|---------------|-------------------|
+| 8 | 8 | Full BPTT | **98.22%** | **89.0%** |
+| 8 | 8 | HRM-style | **94.50%** | **50.6%** |  
+| 12 | 8 | Full BPTT | 8.32% | 0% (failed) |
+| 12 | 8 | HRM-style | 8.78% | 0% (failed) |
+| 12 | 4 | HRM-style | 8.68% | 0% (failed) |
+
+**Key Findings:**
+- ✅ HRM-style works on short sequences (8 elements) with **faster training**
+- ⚠️ HRM-style gives slightly lower accuracy than full BPTT on short sequences
+- ❌ HRM-style **does not solve** the long-sequence optimization problem
+- 💡 Issue is likely **initialization** or **architectural capacity**, not just gradient flow
+
 ## Conclusion
 
 **Pointer-over-Heads shows strong advantages on moderately-sized sequential decision tasks**, achieving ~30x better perfect prediction rates on 8-element sorting. However, **scaling to longer sequences requires addressing optimization challenges** in deep iterative architectures.
 
 The sorting task validates that the PoH mechanism's iterative refinement is beneficial beyond dependency parsing, but highlights the need for careful optimization strategy design for longer sequences.
+
+**HRM-style gradients** provide a memory-efficient alternative that works reasonably well on short sequences, but do not solve the fundamental scaling challenge.
 
 ---
 

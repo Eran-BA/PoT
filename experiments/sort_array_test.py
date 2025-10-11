@@ -29,11 +29,13 @@ class PointerSortModel(nn.Module):
         n_heads: int = 4,
         d_ff: int = 256,
         max_inner_iters: int = 3,
+        use_hrm_style: bool = False,
     ):
         super().__init__()
         self.d_model = d_model
         self.n_heads = n_heads
         self.max_inner_iters = max_inner_iters
+        self.use_hrm_style = use_hrm_style
 
         # Embedding for array values (+ positional encoding)
         self.value_embed = nn.Sequential(
@@ -85,7 +87,11 @@ class PointerSortModel(nn.Module):
         h = self.value_embed(x) + self.pos_embed(positions)  # [B, N, d_model]
 
         # Iterative refinement with routing
-        for _ in range(self.max_inner_iters):
+        for iter_idx in range(self.max_inner_iters):
+            # HRM-style: detach gradients for all but last iteration
+            if self.use_hrm_style and iter_idx < self.max_inner_iters - 1:
+                h = h.detach()
+
             # Controller decides routing
             alphas = F.softmax(self.controller(h), dim=-1)  # [B, N, n_heads]
 
@@ -301,6 +307,11 @@ def main():
     parser.add_argument("--d_model", type=int, default=128, help="Model dimension")
     parser.add_argument("--n_heads", type=int, default=4, help="Number of heads")
     parser.add_argument("--max_inner_iters", type=int, default=3, help="PoH iterations")
+    parser.add_argument(
+        "--use_hrm",
+        action="store_true",
+        help="Use HRM-style last-iterate gradients (backprop only through last iteration)",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
 
@@ -322,11 +333,13 @@ def main():
 
     # Initialize models
     print("\nInitializing models...")
+    print(f"HRM-style gradients: {'Yes' if args.use_hrm else 'No'}")
     poh_model = PointerSortModel(
         d_model=args.d_model,
         n_heads=args.n_heads,
         d_ff=args.d_model * 2,
         max_inner_iters=args.max_inner_iters,
+        use_hrm_style=args.use_hrm,
     ).to(device)
 
     baseline_model = BaselineSortModel(
