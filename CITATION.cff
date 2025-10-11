@@ -1,0 +1,37 @@
+# This CITATION.cff file was generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
+
+cff-version: 1.2.0
+title: >-
+  Pointer-over-Heads Transformer: Dynamic Multi-Head
+  Attention with Adaptive Routing
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - family-names: Ben Artzy
+    given-names: Eran
+    email: eranbenartzy@example.com
+    orcid: 'https://orcid.org/0000-0000-0000-0000'
+repository-code: 'https://github.com/Eran-BA/PoT'
+url: 'https://github.com/Eran-BA/PoT'
+abstract: >-
+  A novel transformer architecture for dependency parsing
+  that dynamically routes information through attention heads
+  using a learned controller. Unlike standard transformers
+  that use all heads equally, PoT adaptively selects which
+  heads to attend to based on the input, enabling adaptive
+  computation and head specialization.
+keywords:
+  - transformer
+  - attention mechanism
+  - dependency parsing
+  - adaptive computation
+  - natural language processing
+  - deep learning
+  - pytorch
+license: Apache-2.0
+version: 0.1.0
+date-released: '2025-10-11'
+
