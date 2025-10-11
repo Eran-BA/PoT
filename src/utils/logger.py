@@ -12,10 +12,10 @@ import os
 import platform
 import subprocess
 import time
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 
-def append_row(csv_path: str, row: dict[str, Any]) -> None:
+def append_row(csv_path: str, row: Dict[str, Any]) -> None:
     """Append a row to CSV file, creating it with headers if it doesn't exist.
 
     Args:
@@ -33,7 +33,7 @@ def append_row(csv_path: str, row: dict[str, Any]) -> None:
         w.writerow(row)
 
 
-def flatten_cfg(**kwargs) -> dict[str, Any]:
+def flatten_cfg(**kwargs) -> Dict[str, Any]:
     """Flatten nested config objects into CSV-able scalars.
 
     Converts dicts, lists, tuples to JSON strings for CSV compatibility.
@@ -50,13 +50,13 @@ def flatten_cfg(**kwargs) -> dict[str, Any]:
     return out
 
 
-def get_env_info(extra: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+def get_env_info(extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Collect environment info for reproducibility logs.
 
     Returns keys like torch_version, transformers_version, datasets_version,
     python_version, platform, git_commit.
     """
-    info: dict[str, Any] = {}
+    info: Dict[str, Any] = {}
     # Library versions
     try:
         import torch
