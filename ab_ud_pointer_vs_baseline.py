@@ -17,19 +17,40 @@ import torch, torch.nn as nn, torch.nn.functional as F
 def try_hf_load(split):
     try:
         from datasets import load_dataset
-        # Try multiple UD dataset paths
-        for path in ["universal-dependencies/en_ewt", "UniversalDependencies/UD_English-EWT", "ud_english_ewt"]:
+        # Try multiple UD dataset paths (most likely to work first)
+        paths_to_try = [
+            ("universal_dependencies", "en_ewt"),  # Standard UD format with config
+            ("universal-dependencies/en_ewt", None),
+            ("UniversalDependencies/UD_English-EWT", None),
+        ]
+        
+        for path_info in paths_to_try:
+            path, config = path_info if isinstance(path_info, tuple) else (path_info, None)
             try:
-                print(f"Attempting to load from {path}...")
-                ds = load_dataset(path, split=split)
+                print(f"Attempting to load from {path}" + (f" (config: {config})" if config else "") + "...")
+                if config:
+                    ds = load_dataset(path, config, split=split, trust_remote_code=True)
+                else:
+                    ds = load_dataset(path, split=split, trust_remote_code=True)
+                
                 filtered = ds.filter(lambda ex: ex.get("tokens") is not None and ex.get("head") is not None)
                 result = list(filtered)
-                print(f"✓ Successfully loaded {len(result)} examples from {path}")
-                return result
+                if len(result) > 0:
+                    print(f"✓ Successfully loaded {len(result)} examples from {path}")
+                    return result
             except Exception as e:
+                print(f"  ✗ Failed: {str(e)[:100]}")
                 continue
-        print(f"⚠ Warning: Could not load UD dataset from HuggingFace.")
-        print(f"   Try --data_source conllu with local CoNLL-U files, or --data_source dummy for testing.")
+        
+        print(f"\n⚠ Warning: Could not load UD dataset from HuggingFace.")
+        print(f"   This is common if:")
+        print(f"   - You're offline or have network issues")
+        print(f"   - The dataset name/format has changed")
+        print(f"   - HuggingFace Hub is temporarily unavailable")
+        print(f"\n💡 Solutions:")
+        print(f"   1. Use dummy data for testing: --data_source dummy")
+        print(f"   2. Download CoNLL-U manually and use: --data_source conllu --conllu_dir /path/to/data")
+        print(f"   3. Check HuggingFace status: https://status.huggingface.co/")
         return None
     except Exception as e:
         print(f"Error loading dataset: {e}")
@@ -479,7 +500,14 @@ def epoch(model, data, tokenizer, device, label_vocab=None, bs=8, train=True, lr
 def get_data(source, split, conllu_dir=None):
     if source == "hf":
         ds = try_hf_load(split)
-        if ds is None: raise RuntimeError("HF load failed; use --data_source conllu or dummy.")
+        if ds is None:
+            print(f"\n⚠ HF load failed. Falling back to dummy data for testing.")
+            print(f"   For real experiments, use --data_source conllu with local UD files.")
+            print(f"\n📥 To download UD English EWT:")
+            print(f"   1. Visit: https://github.com/UniversalDependencies/UD_English-EWT")
+            print(f"   2. Download the .conllu files")
+            print(f"   3. Run with: --data_source conllu --conllu_dir /path/to/en_ewt/")
+            return dummy_ds(128 if split=="train" else 48)
         return list(ds)
     if source == "conllu":
         assert conllu_dir, "Provide --conllu_dir"
