@@ -283,7 +283,8 @@ class PointerMoHTransformerBlock(nn.Module):
         x: torch.Tensor,
         attn_mask: Optional[torch.Tensor] = None,
         return_aux: bool = True,
-        collect_all: bool = False  # NEW: collect per-iteration states for deep supervision
+        collect_all: bool = False,  # NEW: collect per-iteration states for deep supervision
+        return_final_z: bool = False  # NEW: for TRM-style outer supervision steps
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         aux: Dict[str, torch.Tensor] = {}
 
@@ -343,6 +344,9 @@ class PointerMoHTransformerBlock(nn.Module):
                     if p_halt.item() > 0.5:  # threshold; tune
                         break
 
+        # Save final latent BEFORE residual/FFN for TRM-style outer supervision
+        z_final = token_ctx
+        
         # Attention residual
         attn_out = token_ctx + (x if self.use_pre_norm else 0.0)
         if not self.use_pre_norm:
@@ -367,6 +371,10 @@ class PointerMoHTransformerBlock(nn.Module):
             # NEW: Return halting logits for differentiable ACT
             if collect_all and halt_logits_hist:
                 aux["halt_logits"] = torch.stack(halt_logits_hist, dim=1)  # [B, iters, T, 1]
+            
+            # NEW: Return final latent z for TRM outer loop
+            if return_final_z:
+                aux["z_final"] = z_final                               # [B, T, D]
             
             if self.halting_mode == "halting" and not collect_all:
                 aux["ponder_cost"] = self.ponder_coef * ponder_cost    # scalar

@@ -96,233 +96,113 @@ cd PoT
 pip install -r requirements.txt
 ```
 
-## Quick Start (5 minutes)
+## Quick Start
 
-### Verify Installation
-
-Run a complete experiment with dummy data:
+### 1. Verify Installation (2 minutes)
 
 ```bash
-# 1. Quick sanity check (30 seconds)
+# Quick sanity check with dummy data
 python ab_ud_pointer_vs_baseline.py --data_source dummy --epochs 2 --batch_size 8
+```
 
-# 2. View the generated CSV log (auto-created)
-cat training_log_*.csv | head -n 5
+### 2. Download Real Data (1 minute)
 
-# 3. Generate quick plot
-python plot_simple.py training_log_*.csv
+```bash
+# Download UD English EWT dataset
+mkdir -p ud_data
+wget https://raw.githubusercontent.com/UniversalDependencies/UD_English-EWT/master/en_ewt-ud-train.conllu -O ud_data/en_ewt-ud-train.conllu
+wget https://raw.githubusercontent.com/UniversalDependencies/UD_English-EWT/master/en_ewt-ud-dev.conllu -O ud_data/en_ewt-ud-dev.conllu
+wget https://raw.githubusercontent.com/UniversalDependencies/UD_English-EWT/master/en_ewt-ud-test.conllu -O ud_data/en_ewt-ud-test.conllu
+```
+
+### 3. Run A/B Comparison (10 minutes)
+
+```bash
+# Baseline vs PoH with optimal config
+python ab_ud_pointer_vs_baseline.py \
+  --data_source conllu --conllu_dir ud_data \
+  --epochs 3 --batch_size 32 --lr 3e-5 \
+  --max_inner_iters 1 --routing_topk 0 \
+  --param_match baseline --log_csv results.csv
 ```
 
 ---
 
-## Paper-Tight Workflow (1-2 hours)
+## Complete Experimental Pipeline
 
-This section provides a complete, reproducible pipeline from installation to publication-ready results.
-
-### Step 1: Installation & Smoke Test (5 min)
+### Step 1: Setup (5 min)
 
 ```bash
-# Clone and setup
 git clone https://github.com/Eran-BA/PoT.git
 cd PoT
 pip install -r requirements.txt
 
-# Verify installation with dummy data
-python ab_ud_pointer_vs_baseline.py --data_source dummy --epochs 2 --batch_size 8
-
-# Expected output:
-# Baseline params: ~67M, PoH params: ~67.7M (+676K)
-# PoH should outperform baseline on dummy data
+# Download UD English EWT dataset
+mkdir -p ud_data
+wget https://raw.githubusercontent.com/UniversalDependencies/UD_English-EWT/master/en_ewt-ud-train.conllu -O ud_data/en_ewt-ud-train.conllu
+wget https://raw.githubusercontent.com/UniversalDependencies/UD_English-EWT/master/en_ewt-ud-dev.conllu -O ud_data/en_ewt-ud-dev.conllu
+wget https://raw.githubusercontent.com/UniversalDependencies/UD_English-EWT/master/en_ewt-ud-test.conllu -O ud_data/en_ewt-ud-test.conllu
 ```
 
-### Step 2: Real Data A/B Comparison (30 min)
+### Step 2: A/B Comparison (20 min)
 
 ```bash
-# Run parameter-matched comparison on UD English EWT
+# Optimal configuration: 1 iteration, soft routing, parameter-matched
 python ab_ud_pointer_vs_baseline.py \
-  --data_source hf \
-  --epochs 5 \
-  --batch_size 16 \
-  --lr 3e-5 \
-  --param_match baseline \
-  --ignore_punct \
-  --emit_conllu \
+  --data_source conllu --conllu_dir ud_data \
+  --epochs 5 --batch_size 32 --lr 3e-5 \
+  --max_inner_iters 1 --routing_topk 0 \
+  --param_match baseline --ignore_punct \
   --log_csv results.csv
-
-# What happens:
-# - Loads UD English EWT from HuggingFace (auto-cached)
-# - Trains both baseline and PoH parsers
-# - Logs UAS/LAS (punctuation excluded) to results.csv
-# - Exports predictions to poh_pred_dev_ep5.conllu
-# - Boosts baseline FFN to match PoH parameter count
 ```
 
 ### Step 3: Core Ablations (30 min)
 
-Test what matters: iterations, routing, halting, combination.
-
 ```bash
-# A. Iterations (static gating vs refinement)
+# Test iterations: 1 is optimal, but test 2-3 for diminishing returns
 for iters in 1 2 3; do
   python ab_ud_pointer_vs_baseline.py \
-    --data_source hf --epochs 3 --batch_size 16 --lr 3e-5 \
-    --halting_mode fixed --max_inner_iters $iters \
-    --routing_topk 0 --log_csv ablations.csv --ignore_punct
+    --data_source conllu --conllu_dir ud_data \
+    --epochs 3 --batch_size 32 --lr 3e-5 \
+    --max_inner_iters $iters --routing_topk 0 \
+    --log_csv ablations.csv
 done
 
-# B. Routing (soft mixture vs hard top-k)
+# Test routing: soft (0) vs hard top-2 (2)
 for topk in 0 2; do
   python ab_ud_pointer_vs_baseline.py \
-    --data_source hf --epochs 3 --batch_size 16 --lr 3e-5 \
-    --halting_mode fixed --max_inner_iters 2 \
-    --routing_topk $topk --log_csv ablations.csv --ignore_punct
-done
-
-# C. Halting (fixed vs entropy vs ACT-style)
-for halt in fixed entropy halting; do
-  python ab_ud_pointer_vs_baseline.py \
-    --data_source hf --epochs 3 --batch_size 16 --lr 3e-5 \
-    --halting_mode $halt --max_inner_iters 3 \
-    --routing_topk 2 --log_csv ablations.csv --ignore_punct
-done
-
-# D. Combination (mask_concat vs mixture)
-for combo in mask_concat mixture; do
-  python ab_ud_pointer_vs_baseline.py \
-    --data_source hf --epochs 3 --batch_size 16 --lr 3e-5 \
-    --halting_mode entropy --max_inner_iters 2 \
-    --routing_topk 2 --combination $combo --log_csv ablations.csv --ignore_punct
+    --data_source conllu --conllu_dir ud_data \
+    --epochs 3 --batch_size 32 --lr 3e-5 \
+    --max_inner_iters 1 --routing_topk $topk \
+    --log_csv ablations.csv
 done
 ```
 
-### Step 4: Multi-Seed Robustness (15 min)
-
-Run best config with 3 seeds for mean ± std statistics:
+### Step 4: Multi-Seed Robustness (30 min)
 
 ```bash
-# Best config from ablations (example: entropy halting, 2 iters, top-2 routing)
-for seed in 42 123 456; do
+# Optimal config with 3 seeds
+for seed in 42 1337 2023; do
   python ab_ud_pointer_vs_baseline.py \
-    --data_source hf --epochs 5 --batch_size 16 --lr 3e-5 \
-    --halting_mode entropy --max_inner_iters 2 --routing_topk 2 \
-    --param_match baseline --ignore_punct \
+    --data_source conllu --conllu_dir ud_data \
+    --epochs 5 --batch_size 32 --lr 3e-5 \
+    --max_inner_iters 1 --routing_topk 0 \
+    --param_match baseline \
     --seed $seed --log_csv multiseed.csv
 done
-
-# Or use the convenience script:
-chmod +x run_multiseed.sh
-./run_multiseed.sh
 ```
 
-### Step 5: Visualization & Analysis (5 min)
+### Step 5: Visualization (5 min)
 
 ```bash
-# Quick plot: UAS vs mean inner iterations
-python plot_simple.py multiseed.csv --out figure1_uas_vs_iters.png
-
-# Comprehensive plots (if you ran ablations)
-python plot_results.py ablations.csv
-
-# Official CoNLL-U evaluation (if conll_eval.py implemented)
-# python conll_eval.py gold_dev.conllu poh_pred_dev_ep5.conllu
+python plot_simple.py multiseed.csv --out results.png
 ```
 
-### Step 6: Report Checklist
-
-**What to include in your paper/README:**
-
-1. **Table: Baseline vs PoH**
-   ```
-   | Model    | Params   | Dev UAS  | Dev LAS  | Mean Iters | Time/Step |
-   |----------|----------|----------|----------|------------|-----------|
-   | Baseline | 67.1M    | 0.XXX±σ  | 0.XXX±σ  | -          | X.Xs      |
-   | PoH      | 67.8M    | 0.XXX±σ  | 0.XXX±σ  | 2.3±0.1    | X.Xs      |
-   | Δ        | +676K    | +X.X%    | +X.X%    | -          | +X%       |
-   ```
-
-2. **Figure: UAS vs Compute**
-   - X-axis: Mean inner iterations (PoH) or parameter count
-   - Y-axis: Dev UAS
-   - Show PoH configs (iters 1/2/3) vs baseline (horizontal line)
-   - Demonstrates quality-compute trade-off
-
-3. **Ablation Results**
-   - Bar chart comparing: iterations (1/2/3), routing (soft/hard), halting (fixed/entropy/ACT)
-   - Key finding: "2 inner iterations + entropy halting + top-2 routing = best accuracy/efficiency"
-
-4. **Claims**
-   - "+X.X% UAS over vanilla MHA baseline at ~+0.9% parameter overhead"
-   - "Adaptive routing reduces compute by X% while maintaining accuracy"
-   - "Interpretable: routing entropy shows head specialization"
-
-### Expected Results (Ballpark)
-
-On UD English EWT with DistilBERT encoder:
-- **Baseline**: ~85-88% UAS, ~83-86% LAS (depending on tuning)
-- **PoH (2 iters)**: ~87-90% UAS, ~85-88% LAS (target: +1-3% improvement)
-- **PoH (3 iters)**: Slightly better but diminishing returns
-- **Mean iterations**: 2.0-3.0 (depending on halting mode)
-
-*Note: First epoch on dummy data shows larger gaps; real UD results require proper hyperparameter tuning.*
-
-**Expected output:**
-```
-================================================================================
-Loading data source: dummy
-================================================================================
-✓ Train set: 128 examples
-✓ Dev set:   48 examples
-✓ Sample fields: ['tokens', 'head']
-✓ Dependency labels: absent
-================================================================================
-
-Config: epochs=2, bs=8, lr=5e-05, wd=0.01, warmup=0.05, seed=42
-Data: dummy, Train size: 128, Dev size: 48
-Label vocab size: 0 (LAS disabled)
-Baseline params: 67,110,913
-PoH params:      67,786,769 (+675,856)
-
-Logging results to: training_log_20250111_143022.csv
-
-[Epoch 1]  BASE  train loss 4.7515 UAS 0.2500 (2.1s) | dev UAS 0.3333 (0.8s)
-[Epoch 1]  PoH   train loss 2.4897 UAS 0.6250 (2.3s) | dev UAS 0.6667 (0.9s) iters 3.00
-
-[Epoch 2]  BASE  train loss 2.2400 UAS 0.5000 (2.1s) | dev UAS 0.6667 (0.8s)
-[Epoch 2]  PoH   train loss 0.8710 UAS 0.7500 (2.3s) | dev UAS 1.0000 (0.9s) iters 3.00
-
-✓ Results logged to: training_log_20250111_143022.csv
-```
-
-### Reproducible Full Run
-
-Complete workflow from installation to publication-ready figure:
-
-```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Run on real data (HuggingFace UD English EWT)
-python ab_ud_pointer_vs_baseline.py \
-  --data_source hf \
-  --epochs 3 \
-  --batch_size 16 \
-  --lr 3e-5 \
-  --param_match baseline \
-  --log_csv my_results.csv
-
-# Generate visualization
-python plot_simple.py my_results.csv --out figure1.png
-
-# Multi-seed for paper
-./run_multiseed.sh
-# Output: training_log_multiseed_TIMESTAMP.csv with mean±std statistics
-```
-
-**This produces:**
-- ✅ CSV log with all hyperparameters and metrics
-- ✅ Parameter-matched fair comparison
-- ✅ Publication-ready PNG figure
-- ✅ Console output with detailed breakdown
+**Key Findings:**
+- **1 iteration is optimal** for UD English EWT dependency parsing
+- Diminishing returns beyond 1 iteration (near-contractive task)
+- Soft routing (topk=0) provides best performance
+- Parameter overhead: +676K (~0.9%) over baseline
 
 ---
 
@@ -338,41 +218,26 @@ python ud_pointer_parser.py --epochs 2 --batch_size 8 --halting_mode entropy --m
 
 ### A/B Comparison: Baseline vs PoH
 
-Compare the Pointer-over-Heads model against a vanilla multi-head attention baseline:
-
 ```bash
-# Using HuggingFace UD English EWT (default)
-python ab_ud_pointer_vs_baseline.py --data_source hf --epochs 5 --batch_size 16
-
-# Using local CoNLL-U files
-python ab_ud_pointer_vs_baseline.py --data_source conllu --conllu_dir /path/to/en_ewt --epochs 5 --batch_size 16
+# Using local CoNLL-U files (recommended)
+python ab_ud_pointer_vs_baseline.py \
+  --data_source conllu --conllu_dir ud_data \
+  --epochs 5 --batch_size 32 --lr 3e-5
 
 # Quick test with dummy data
 python ab_ud_pointer_vs_baseline.py --data_source dummy --epochs 2 --batch_size 8
-
-# With CSV logging and warmup
-python ab_ud_pointer_vs_baseline.py --data_source hf --epochs 5 --batch_size 16 --lr 3e-5 --warmup_ratio 0.05
 ```
 
 ### Multi-Seed Reproducibility
 
-Run experiments with multiple seeds for robust results:
-
 ```bash
-# Using the convenience script (Unix/Linux/Mac)
-./run_multiseed.sh --data_source hf --epochs 5 --batch_size 16 --lr 3e-5
-
 # Manual runs with different seeds
-for seed in 42 123 456; do
-  python ab_ud_pointer_vs_baseline.py --data_source hf --epochs 5 --batch_size 16 --seed $seed --log_csv results.csv
+for seed in 42 1337 2023; do
+  python ab_ud_pointer_vs_baseline.py \
+    --data_source conllu --conllu_dir ud_data \
+    --epochs 5 --batch_size 32 \
+    --seed $seed --log_csv results.csv
 done
-```
-
-The script automatically:
-- Runs training with 3 different seeds
-- Logs all results to a timestamped CSV file  
-- Computes mean ± std statistics
-- Shows parameter counts and metrics
 ```
 
 ### Ablation Studies
@@ -398,23 +263,19 @@ python run_ablations.py --multiseed
 ### Key Configuration Options
 
 **Data Sources:**
-- `--data_source hf`: HuggingFace Universal Dependencies (default)
-- `--data_source conllu`: Local CoNLL-U files
+- `--data_source conllu`: Local CoNLL-U files (recommended)
 - `--data_source dummy`: Small synthetic dataset for testing
 
 **Using Local CoNLL-U Files:**
 ```bash
-# Download UD English EWT from https://universaldependencies.org/
-# Extract to a directory, e.g., ./ud_data/en_ewt/
+# Download UD English EWT
+mkdir -p ud_data
+wget https://raw.githubusercontent.com/UniversalDependencies/UD_English-EWT/master/en_ewt-ud-train.conllu -O ud_data/en_ewt-ud-train.conllu
+wget https://raw.githubusercontent.com/UniversalDependencies/UD_English-EWT/master/en_ewt-ud-dev.conllu -O ud_data/en_ewt-ud-dev.conllu
 
 python ab_ud_pointer_vs_baseline.py \
-  --data_source conllu \
-  --conllu_dir ./ud_data/en_ewt/ \
-  --epochs 5 \
-  --batch_size 16
-
-# The script expects .conllu files in the directory:
-# ./ud_data/en_ewt/*.conllu
+  --data_source conllu --conllu_dir ud_data \
+  --epochs 5 --batch_size 32
 ```
 
 **PoH Parameters:**
@@ -453,17 +314,16 @@ For detailed information on these features, see [`DEEP_SUPERVISION_GUIDE.md`](DE
 
 ### Parameter Matching for Fair Comparison
 
-To isolate routing benefits from parameter count:
-
 ```bash
 # Boost baseline to match PoH parameters
-python ab_ud_pointer_vs_baseline.py --data_source hf --param_match baseline
-
-# Or shrink PoH to match baseline
-python ab_ud_pointer_vs_baseline.py --data_source hf --param_match poh
+python ab_ud_pointer_vs_baseline.py \
+  --data_source conllu --conllu_dir ud_data \
+  --param_match baseline
 
 # Freeze encoder to only train parsing head
-python ab_ud_pointer_vs_baseline.py --data_source hf --freeze_encoder
+python ab_ud_pointer_vs_baseline.py \
+  --data_source conllu --conllu_dir ud_data \
+  --freeze_encoder
 ```
 
 ## Model Comparison
@@ -501,77 +361,6 @@ This provides:
 - Complete tree accuracy
 - Compatible with CoNLL 2018 shared task format
 
-## Utilities
-
-### CSV Logging
-Automatically tracks all experiments with minimal overhead:
-
-```python
-from utils.logger import append_row, flatten_cfg
-
-# Log a single row
-append_row("results.csv", flatten_cfg(
-    seed=42,
-    model="PoH",
-    dev_uas=0.892,
-    train_uas=0.945,
-    mean_iters=2.3
-))
-```
-
-### CoNLL-U Export
-Write predictions for official evaluation:
-
-```python
-from utils.conllu_writer import write_conllu
-
-write_conllu(
-    "predictions.conllu",
-    tokens=token_lists,
-    heads_gold=gold_heads,
-    heads_pred=predicted_heads,
-    deprels_pred=predicted_labels
-)
-```
-
-### Punctuation Masking
-Proper UAS/LAS computation excluding punctuation:
-
-```python
-from utils.metrics import compute_uas_las, build_masks_for_metrics
-
-uas, las = compute_uas_las(
-    pred_heads, gold_heads, 
-    pred_labels, gold_labels,
-    mask, deprels=deprel_strings,
-    ignore_punct=True
-)
-```
-
-### Integration Examples
-
-**Quick integration** (~5 lines per feature):
-
-```python
-# 1. CoNLL-U export (add to eval loop)
-if args.emit_conllu:
-    from utils.conllu_writer import write_conllu
-    write_conllu("predictions.conllu", tokens, heads_gold, 
-                 deprels_gold, heads_pred, deprels_pred)
-
-# 2. Punctuation masking (replace UAS computation)
-if args.ignore_punct and deprels_available:
-    from utils.metrics import compute_uas_las
-    uas, las = compute_uas_las(pred_heads, gold_heads, pred_labels, 
-                                gold_labels, mask, deprels, ignore_punct=True)
-
-# 3. Enhanced CSV logging (replace current logging)
-from utils.logger import append_row, flatten_cfg
-append_row(args.log_csv, flatten_cfg(
-    seed=args.seed, epoch=ep, model="PoH", 
-    dev_uas=dv_uas, train_uas=tr_uas, **vars(args)
-))
-```
 
 ## Visualization
 
@@ -607,39 +396,29 @@ python plot_simple.py results.csv --out quick_plot.png
 
 ## Results
 
-We evaluate the Pointer-over-Heads (PoH) Transformer on **Universal Dependencies English EWT** with a parameter-matched comparison against a vanilla Multi-Head Attention baseline. PoH achieves **significant improvements in both UAS and LAS** with minimal parameter overhead (~0.9%). The model adaptively converges to an average of 2-3 inner iterations, demonstrating efficient quality-compute trade-offs through learned head specialization. Results are stable across multiple random seeds, and comprehensive ablation studies confirm that the combination of entropy-based halting, iterative refinement (2-3 iterations), and top-k routing provides the best balance of accuracy and efficiency.
+We evaluate the Pointer-over-Heads (PoH) Transformer on **Universal Dependencies English EWT** with a parameter-matched comparison against a vanilla Multi-Head Attention baseline. PoH achieves improvements in both UAS and LAS with minimal parameter overhead (~0.9%).
 
-### Main Results (UD English EWT)
+### Key Findings
 
-| Model    | Parameters | Dev UAS      | Dev LAS      | Mean Iters | Time/Epoch | Overhead |
-|----------|------------|--------------|--------------|------------|------------|----------|
-| Baseline | 80.4M      | *TBD ± σ*    | *TBD ± σ*    | —          | *TBD*s     | —        |
-| PoH      | 81.1M      | *TBD ± σ*    | *TBD ± σ*    | *TBD ± σ*  | *TBD*s     | +676K    |
-| **Δ**    | **+0.9%**  | **+TBD%**    | **+TBD%**    | —          | **+TBD%**  | —        |
+**Optimal Configuration:**
+- **1 inner iteration** is optimal for UD English EWT dependency parsing
+- **Soft routing** (topk=0) provides best performance
+- **Parameter overhead:** +676K (~0.9%) over baseline
+- **Near-contractive task:** Diminishing returns beyond 1 iteration suggests dependency parsing is already well-solved by single-pass attention
 
-*Results averaged over 3 random seeds (42, 123, 456). Both models use DistilBERT-base-uncased encoder.*
+**Why 1 iteration works:**
+Dependency parsing with self-attention is a **locally-contractive task** where:
+- Global information propagates quickly through attention
+- Token representations converge within one pass
+- Additional iterations provide minimal refinement
+- This validates the **HRM-style last-iterate gradient** justification (see `GRADIENT_MODES_THEORY.md`)
 
-### Ablation Studies
+**Advanced Features:**
+- **Deep Supervision:** Provides stronger training signal for multi-iteration configs
+- **ACT-style Halting:** Enables adaptive computation when beneficial
+- **Gradient Modes:** Full BPTT vs last-iterate (memory-efficient)
 
-**Figure 1: Impact of Inner Iterations**
-```
-[Placeholder: Bar chart showing Dev UAS for 1, 2, 3 inner iterations]
-Expected: 2 iterations provides best accuracy/efficiency trade-off
-```
-
-**Figure 2: Multi-Seed Comparison**
-```
-[Placeholder: Side-by-side bar chart with error bars showing Baseline vs PoH across 3 seeds]
-Expected: Consistent improvement across all seeds with low variance
-```
-
-**Key Findings:**
-- **Iterations:** 2-3 inner iterations optimal; diminishing returns beyond 3
-- **Routing:** Top-2 hard routing outperforms soft mixture by ~1-2%
-- **Halting:** Entropy-based adaptive halting reduces compute while maintaining accuracy
-- **Combination:** `mask_concat` mode provides best interpretability
-
-*Run the [Colab notebook](#google-colab) to generate complete results and figures.*
+*Run the [Colab notebook](#google-colab) for complete experiments and analysis.*
 
 ---
 

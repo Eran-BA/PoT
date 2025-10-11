@@ -428,8 +428,8 @@ def collate(examples, tokenizer, device, label_vocab=None, return_deprels=False)
         heads = examples["head"]
         labels = examples.get("deprel", None)
     else:
-        toks = [ex["tokens"] for ex in examples]
-        heads = [ex["head"] for ex in examples]
+    toks = [ex["tokens"] for ex in examples]
+    heads = [ex["head"] for ex in examples]
         labels = [ex.get("deprel", [0]*len(ex["tokens"])) for ex in examples] if any("deprel" in ex for ex in examples) else None
     
     enc = tokenizer(toks, is_split_into_words=True, padding=True, truncation=True, return_tensors="pt", max_length=512)
@@ -659,6 +659,16 @@ def main():
     ap.add_argument("--grad_mode", type=str, default="full", choices=["full", "last"],
                     help="Gradient mode: 'full'=full BPTT through all iters (default), "
                          "'last'=HRM-style last-iterate gradients (constant memory)")
+    
+    # NEW: TRM-style (Tiny Recursive Model) recursion
+    ap.add_argument("--trm_mode", action="store_true",
+                    help="Enable TRM-style recursion: outer supervision steps, each does n inner updates then refresh pointer")
+    ap.add_argument("--trm_supervision_steps", type=int, default=2,
+                    help="Number of outer supervision steps (y refreshes)")
+    ap.add_argument("--trm_inner_updates", type=int, default=None,
+                    help="Inner updates per supervision step (default: use block.max_inner_iters)")
+    ap.add_argument("--trm_ramp_strength", type=float, default=1.0,
+                    help="Ramp weight for deep supervision across y refreshes (0=flat, 1=linear 0.3..1.0)")
     
     args = ap.parse_args()
     
