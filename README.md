@@ -130,6 +130,80 @@ The PoH architecture adds minimal parameters while providing:
 - Better accuracy through iterative refinement
 - More interpretable attention patterns
 
+## Evaluation Metrics
+
+The parser supports both **UAS (Unlabeled Attachment Score)** and **LAS (Labeled Attachment Score)**:
+
+- **UAS**: Percentage of tokens with correct head attachment
+- **LAS**: Percentage of tokens with both correct head and correct dependency label
+
+LAS is automatically enabled when dependency labels (`deprel`) are available in the training data.
+
+### CoNLL-U Format Evaluation
+
+For official UD evaluation metrics, use the CoNLL evaluation script:
+
+```bash
+python conll_eval.py gold.conllu predictions.conllu
+```
+
+This provides:
+- UAS and LAS scores
+- Per-relation breakdown
+- Complete tree accuracy
+- Compatible with CoNLL 2018 shared task format
+
+## Visualization
+
+Generate plots from ablation study results:
+
+```bash
+# Plot all results
+python plot_results.py ablation_results_TIMESTAMP.csv
+
+# Specific plot types
+python plot_results.py results.csv --plot_type ablations
+python plot_results.py results.csv --plot_type learning_curves
+python plot_results.py results.csv --plot_type comparison
+python plot_results.py results.csv --plot_type iters
+python plot_results.py results.csv --plot_type seeds
+```
+
+Generated plots include:
+- **Ablation comparisons**: Bar charts comparing configs within each ablation
+- **Learning curves**: UAS progression over epochs
+- **Baseline vs PoH**: Direct improvement comparison
+- **Iterations vs Accuracy**: Relationship between inner iterations and performance
+- **Multi-seed variance**: Stability across random seeds
+
+## Repository Structure
+
+```
+PoT/
+├── pointer_over_heads_transformer.py  # Core PoH transformer implementation
+├── ud_pointer_parser.py               # Basic UD parser with PoH
+├── ab_ud_pointer_vs_baseline.py       # A/B comparison script (Baseline vs PoH)
+├── run_ablations.py                   # Automated ablation study runner
+├── count_params.py                    # Parameter counting utility
+├── conll_eval.py                      # CoNLL-U evaluation script
+├── plot_results.py                    # Visualization utilities
+├── requirements.txt                   # Python dependencies
+└── README.md                          # This file
+```
+
+## Citation
+
+If you use this code in your research, please cite:
+
+```bibtex
+@software{pot2025,
+  title={Pointer-over-Heads Transformer},
+  author={PoT Contributors},
+  year={2025},
+  url={https://github.com/Eran-BA/PoT}
+}
+```
+
 ## License
 
 This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.

@@ -3,4 +3,7 @@ torchvision
 torchaudio
 transformers
 datasets
+matplotlib
+seaborn
+pandas
 conllu

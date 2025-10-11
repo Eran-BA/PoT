@@ -125,6 +125,50 @@ class BiaffinePointer(nn.Module):
         logits = logits.masked_fill((~mask_dep).unsqueeze(-1), float("-inf"))
         return logits
 
+# === biaffine label classifier ===
+class BiaffineLabeler(nn.Module):
+    def __init__(self, d, n_labels):
+        super().__init__()
+        # Project to smaller dimensions for efficiency
+        d_label = d // 2
+        self.dep_proj = nn.Linear(d, d_label)
+        self.head_proj = nn.Linear(d, d_label)
+        # Biaffine scoring for each label
+        self.W = nn.Parameter(torch.empty(n_labels, d_label, d_label))
+        self.bias = nn.Parameter(torch.zeros(n_labels))
+        nn.init.xavier_uniform_(self.W)
+    
+    def forward(self, dep, head, head_indices, mask):
+        """
+        dep: [B, T, D] - dependent representations
+        head: [B, T, D] - head representations (includes root at position 0)
+        head_indices: [B, T] - predicted head indices for each token
+        mask: [B, T] - valid token mask
+        Returns: [B, T, n_labels] label logits for each token's predicted head
+        """
+        B, T, D = dep.shape
+        
+        # Project to label space
+        dep_label = self.dep_proj(dep)  # [B, T, d_label]
+        head_label = self.head_proj(head)  # [B, T+1, d_label]
+        
+        # Gather head representations based on predicted indices
+        head_indices_expanded = head_indices.unsqueeze(-1).expand(-1, -1, head_label.size(-1))
+        selected_heads = torch.gather(head_label, 1, head_indices_expanded)  # [B, T, d_label]
+        
+        # Biaffine scoring: dep^T W head for each label
+        # dep_label: [B, T, d_label] -> [B, T, 1, d_label]
+        # W: [n_labels, d_label, d_label]
+        # selected_heads: [B, T, d_label] -> [B, T, d_label, 1]
+        dep_expanded = dep_label.unsqueeze(2)  # [B, T, 1, d_label]
+        head_expanded = selected_heads.unsqueeze(-1)  # [B, T, d_label, 1]
+        
+        # Compute biaffine scores for all labels
+        logits = torch.einsum('btid,nde,btef->btn', dep_expanded, self.W, head_expanded).squeeze(-1)
+        logits = logits + self.bias.view(1, 1, -1)  # [B, T, n_labels]
+        
+        return logits
+
 # === Baseline block (vanilla MHA) ===
 class VanillaBlock(nn.Module):
     def __init__(self, d_model, n_heads, d_ff, dropout=0.1):
@@ -152,27 +196,59 @@ class ParserBase(nn.Module):
         self.d_model = d_model
 
 class BaselineParser(ParserBase):
-    def __init__(self, enc_name="distilbert-base-uncased", d_model=768, n_heads=8, d_ff=2048):
+    def __init__(self, enc_name="distilbert-base-uncased", d_model=768, n_heads=8, d_ff=2048, n_labels=50, use_labels=True):
         super().__init__(enc_name, d_model)
         self.block = VanillaBlock(d_model, n_heads, d_ff)
         self.pointer = BiaffinePointer(d_model)
-    def forward(self, subw, word_ids, heads_gold):
+        self.use_labels = use_labels
+        if use_labels:
+            self.labeler = BiaffineLabeler(d_model, n_labels)
+        self.n_labels = n_labels
+        
+    def forward(self, subw, word_ids, heads_gold, labels_gold=None):
         device = next(self.parameters()).device
         last_hidden = self.encoder(**subw).last_hidden_state
         words = mean_pool_subwords(last_hidden, word_ids)
         X, mask = pad_words(words)
         X, _ = self.block(X)
-        logits = self.pointer(X, X, mask, mask)
-        Y, pad = make_targets(heads_gold, X.size(1), device)
-        loss = F.cross_entropy(logits.view(-1, logits.size(-1))[pad.view(-1)],
-                               Y.view(-1)[pad.view(-1)])
+        
+        # Head prediction
+        head_logits = self.pointer(X, X, mask, mask)
+        Y_heads, pad = make_targets(heads_gold, X.size(1), device)
+        head_loss = F.cross_entropy(head_logits.view(-1, head_logits.size(-1))[pad.view(-1)],
+                                     Y_heads.view(-1)[pad.view(-1)])
+        
+        # Metrics
         with torch.no_grad():
-            pred = logits.argmax(-1); uas = (pred[pad]==Y[pad]).float().mean().item()
-        return loss, {"uas": uas, "tokens": pad.sum().item()}
+            pred_heads = head_logits.argmax(-1)
+            uas = (pred_heads[pad]==Y_heads[pad]).float().mean().item()
+        
+        # Label prediction
+        total_loss = head_loss
+        las = uas  # default to UAS if no labels
+        
+        if self.use_labels and labels_gold is not None:
+            # Use gold heads for training, predicted heads for evaluation
+            head_indices = Y_heads if self.training else pred_heads
+            root_repr = self.pointer.root.view(1, 1, -1).expand(X.size(0), 1, X.size(-1))
+            X_with_root = torch.cat([root_repr, X], dim=1)
+            
+            label_logits = self.labeler(X, X_with_root, head_indices, mask)
+            Y_labels, label_pad = make_targets(labels_gold, X.size(1), device)
+            label_loss = F.cross_entropy(label_logits.view(-1, label_logits.size(-1))[pad.view(-1)],
+                                         Y_labels.view(-1)[pad.view(-1)])
+            total_loss = head_loss + label_loss
+            
+            with torch.no_grad():
+                pred_labels = label_logits.argmax(-1)
+                las = ((pred_heads[pad]==Y_heads[pad]) & (pred_labels[pad]==Y_labels[pad])).float().mean().item()
+        
+        return total_loss, {"uas": uas, "las": las, "tokens": pad.sum().item()}
 
 class PoHParser(ParserBase):
     def __init__(self, enc_name="distilbert-base-uncased", d_model=768, n_heads=8, d_ff=2048,
-                 halting_mode="entropy", max_inner_iters=3, routing_topk=2, combination="mask_concat"):
+                 halting_mode="entropy", max_inner_iters=3, routing_topk=2, combination="mask_concat",
+                 n_labels=50, use_labels=True):
         super().__init__(enc_name, d_model)
         self.block = PointerMoHTransformerBlock(
             d_model=d_model, n_heads=n_heads, d_ff=d_ff,
@@ -181,63 +257,121 @@ class PoHParser(ParserBase):
             routing_topk=routing_topk, combination=combination,
             controller_recurrent=True, controller_summary="mean")
         self.pointer = BiaffinePointer(d_model)
-    def forward(self, subw, word_ids, heads_gold):
+        self.use_labels = use_labels
+        if use_labels:
+            self.labeler = BiaffineLabeler(d_model, n_labels)
+        self.n_labels = n_labels
+        
+    def forward(self, subw, word_ids, heads_gold, labels_gold=None):
         device = next(self.parameters()).device
         last_hidden = self.encoder(**subw).last_hidden_state
         words = mean_pool_subwords(last_hidden, word_ids)
         X, mask = pad_words(words)
         X, aux = self.block(X, attn_mask=None, return_aux=True)
-        logits = self.pointer(X, X, mask, mask)
-        Y, pad = make_targets(heads_gold, X.size(1), device)
-        loss = F.cross_entropy(logits.view(-1, logits.size(-1))[pad.view(-1)],
-                               Y.view(-1)[pad.view(-1)])
+        
+        # Head prediction
+        head_logits = self.pointer(X, X, mask, mask)
+        Y_heads, pad = make_targets(heads_gold, X.size(1), device)
+        head_loss = F.cross_entropy(head_logits.view(-1, head_logits.size(-1))[pad.view(-1)],
+                                     Y_heads.view(-1)[pad.view(-1)])
+        
+        # Metrics
         with torch.no_grad():
-            pred = logits.argmax(-1); uas = (pred[pad]==Y[pad]).float().mean().item()
-        out = {"uas": uas, "tokens": pad.sum().item()}
+            pred_heads = head_logits.argmax(-1)
+            uas = (pred_heads[pad]==Y_heads[pad]).float().mean().item()
+        
+        # Label prediction
+        total_loss = head_loss
+        las = uas  # default to UAS if no labels
+        
+        if self.use_labels and labels_gold is not None:
+            # Use gold heads for training, predicted heads for evaluation
+            head_indices = Y_heads if self.training else pred_heads
+            root_repr = self.pointer.root.view(1, 1, -1).expand(X.size(0), 1, X.size(-1))
+            X_with_root = torch.cat([root_repr, X], dim=1)
+            
+            label_logits = self.labeler(X, X_with_root, head_indices, mask)
+            Y_labels, label_pad = make_targets(labels_gold, X.size(1), device)
+            label_loss = F.cross_entropy(label_logits.view(-1, label_logits.size(-1))[pad.view(-1)],
+                                         Y_labels.view(-1)[pad.view(-1)])
+            total_loss = head_loss + label_loss
+            
+            with torch.no_grad():
+                pred_labels = label_logits.argmax(-1)
+                las = ((pred_heads[pad]==Y_heads[pad]) & (pred_labels[pad]==Y_labels[pad])).float().mean().item()
+        
+        out = {"uas": uas, "las": las, "tokens": pad.sum().item()}
         if "inner_iters_used" in aux: out["inner_iters_used"] = aux["inner_iters_used"].item()
-        return loss, out
+        return total_loss, out
 
 # === batching ===
-def collate(examples, tokenizer, device):
+def collate(examples, tokenizer, device, label_vocab=None):
     # Handle both formats: dict of lists or list of dicts
     if isinstance(examples, dict):
         toks = examples["tokens"]
         heads = examples["head"]
+        labels = examples.get("deprel", None)
     else:
         toks = [ex["tokens"] for ex in examples]
         heads = [ex["head"] for ex in examples]
+        labels = [ex.get("deprel", [0]*len(ex["tokens"])) for ex in examples] if any("deprel" in ex for ex in examples) else None
+    
     enc = tokenizer(toks, is_split_into_words=True, padding=True, truncation=True, return_tensors="pt", max_length=512)
     word_ids = [enc.word_ids(i) for i in range(len(toks))]
     for k in enc: enc[k] = enc[k].to(device)
-    return enc, word_ids, heads
+    
+    # Convert string labels to indices if label_vocab provided
+    if labels is not None and label_vocab is not None:
+        label_indices = []
+        for sent_labels in labels:
+            indices = [label_vocab.get(lbl, 0) if isinstance(lbl, str) else lbl for lbl in sent_labels]
+            label_indices.append(indices)
+        labels = label_indices
+    
+    return enc, word_ids, heads, labels
 
-def epoch(model, data, tokenizer, device, bs=8, train=True, lr=5e-5, weight_decay=0.01):
+def build_label_vocab(data):
+    """Build label vocabulary from data."""
+    labels = set()
+    for ex in data:
+        if "deprel" in ex:
+            for lbl in ex["deprel"]:
+                if isinstance(lbl, str):
+                    labels.add(lbl)
+    vocab = {lbl: idx for idx, lbl in enumerate(sorted(labels))}
+    vocab["<UNK>"] = len(vocab)  # unknown label
+    return vocab
+
+def epoch(model, data, tokenizer, device, label_vocab=None, bs=8, train=True, lr=5e-5, weight_decay=0.01):
     import time
     if train:
         model.train(); opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     else:
         model.eval(); opt = None
     from math import ceil
-    total_loss, total_tokens, total_correct, total_iters = 0.0, 0, 0, 0.0
+    total_loss, total_tokens, total_correct_uas, total_correct_las, total_iters = 0.0, 0, 0, 0, 0.0
     steps = 0
     start_time = time.time()
     
     for i in range(0, len(data), bs):
         batch = data[i:i+bs]
-        subw, wids, heads = collate(batch, tokenizer, device)
-        loss, m = model(subw, wids, heads)
+        subw, wids, heads, labels = collate(batch, tokenizer, device, label_vocab)
+        loss, m = model(subw, wids, heads, labels)
         if train:
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
         total_loss += loss.item(); steps += 1
-        total_tokens += m["tokens"]; total_correct += int(m["uas"]*m["tokens"])
+        total_tokens += m["tokens"]
+        total_correct_uas += int(m["uas"]*m["tokens"])
+        total_correct_las += int(m.get("las", m["uas"])*m["tokens"])
         if "inner_iters_used" in m: total_iters += m["inner_iters_used"]
     
     elapsed = time.time() - start_time
     return {
         "loss": total_loss/max(1,steps),
-        "uas": total_correct/max(1,total_tokens),
+        "uas": total_correct_uas/max(1,total_tokens),
+        "las": total_correct_las/max(1,total_tokens),
         "mean_inner_iters": (total_iters/max(1, steps)) if total_iters>0 else float("nan"),
         "time": elapsed,
         "steps": steps
@@ -285,29 +419,41 @@ def main():
 
     train = get_data(args.data_source, "train", args.conllu_dir)
     dev   = get_data(args.data_source, "validation", args.conllu_dir)
-
-    baseline = BaselineParser(args.model_name, d_model, args.heads, args.d_ff).to(device)
+    
+    # Build label vocabulary from training data
+    label_vocab = build_label_vocab(train)
+    n_labels = len(label_vocab)
+    use_labels = n_labels > 0
+    
+    baseline = BaselineParser(args.model_name, d_model, args.heads, args.d_ff, 
+                              n_labels=max(n_labels, 50), use_labels=use_labels).to(device)
     poh      = PoHParser(args.model_name, d_model, args.heads, args.d_ff,
                          halting_mode=args.halting_mode,
                          max_inner_iters=args.max_inner_iters,
                          routing_topk=args.routing_topk,
-                         combination=args.combination).to(device)
+                         combination=args.combination,
+                         n_labels=max(n_labels, 50), use_labels=use_labels).to(device)
 
     print(f"\n{'='*80}")
     print(f"Config: epochs={args.epochs}, bs={args.batch_size}, lr={args.lr}, wd={args.weight_decay}, seed={args.seed}")
     print(f"Data: {args.data_source}, Train size: {len(train)}, Dev size: {len(dev)}")
+    print(f"Label vocab size: {n_labels} (LAS {'enabled' if use_labels else 'disabled'})")
     print(f"Baseline params: {sum(p.numel() for p in baseline.parameters()):,}")
     print(f"PoH params:      {sum(p.numel() for p in poh.parameters()):,}")
     print(f"{'='*80}\n")
     
     for ep in range(1, args.epochs+1):
-        tr_b = epoch(baseline, train, tokenizer, device, bs=args.batch_size, train=True, lr=args.lr, weight_decay=args.weight_decay)
-        dv_b = epoch(baseline, dev, tokenizer, device, bs=args.batch_size, train=False)
-        tr_p = epoch(poh, train, tokenizer, device, bs=args.batch_size, train=True, lr=args.lr, weight_decay=args.weight_decay)
-        dv_p = epoch(poh, dev, tokenizer, device, bs=args.batch_size, train=False)
+        tr_b = epoch(baseline, train, tokenizer, device, label_vocab, bs=args.batch_size, train=True, lr=args.lr, weight_decay=args.weight_decay)
+        dv_b = epoch(baseline, dev, tokenizer, device, label_vocab, bs=args.batch_size, train=False)
+        tr_p = epoch(poh, train, tokenizer, device, label_vocab, bs=args.batch_size, train=True, lr=args.lr, weight_decay=args.weight_decay)
+        dv_p = epoch(poh, dev, tokenizer, device, label_vocab, bs=args.batch_size, train=False)
         
-        print(f"[Epoch {ep}]  BASE  train loss {tr_b['loss']:.4f} UAS {tr_b['uas']:.4f} ({tr_b['time']:.1f}s) | dev UAS {dv_b['uas']:.4f} ({dv_b['time']:.1f}s)")
-        print(f"[Epoch {ep}]  PoH   train loss {tr_p['loss']:.4f} UAS {tr_p['uas']:.4f} ({tr_p['time']:.1f}s) | dev UAS {dv_p['uas']:.4f} ({dv_p['time']:.1f}s) iters {dv_p['mean_inner_iters']:.2f}")
+        if use_labels:
+            print(f"[Epoch {ep}]  BASE  train loss {tr_b['loss']:.4f} UAS {tr_b['uas']:.4f} LAS {tr_b['las']:.4f} ({tr_b['time']:.1f}s) | dev UAS {dv_b['uas']:.4f} LAS {dv_b['las']:.4f} ({dv_b['time']:.1f}s)")
+            print(f"[Epoch {ep}]  PoH   train loss {tr_p['loss']:.4f} UAS {tr_p['uas']:.4f} LAS {tr_p['las']:.4f} ({tr_p['time']:.1f}s) | dev UAS {dv_p['uas']:.4f} LAS {dv_p['las']:.4f} ({dv_p['time']:.1f}s) iters {dv_p['mean_inner_iters']:.2f}")
+        else:
+            print(f"[Epoch {ep}]  BASE  train loss {tr_b['loss']:.4f} UAS {tr_b['uas']:.4f} ({tr_b['time']:.1f}s) | dev UAS {dv_b['uas']:.4f} ({dv_b['time']:.1f}s)")
+            print(f"[Epoch {ep}]  PoH   train loss {tr_p['loss']:.4f} UAS {tr_p['uas']:.4f} ({tr_p['time']:.1f}s) | dev UAS {dv_p['uas']:.4f} ({dv_p['time']:.1f}s) iters {dv_p['mean_inner_iters']:.2f}")
         print()
 
 if __name__ == "__main__":
