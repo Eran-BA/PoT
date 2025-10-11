@@ -162,8 +162,6 @@ class Trainer:
         
         total_loss = 0.0
         total_tokens = 0
-        total_correct_uas = 0
-        total_correct_las = 0
         total_iters = 0.0
         start_time = time.time()
         

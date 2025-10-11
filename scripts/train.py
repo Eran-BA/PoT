@@ -149,10 +149,7 @@ def main():
     baseline_trainer = Trainer(baseline, tokenizer, device, label_vocab)
     poh_trainer = Trainer(poh, tokenizer, device, label_vocab)
     
-    # Calculate training steps for scheduler
-    steps_per_epoch = len(train_data) // args.batch_size
-    total_steps = args.epochs * steps_per_epoch
-    # warmup_steps computed by scheduler when used; reserved variable
+    # (Optional) Scheduler math can be added when using LR schedulers
     
     # Training loop
     print(f"\n{'='*80}")
