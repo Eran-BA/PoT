@@ -165,9 +165,8 @@ class Trainer:
 
         for i in range(0, len(data), batch_size):
             batch = data[i : i + batch_size]
-            subw, word_ids, heads, labels = collate_batch(
-                batch, self.tokenizer, self.device, self.label_vocab
-            )
+            result = collate_batch(batch, self.tokenizer, self.device, self.label_vocab)
+            subw, word_ids, heads, labels = result[:4]
 
             # TRM mode support
             if (
@@ -278,13 +277,17 @@ class Trainer:
                 batch = data[i : i + batch_size]
 
                 if ignore_punct:
-                    subw, word_ids, heads, labels, deprels_str = collate_batch(
-                        batch, self.tokenizer, self.device, self.label_vocab, return_deprels=True
+                    result = collate_batch(
+                        batch,
+                        self.tokenizer,
+                        self.device,
+                        self.label_vocab,
+                        return_deprels=True,
                     )
+                    subw, word_ids, heads, labels, deprels_str = result  # type: ignore
                 else:
-                    subw, word_ids, heads, labels = collate_batch(
-                        batch, self.tokenizer, self.device, self.label_vocab
-                    )
+                    result = collate_batch(batch, self.tokenizer, self.device, self.label_vocab)
+                    subw, word_ids, heads, labels = result[:4]
 
                 # Forward pass
                 if (
