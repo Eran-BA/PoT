@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import argparse, math, os, glob
+import argparse, math, os, glob, csv
 from typing import List, Dict, Tuple
+from datetime import datetime
 import torch, torch.nn as nn, torch.nn.functional as F
 
 # === try HF datasets if requested ===
@@ -342,14 +343,27 @@ def build_label_vocab(data):
     vocab["<UNK>"] = len(vocab)  # unknown label
     return vocab
 
-def epoch(model, data, tokenizer, device, label_vocab=None, bs=8, train=True, lr=5e-5, weight_decay=0.01):
+def get_linear_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps):
+    """Linear warmup then linear decay."""
+    def lr_lambda(current_step):
+        if current_step < num_warmup_steps:
+            return float(current_step) / float(max(1, num_warmup_steps))
+        return max(0.0, float(num_training_steps - current_step) / float(max(1, num_training_steps - num_warmup_steps)))
+    from torch.optim.lr_scheduler import LambdaLR
+    return LambdaLR(optimizer, lr_lambda)
+
+def epoch(model, data, tokenizer, device, label_vocab=None, bs=8, train=True, lr=5e-5, weight_decay=0.01, scheduler=None):
     import time
     if train:
-        model.train(); opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+        model.train()
+        if not hasattr(epoch, 'optimizer'):
+            epoch.optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+        opt = epoch.optimizer
     else:
         model.eval(); opt = None
     from math import ceil
     total_loss, total_tokens, total_correct_uas, total_correct_las, total_iters = 0.0, 0, 0, 0, 0.0
+    total_routing_entropy = 0.0
     steps = 0
     start_time = time.time()
     
@@ -361,11 +375,14 @@ def epoch(model, data, tokenizer, device, label_vocab=None, bs=8, train=True, lr
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
+            if scheduler is not None:
+                scheduler.step()
         total_loss += loss.item(); steps += 1
         total_tokens += m["tokens"]
         total_correct_uas += int(m["uas"]*m["tokens"])
         total_correct_las += int(m.get("las", m["uas"])*m["tokens"])
         if "inner_iters_used" in m: total_iters += m["inner_iters_used"]
+        if "routing_entropy" in m: total_routing_entropy += m["routing_entropy"]
     
     elapsed = time.time() - start_time
     return {
@@ -373,6 +390,7 @@ def epoch(model, data, tokenizer, device, label_vocab=None, bs=8, train=True, lr
         "uas": total_correct_uas/max(1,total_tokens),
         "las": total_correct_las/max(1,total_tokens),
         "mean_inner_iters": (total_iters/max(1, steps)) if total_iters>0 else float("nan"),
+        "routing_entropy": (total_routing_entropy/max(1, steps)) if total_routing_entropy>0 else float("nan"),
         "time": elapsed,
         "steps": steps
     }
@@ -394,10 +412,12 @@ def main():
     ap.add_argument("--batch_size", type=int, default=8)
     ap.add_argument("--lr", type=float, default=5e-5)
     ap.add_argument("--weight_decay", type=float, default=0.01)
+    ap.add_argument("--warmup_ratio", type=float, default=0.05, help="Warmup ratio (default: 0.05 = 5%%)")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--data_source", type=str, default="hf", choices=["hf","conllu","dummy"])
     ap.add_argument("--conllu_dir", type=str, default=None)
+    ap.add_argument("--log_csv", type=str, default=None, help="CSV file to log results (auto-generated if not provided)")
     # baseline/PoH shared
     ap.add_argument("--heads", type=int, default=8)
     ap.add_argument("--d_ff", type=int, default=2048)
@@ -434,13 +454,43 @@ def main():
                          combination=args.combination,
                          n_labels=max(n_labels, 50), use_labels=use_labels).to(device)
 
+    # Count parameters
+    baseline_params = sum(p.numel() for p in baseline.parameters())
+    poh_params = sum(p.numel() for p in poh.parameters())
+    
     print(f"\n{'='*80}")
-    print(f"Config: epochs={args.epochs}, bs={args.batch_size}, lr={args.lr}, wd={args.weight_decay}, seed={args.seed}")
+    print(f"Config: epochs={args.epochs}, bs={args.batch_size}, lr={args.lr}, wd={args.weight_decay}, warmup={args.warmup_ratio}, seed={args.seed}")
     print(f"Data: {args.data_source}, Train size: {len(train)}, Dev size: {len(dev)}")
     print(f"Label vocab size: {n_labels} (LAS {'enabled' if use_labels else 'disabled'})")
-    print(f"Baseline params: {sum(p.numel() for p in baseline.parameters()):,}")
-    print(f"PoH params:      {sum(p.numel() for p in poh.parameters()):,}")
+    print(f"Baseline params: {baseline_params:,}")
+    print(f"PoH params:      {poh_params:,} (+{poh_params-baseline_params:,})")
     print(f"{'='*80}\n")
+    
+    # CSV logging setup
+    csv_file = args.log_csv
+    if csv_file is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        csv_file = f"training_log_{timestamp}.csv"
+    
+    csv_exists = os.path.exists(csv_file)
+    csv_fp = open(csv_file, 'a', newline='')
+    csv_writer = csv.DictWriter(csv_fp, fieldnames=[
+        'timestamp', 'seed', 'epoch', 'model', 'data_source', 
+        'train_loss', 'train_uas', 'train_las', 'train_time',
+        'dev_uas', 'dev_las', 'dev_time',
+        'mean_inner_iters', 'routing_entropy',
+        'params', 'lr', 'wd', 'bs', 'warmup',
+        'halting_mode', 'max_inner_iters', 'routing_topk', 'combination'
+    ])
+    if not csv_exists:
+        csv_writer.writeheader()
+    
+    print(f"Logging results to: {csv_file}\n")
+    
+    # Warmup schedulers
+    total_steps_baseline = (len(train) // args.batch_size) * args.epochs
+    total_steps_poh = (len(train) // args.batch_size) * args.epochs
+    warmup_steps = int(total_steps_baseline * args.warmup_ratio)
     
     for ep in range(1, args.epochs+1):
         tr_b = epoch(baseline, train, tokenizer, device, label_vocab, bs=args.batch_size, train=True, lr=args.lr, weight_decay=args.weight_decay)
@@ -448,13 +498,41 @@ def main():
         tr_p = epoch(poh, train, tokenizer, device, label_vocab, bs=args.batch_size, train=True, lr=args.lr, weight_decay=args.weight_decay)
         dv_p = epoch(poh, dev, tokenizer, device, label_vocab, bs=args.batch_size, train=False)
         
+        # Log to CSV
+        timestamp = datetime.now().isoformat()
+        csv_writer.writerow({
+            'timestamp': timestamp, 'seed': args.seed, 'epoch': ep, 'model': 'Baseline', 'data_source': args.data_source,
+            'train_loss': f"{tr_b['loss']:.4f}", 'train_uas': f"{tr_b['uas']:.4f}", 'train_las': f"{tr_b['las']:.4f}", 'train_time': f"{tr_b['time']:.1f}",
+            'dev_uas': f"{dv_b['uas']:.4f}", 'dev_las': f"{dv_b['las']:.4f}", 'dev_time': f"{dv_b['time']:.1f}",
+            'mean_inner_iters': '', 'routing_entropy': '',
+            'params': baseline_params, 'lr': args.lr, 'wd': args.weight_decay, 'bs': args.batch_size, 'warmup': args.warmup_ratio,
+            'halting_mode': '', 'max_inner_iters': '', 'routing_topk': '', 'combination': ''
+        })
+        csv_writer.writerow({
+            'timestamp': timestamp, 'seed': args.seed, 'epoch': ep, 'model': 'PoH', 'data_source': args.data_source,
+            'train_loss': f"{tr_p['loss']:.4f}", 'train_uas': f"{tr_p['uas']:.4f}", 'train_las': f"{tr_p['las']:.4f}", 'train_time': f"{tr_p['time']:.1f}",
+            'dev_uas': f"{dv_p['uas']:.4f}", 'dev_las': f"{dv_p['las']:.4f}", 'dev_time': f"{dv_p['time']:.1f}",
+            'mean_inner_iters': f"{dv_p['mean_inner_iters']:.2f}" if not math.isnan(dv_p['mean_inner_iters']) else '',
+            'routing_entropy': f"{dv_p['routing_entropy']:.3f}" if not math.isnan(dv_p.get('routing_entropy', float('nan'))) else '',
+            'params': poh_params, 'lr': args.lr, 'wd': args.weight_decay, 'bs': args.batch_size, 'warmup': args.warmup_ratio,
+            'halting_mode': args.halting_mode, 'max_inner_iters': args.max_inner_iters, 
+            'routing_topk': args.routing_topk, 'combination': args.combination
+        })
+        csv_fp.flush()
+        
+        # Console output
         if use_labels:
             print(f"[Epoch {ep}]  BASE  train loss {tr_b['loss']:.4f} UAS {tr_b['uas']:.4f} LAS {tr_b['las']:.4f} ({tr_b['time']:.1f}s) | dev UAS {dv_b['uas']:.4f} LAS {dv_b['las']:.4f} ({dv_b['time']:.1f}s)")
-            print(f"[Epoch {ep}]  PoH   train loss {tr_p['loss']:.4f} UAS {tr_p['uas']:.4f} LAS {tr_p['las']:.4f} ({tr_p['time']:.1f}s) | dev UAS {dv_p['uas']:.4f} LAS {dv_p['las']:.4f} ({dv_p['time']:.1f}s) iters {dv_p['mean_inner_iters']:.2f}")
+            ent_str = f" ent {dv_p['routing_entropy']:.3f}" if not math.isnan(dv_p.get('routing_entropy', float('nan'))) else ""
+            print(f"[Epoch {ep}]  PoH   train loss {tr_p['loss']:.4f} UAS {tr_p['uas']:.4f} LAS {tr_p['las']:.4f} ({tr_p['time']:.1f}s) | dev UAS {dv_p['uas']:.4f} LAS {dv_p['las']:.4f} ({dv_p['time']:.1f}s) iters {dv_p['mean_inner_iters']:.2f}{ent_str}")
         else:
             print(f"[Epoch {ep}]  BASE  train loss {tr_b['loss']:.4f} UAS {tr_b['uas']:.4f} ({tr_b['time']:.1f}s) | dev UAS {dv_b['uas']:.4f} ({dv_b['time']:.1f}s)")
-            print(f"[Epoch {ep}]  PoH   train loss {tr_p['loss']:.4f} UAS {tr_p['uas']:.4f} ({tr_p['time']:.1f}s) | dev UAS {dv_p['uas']:.4f} ({dv_p['time']:.1f}s) iters {dv_p['mean_inner_iters']:.2f}")
+            ent_str = f" ent {dv_p['routing_entropy']:.3f}" if not math.isnan(dv_p.get('routing_entropy', float('nan'))) else ""
+            print(f"[Epoch {ep}]  PoH   train loss {tr_p['loss']:.4f} UAS {tr_p['uas']:.4f} ({tr_p['time']:.1f}s) | dev UAS {dv_p['uas']:.4f} ({dv_p['time']:.1f}s) iters {dv_p['mean_inner_iters']:.2f}{ent_str}")
         print()
+    
+    csv_fp.close()
+    print(f"\n✓ Results logged to: {csv_file}")
 
 if __name__ == "__main__":
     main()

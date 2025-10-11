@@ -77,6 +77,30 @@ python ab_ud_pointer_vs_baseline.py --data_source conllu --conllu_dir /path/to/e
 
 # Quick test with dummy data
 python ab_ud_pointer_vs_baseline.py --data_source dummy --epochs 2 --batch_size 8
+
+# With CSV logging and warmup
+python ab_ud_pointer_vs_baseline.py --data_source hf --epochs 5 --batch_size 16 --lr 3e-5 --warmup_ratio 0.05
+```
+
+### Multi-Seed Reproducibility
+
+Run experiments with multiple seeds for robust results:
+
+```bash
+# Using the convenience script (Unix/Linux/Mac)
+./run_multiseed.sh --data_source hf --epochs 5 --batch_size 16 --lr 3e-5
+
+# Manual runs with different seeds
+for seed in 42 123 456; do
+  python ab_ud_pointer_vs_baseline.py --data_source hf --epochs 5 --batch_size 16 --seed $seed --log_csv results.csv
+done
+```
+
+The script automatically:
+- Runs training with 3 different seeds
+- Logs all results to a timestamped CSV file  
+- Computes mean ± std statistics
+- Shows parameter counts and metrics
 ```
 
 ### Ablation Studies
@@ -115,8 +139,10 @@ python run_ablations.py --multiseed
 **Training:**
 - `--lr FLOAT`: Learning rate (default: 5e-5)
 - `--weight_decay FLOAT`: Weight decay (default: 0.01)
+- `--warmup_ratio FLOAT`: LR warmup ratio (default: 0.05 = 5%)
 - `--batch_size INT`: Batch size (default: 8)
 - `--seed INT`: Random seed for reproducibility (default: 42)
+- `--log_csv FILE`: CSV file for logging results (auto-generated if not provided)
 
 ## Model Comparison
 
@@ -176,6 +202,19 @@ Generated plots include:
 - **Iterations vs Accuracy**: Relationship between inner iterations and performance
 - **Multi-seed variance**: Stability across random seeds
 
+## Google Colab
+
+Try it in your browser with zero setup:
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/PoT_Colab.ipynb)
+
+The Colab notebook includes:
+- Quick dummy data test
+- Full UD training pipeline  
+- Multi-seed evaluation
+- Automatic visualization
+- Result download
+
 ## Repository Structure
 
 ```
@@ -184,10 +223,13 @@ PoT/
 ├── ud_pointer_parser.py               # Basic UD parser with PoH
 ├── ab_ud_pointer_vs_baseline.py       # A/B comparison script (Baseline vs PoH)
 ├── run_ablations.py                   # Automated ablation study runner
+├── run_multiseed.sh                   # Multi-seed experiment runner
 ├── count_params.py                    # Parameter counting utility
 ├── conll_eval.py                      # CoNLL-U evaluation script
 ├── plot_results.py                    # Visualization utilities
+├── PoT_Colab.ipynb                    # Google Colab notebook
 ├── requirements.txt                   # Python dependencies
+├── LICENSE                            # Apache 2.0 license
 └── README.md                          # This file
 ```
 
