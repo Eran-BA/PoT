@@ -6,29 +6,6 @@
 
 ---
 
-## 🎯 Implementation Status
-
-**Core Features** (✅ Complete):
-- ✅ Pointer-over-Heads transformer architecture
-- ✅ Baseline vs PoH A/B comparison
-- ✅ Multi-head routing (soft, top-k)
-- ✅ Adaptive halting (fixed, entropy, ACT-style)
-- ✅ UAS and LAS support with biaffine labeler
-- ✅ Parameter matching (`--param_match`)
-- ✅ Encoder freezing (`--freeze_encoder`)
-- ✅ CSV logging (auto-generated)
-- ✅ Multi-seed runner (`run_multiseed.sh`)
-- ✅ Visualization suite
-
-**Utilities Ready** (🔧 Integration pending):
-- 🔧 `utils/logger.py` - Drop-in CSV logger (created, can replace built-in)
-- 🔧 `utils/conllu_writer.py` - Prediction export (created, needs `--emit_conllu` wire)
-- 🔧 `utils/metrics.py` - Punctuation masking (created, needs `--ignore_punct` wire)
-
-**Current State:** All utilities exist and are documented. Main scripts use built-in CSV logging. To use the utility versions, simply import and call them (examples below).
-
----
-
 ## Architecture
 
 ```mermaid
@@ -74,6 +51,31 @@ flowchart TB
   %% Optional recurrence over time
   Y -.next step context.-> PC
 ```
+
+---
+
+## 🎯 Implementation Status
+
+**Core Features** (✅ Complete):
+- ✅ Pointer-over-Heads transformer architecture
+- ✅ Baseline vs PoH A/B comparison
+- ✅ Multi-head routing (soft, top-k)
+- ✅ Adaptive halting (fixed, entropy, ACT-style)
+- ✅ UAS and LAS support with biaffine labeler
+- ✅ Parameter matching (`--param_match`)
+- ✅ Encoder freezing (`--freeze_encoder`)
+- ✅ CSV logging (auto-generated)
+- ✅ Multi-seed runner (`run_multiseed.sh`)
+- ✅ Visualization suite
+
+**Utilities Ready** (🔧 Integration pending):
+- 🔧 `utils/logger.py` - Drop-in CSV logger (created, can replace built-in)
+- 🔧 `utils/conllu_writer.py` - Prediction export (created, needs `--emit_conllu` wire)
+- 🔧 `utils/metrics.py` - Punctuation masking (created, needs `--ignore_punct` wire)
+
+**Current State:** All utilities exist and are documented. Main scripts use built-in CSV logging. To use the utility versions, simply import and call them (examples below).
+
+---
 
 ## Installation
 
