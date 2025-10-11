@@ -103,6 +103,158 @@ cat training_log_*.csv | head -n 5
 python plot_simple.py training_log_*.csv
 ```
 
+---
+
+## Paper-Tight Workflow (1-2 hours)
+
+This section provides a complete, reproducible pipeline from installation to publication-ready results.
+
+### Step 1: Installation & Smoke Test (5 min)
+
+```bash
+# Clone and setup
+git clone https://github.com/Eran-BA/PoT.git
+cd PoT
+pip install -r requirements.txt
+
+# Verify installation with dummy data
+python ab_ud_pointer_vs_baseline.py --data_source dummy --epochs 2 --batch_size 8
+
+# Expected output:
+# Baseline params: ~67M, PoH params: ~67.7M (+676K)
+# PoH should outperform baseline on dummy data
+```
+
+### Step 2: Real Data A/B Comparison (30 min)
+
+```bash
+# Run parameter-matched comparison on UD English EWT
+python ab_ud_pointer_vs_baseline.py \
+  --data_source hf \
+  --epochs 5 \
+  --batch_size 16 \
+  --lr 3e-5 \
+  --param_match baseline \
+  --ignore_punct \
+  --emit_conllu \
+  --log_csv results.csv
+
+# What happens:
+# - Loads UD English EWT from HuggingFace (auto-cached)
+# - Trains both baseline and PoH parsers
+# - Logs UAS/LAS (punctuation excluded) to results.csv
+# - Exports predictions to poh_pred_dev_ep5.conllu
+# - Boosts baseline FFN to match PoH parameter count
+```
+
+### Step 3: Core Ablations (30 min)
+
+Test what matters: iterations, routing, halting, combination.
+
+```bash
+# A. Iterations (static gating vs refinement)
+for iters in 1 2 3; do
+  python ab_ud_pointer_vs_baseline.py \
+    --data_source hf --epochs 3 --batch_size 16 --lr 3e-5 \
+    --halting_mode fixed --max_inner_iters $iters \
+    --routing_topk 0 --log_csv ablations.csv --ignore_punct
+done
+
+# B. Routing (soft mixture vs hard top-k)
+for topk in 0 2; do
+  python ab_ud_pointer_vs_baseline.py \
+    --data_source hf --epochs 3 --batch_size 16 --lr 3e-5 \
+    --halting_mode fixed --max_inner_iters 2 \
+    --routing_topk $topk --log_csv ablations.csv --ignore_punct
+done
+
+# C. Halting (fixed vs entropy vs ACT-style)
+for halt in fixed entropy halting; do
+  python ab_ud_pointer_vs_baseline.py \
+    --data_source hf --epochs 3 --batch_size 16 --lr 3e-5 \
+    --halting_mode $halt --max_inner_iters 3 \
+    --routing_topk 2 --log_csv ablations.csv --ignore_punct
+done
+
+# D. Combination (mask_concat vs mixture)
+for combo in mask_concat mixture; do
+  python ab_ud_pointer_vs_baseline.py \
+    --data_source hf --epochs 3 --batch_size 16 --lr 3e-5 \
+    --halting_mode entropy --max_inner_iters 2 \
+    --routing_topk 2 --combination $combo --log_csv ablations.csv --ignore_punct
+done
+```
+
+### Step 4: Multi-Seed Robustness (15 min)
+
+Run best config with 3 seeds for mean ± std statistics:
+
+```bash
+# Best config from ablations (example: entropy halting, 2 iters, top-2 routing)
+for seed in 42 123 456; do
+  python ab_ud_pointer_vs_baseline.py \
+    --data_source hf --epochs 5 --batch_size 16 --lr 3e-5 \
+    --halting_mode entropy --max_inner_iters 2 --routing_topk 2 \
+    --param_match baseline --ignore_punct \
+    --seed $seed --log_csv multiseed.csv
+done
+
+# Or use the convenience script:
+chmod +x run_multiseed.sh
+./run_multiseed.sh
+```
+
+### Step 5: Visualization & Analysis (5 min)
+
+```bash
+# Quick plot: UAS vs mean inner iterations
+python plot_simple.py multiseed.csv --out figure1_uas_vs_iters.png
+
+# Comprehensive plots (if you ran ablations)
+python plot_results.py ablations.csv
+
+# Official CoNLL-U evaluation (if conll_eval.py implemented)
+# python conll_eval.py gold_dev.conllu poh_pred_dev_ep5.conllu
+```
+
+### Step 6: Report Checklist
+
+**What to include in your paper/README:**
+
+1. **Table: Baseline vs PoH**
+   ```
+   | Model    | Params   | Dev UAS  | Dev LAS  | Mean Iters | Time/Step |
+   |----------|----------|----------|----------|------------|-----------|
+   | Baseline | 67.1M    | 0.XXX±σ  | 0.XXX±σ  | -          | X.Xs      |
+   | PoH      | 67.8M    | 0.XXX±σ  | 0.XXX±σ  | 2.3±0.1    | X.Xs      |
+   | Δ        | +676K    | +X.X%    | +X.X%    | -          | +X%       |
+   ```
+
+2. **Figure: UAS vs Compute**
+   - X-axis: Mean inner iterations (PoH) or parameter count
+   - Y-axis: Dev UAS
+   - Show PoH configs (iters 1/2/3) vs baseline (horizontal line)
+   - Demonstrates quality-compute trade-off
+
+3. **Ablation Results**
+   - Bar chart comparing: iterations (1/2/3), routing (soft/hard), halting (fixed/entropy/ACT)
+   - Key finding: "2 inner iterations + entropy halting + top-2 routing = best accuracy/efficiency"
+
+4. **Claims**
+   - "+X.X% UAS over vanilla MHA baseline at ~+0.9% parameter overhead"
+   - "Adaptive routing reduces compute by X% while maintaining accuracy"
+   - "Interpretable: routing entropy shows head specialization"
+
+### Expected Results (Ballpark)
+
+On UD English EWT with DistilBERT encoder:
+- **Baseline**: ~85-88% UAS, ~83-86% LAS (depending on tuning)
+- **PoH (2 iters)**: ~87-90% UAS, ~85-88% LAS (target: +1-3% improvement)
+- **PoH (3 iters)**: Slightly better but diminishing returns
+- **Mean iterations**: 2.0-3.0 (depending on halting mode)
+
+*Note: First epoch on dummy data shows larger gaps; real UD results require proper hyperparameter tuning.*
+
 **Expected output:**
 ```
 ================================================================================

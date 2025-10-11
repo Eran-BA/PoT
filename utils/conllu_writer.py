@@ -40,13 +40,27 @@ def write_conllu(path: str,
                 idx = i + 1
                 form = toks[i]
                 
-                # Gold annotations
-                head_g = str(heads_gold[s_idx][i]) if heads_gold else "_"
-                rel_g = deprels_gold[s_idx][i] if deprels_gold else "_"
+                # Gold annotations (with safe access)
+                try:
+                    head_g = str(heads_gold[s_idx][i]) if heads_gold and s_idx < len(heads_gold) else "_"
+                except (IndexError, TypeError):
+                    head_g = "_"
+                
+                try:
+                    rel_g = deprels_gold[s_idx][i] if deprels_gold and s_idx < len(deprels_gold) else "_"
+                except (IndexError, TypeError):
+                    rel_g = "_"
                 
                 # Predictions (stored in MISC field)
-                head_p = str(heads_pred[s_idx][i]) if heads_pred else None
-                rel_p = deprels_pred[s_idx][i] if deprels_pred else None
+                try:
+                    head_p = str(heads_pred[s_idx][i]) if heads_pred and s_idx < len(heads_pred) else None
+                except (IndexError, TypeError):
+                    head_p = None
+                
+                try:
+                    rel_p = deprels_pred[s_idx][i] if deprels_pred and s_idx < len(deprels_pred) else None
+                except (IndexError, TypeError):
+                    rel_p = None
                 
                 misc = []
                 if head_p is not None:
