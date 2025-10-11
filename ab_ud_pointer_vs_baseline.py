@@ -428,8 +428,8 @@ def collate(examples, tokenizer, device, label_vocab=None, return_deprels=False)
         heads = examples["head"]
         labels = examples.get("deprel", None)
     else:
-    toks = [ex["tokens"] for ex in examples]
-    heads = [ex["head"] for ex in examples]
+        toks = [ex["tokens"] for ex in examples]
+        heads = [ex["head"] for ex in examples]
         labels = [ex.get("deprel", [0]*len(ex["tokens"])) for ex in examples] if any("deprel" in ex for ex in examples) else None
     
     enc = tokenizer(toks, is_split_into_words=True, padding=True, truncation=True, return_tensors="pt", max_length=512)

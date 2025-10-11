@@ -61,19 +61,27 @@ flowchart TB
 - ✅ Baseline vs PoH A/B comparison
 - ✅ Multi-head routing (soft, top-k)
 - ✅ Adaptive halting (fixed, entropy, ACT-style)
+- ✅ Deep supervision for iterative refinement
+- ✅ Gradient modes (full BPTT / last-iterate HRM-style)
 - ✅ UAS and LAS support with biaffine labeler
 - ✅ Parameter matching (`--param_match`)
 - ✅ Encoder freezing (`--freeze_encoder`)
+- ✅ CoNLL-U export (`--emit_conllu`)
+- ✅ Punctuation masking (`--ignore_punct`)
 - ✅ CSV logging (auto-generated)
 - ✅ Multi-seed runner (`run_multiseed.sh`)
 - ✅ Visualization suite
 
-**Utilities Ready** (🔧 Integration pending):
-- 🔧 `utils/logger.py` - Drop-in CSV logger (created, can replace built-in)
-- 🔧 `utils/conllu_writer.py` - Prediction export (created, needs `--emit_conllu` wire)
-- 🔧 `utils/metrics.py` - Punctuation masking (created, needs `--ignore_punct` wire)
+**Integrated Utilities** (✅):
+- ✅ `utils/logger.py` - CSV logging with timestamp
+- ✅ `utils/conllu_writer.py` - Prediction export for evaluation
+- ✅ `utils/metrics.py` - UAS/LAS with punctuation masking
+- ✅ `utils/iterative_losses.py` - Deep supervision & ACT losses
+- ✅ `utils/diagnostics.py` - Distance-bucket analysis (placeholder)
 
-**Current State:** All utilities exist and are documented. Main scripts use built-in CSV logging. To use the utility versions, simply import and call them (examples below).
+**Documentation** (✅):
+- ✅ `DEEP_SUPERVISION_GUIDE.md` - Implementation guide for iterative refinement
+- ✅ `GRADIENT_MODES_THEORY.md` - Mathematical foundations for gradient modes
 
 ---
 
@@ -410,9 +418,10 @@ python ab_ud_pointer_vs_baseline.py \
 ```
 
 **PoH Parameters:**
-- `--max_inner_iters N`: Number of refinement iterations (1-3, default: 3)
+- `--max_inner_iters N`: Number of refinement iterations (1-10, default: 3)
 - `--routing_topk K`: Top-K head selection (0=soft mixture, 1-8=hard routing, default: 2)
 - `--halting_mode MODE`: fixed/entropy/halting (default: entropy)
+- `--ent_threshold FLOAT`: Entropy threshold for early stopping (default: 0.8)
 - `--combination MODE`: mask_concat/mixture (default: mask_concat)
 
 **Training:**
@@ -430,6 +439,17 @@ python ab_ud_pointer_vs_baseline.py \
 - `--freeze_encoder`: Freeze pretrained encoder (only train parsing layers)
 - `--ignore_punct`: Ignore punctuation tokens in UAS/LAS computation
 - `--emit_conllu`: Write predictions to CoNLL-U format for official evaluation
+
+**Iterative Refinement (Advanced):**
+- `--deep_supervision`: Enable auxiliary losses on intermediate iterations
+- `--act_halting`: Enable ACT-style differentiable halting with ponder cost
+- `--ponder_coef FLOAT`: Ponder coefficient for ACT halting (default: 1e-3)
+- `--ramp_strength FLOAT`: Deep supervision ramp strength 0-1 (default: 1.0)
+- `--grad_mode {full,last}`: Gradient mode (default: full)
+  - `full`: Full BPTT through all iterations
+  - `last`: HRM-style last-iterate gradients (memory efficient)
+
+For detailed information on these features, see [`DEEP_SUPERVISION_GUIDE.md`](DEEP_SUPERVISION_GUIDE.md) and [`GRADIENT_MODES_THEORY.md`](GRADIENT_MODES_THEORY.md).
 
 ### Parameter Matching for Fair Comparison
 

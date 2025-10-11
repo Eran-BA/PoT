@@ -52,7 +52,11 @@ datasets/
 .cache/
 *.conllu
 
-# Logs
+# Logs & Outputs
 *.log
+*.csv
+*.png
+*.zip
 wandb/
+ud_data/
 
