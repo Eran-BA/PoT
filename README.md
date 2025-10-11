@@ -54,6 +54,72 @@ flowchart TB
 
 ---
 
+## 📁 Project Structure
+
+The codebase is organized into logical modules for clarity and maintainability:
+
+```
+PoT/
+├── src/                          # Source code
+│   ├── models/                   # Model architectures
+│   │   ├── base.py              # ParserBase class
+│   │   ├── baseline.py          # Baseline parser
+│   │   ├── poh.py               # PoH parser with all features
+│   │   ├── pointer_block.py     # PoH transformer block
+│   │   └── layers.py            # Biaffine, MHA, controller layers
+│   ├── data/                     # Data loading & processing
+│   │   ├── loaders.py           # HF, CoNLL-U, dummy datasets
+│   │   └── collate.py           # Batching & tokenization
+│   ├── training/                 # Training logic
+│   │   ├── trainer.py           # Main trainer class
+│   │   └── schedulers.py        # LR schedulers
+│   ├── evaluation/               # Evaluation tools
+│   │   └── conll_eval.py        # CoNLL-U evaluation
+│   └── utils/                    # Utility functions
+│       ├── helpers.py           # Pooling, padding, targets
+│       ├── logger.py            # CSV logging
+│       ├── metrics.py           # UAS/LAS computation
+│       ├── conllu_writer.py     # CoNLL-U export
+│       ├── iterative_losses.py  # Deep supervision, ACT
+│       └── trm_losses.py        # TRM-style losses
+├── scripts/                      # Executable scripts
+│   ├── train.py                 # Main A/B training script
+│   ├── run_ablations.py         # Ablation studies
+│   ├── run_multiseed.sh         # Multi-seed runner
+│   └── run_entropy_sweep.sh     # Entropy threshold sweep
+├── tools/                        # Analysis tools
+│   ├── count_params.py          # Parameter counting
+│   ├── plot_results.py          # Comprehensive plotting
+│   └── plot_simple.py           # Quick plotting
+├── docs/                         # Documentation
+│   ├── DEEP_SUPERVISION_GUIDE.md
+│   └── GRADIENT_MODES_THEORY.md
+├── notebooks/                    # Jupyter notebooks
+│   └── PoT_Colab.ipynb          # Google Colab notebook
+├── tests/                        # Unit tests
+│   └── test_imports.py          # Import validation
+├── data/                         # Data directory (gitignored)
+├── setup.py                      # Pip installation
+├── requirements.txt              # Dependencies
+└── README.md                     # This file
+```
+
+### Installation
+
+```bash
+# Clone repository
+git clone https://github.com/YOUR_USERNAME/PoT.git
+cd PoT
+
+# Install in development mode
+pip install -e .
+
+# Or install dependencies directly
+pip install -r requirements.txt
+```
+
+---
+
 ## 🎯 Implementation Status
 
 **Core Features** (✅ Complete):
@@ -102,7 +168,7 @@ pip install -r requirements.txt
 
 ```bash
 # Quick sanity check with dummy data
-python ab_ud_pointer_vs_baseline.py --data_source dummy --epochs 2 --batch_size 8
+python scripts/train.py --data_source dummy --epochs 2 --batch_size 8
 ```
 
 ### 2. Download Real Data (1 minute)
@@ -119,7 +185,7 @@ wget https://raw.githubusercontent.com/UniversalDependencies/UD_English-EWT/mast
 
 ```bash
 # Baseline vs PoH with optimal config
-python ab_ud_pointer_vs_baseline.py \
+python scripts/train.py \
   --data_source conllu --conllu_dir ud_data \
   --epochs 3 --batch_size 32 --lr 3e-5 \
   --max_inner_iters 1 --routing_topk 0 \
@@ -148,7 +214,7 @@ wget https://raw.githubusercontent.com/UniversalDependencies/UD_English-EWT/mast
 
 ```bash
 # Optimal configuration: 1 iteration, soft routing, parameter-matched
-python ab_ud_pointer_vs_baseline.py \
+python scripts/train.py \
   --data_source conllu --conllu_dir ud_data \
   --epochs 5 --batch_size 32 --lr 3e-5 \
   --max_inner_iters 1 --routing_topk 0 \
@@ -161,7 +227,7 @@ python ab_ud_pointer_vs_baseline.py \
 ```bash
 # Test iterations: 1 is optimal, but test 2-3 for diminishing returns
 for iters in 1 2 3; do
-  python ab_ud_pointer_vs_baseline.py \
+  python scripts/train.py \
     --data_source conllu --conllu_dir ud_data \
     --epochs 3 --batch_size 32 --lr 3e-5 \
     --max_inner_iters $iters --routing_topk 0 \
@@ -170,7 +236,7 @@ done
 
 # Test routing: soft (0) vs hard top-2 (2)
 for topk in 0 2; do
-  python ab_ud_pointer_vs_baseline.py \
+  python scripts/train.py \
     --data_source conllu --conllu_dir ud_data \
     --epochs 3 --batch_size 32 --lr 3e-5 \
     --max_inner_iters 1 --routing_topk $topk \
@@ -183,7 +249,7 @@ done
 ```bash
 # Optimal config with 3 seeds
 for seed in 42 1337 2023; do
-  python ab_ud_pointer_vs_baseline.py \
+  python scripts/train.py \
     --data_source conllu --conllu_dir ud_data \
     --epochs 5 --batch_size 32 --lr 3e-5 \
     --max_inner_iters 1 --routing_topk 0 \
@@ -220,12 +286,12 @@ python ud_pointer_parser.py --epochs 2 --batch_size 8 --halting_mode entropy --m
 
 ```bash
 # Using local CoNLL-U files (recommended)
-python ab_ud_pointer_vs_baseline.py \
+python scripts/train.py \
   --data_source conllu --conllu_dir ud_data \
   --epochs 5 --batch_size 32 --lr 3e-5
 
 # Quick test with dummy data
-python ab_ud_pointer_vs_baseline.py --data_source dummy --epochs 2 --batch_size 8
+python scripts/train.py --data_source dummy --epochs 2 --batch_size 8
 ```
 
 ### Multi-Seed Reproducibility
@@ -233,7 +299,7 @@ python ab_ud_pointer_vs_baseline.py --data_source dummy --epochs 2 --batch_size 
 ```bash
 # Manual runs with different seeds
 for seed in 42 1337 2023; do
-  python ab_ud_pointer_vs_baseline.py \
+  python scripts/train.py \
     --data_source conllu --conllu_dir ud_data \
     --epochs 5 --batch_size 32 \
     --seed $seed --log_csv results.csv
@@ -273,7 +339,7 @@ mkdir -p ud_data
 wget https://raw.githubusercontent.com/UniversalDependencies/UD_English-EWT/master/en_ewt-ud-train.conllu -O ud_data/en_ewt-ud-train.conllu
 wget https://raw.githubusercontent.com/UniversalDependencies/UD_English-EWT/master/en_ewt-ud-dev.conllu -O ud_data/en_ewt-ud-dev.conllu
 
-python ab_ud_pointer_vs_baseline.py \
+python scripts/train.py \
   --data_source conllu --conllu_dir ud_data \
   --epochs 5 --batch_size 32
 ```
@@ -316,12 +382,12 @@ For detailed information on these features, see [`DEEP_SUPERVISION_GUIDE.md`](DE
 
 ```bash
 # Boost baseline to match PoH parameters
-python ab_ud_pointer_vs_baseline.py \
+python scripts/train.py \
   --data_source conllu --conllu_dir ud_data \
   --param_match baseline
 
 # Freeze encoder to only train parsing head
-python ab_ud_pointer_vs_baseline.py \
+python scripts/train.py \
   --data_source conllu --conllu_dir ud_data \
   --freeze_encoder
 ```

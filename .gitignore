@@ -60,3 +60,13 @@ datasets/
 wandb/
 ud_data/
 
+# Test outputs
+tests/outputs/
+test_*.py
+temp_*.py
+
+# Execution artifacts
+results/
+experiments/
+plots/
+
