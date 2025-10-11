@@ -419,6 +419,79 @@ class PoHParser(ParserBase):
             if pred_labels is not None:
                 out["pred_labels"] = [pred_labels[b, :pad[b].sum()].cpu().tolist() for b in range(pred_labels.size(0))]
         return total_loss, out
+    
+    def forward_trm(self, subw, word_ids, heads_gold, labels_gold=None, args=None):
+        """
+        TRM-style recursion: outer supervision steps, each does n inner updates then refresh pointer.
+        Based on "Less is More: Recursive Reasoning with Tiny Networks" (arXiv:2510.04871)
+        """
+        device = next(self.parameters()).device
+        last_hidden = self.encoder(**subw).last_hidden_state
+        words = mean_pool_subwords(last_hidden, word_ids)
+        X, mask = pad_words(words)
+        Y_heads, pad = make_targets(heads_gold, X.size(1), device)
+        
+        # Decide inner updates per TRM step
+        inner_updates = args.trm_inner_updates if args.trm_inner_updates is not None else self.block.max_inner_iters
+        
+        # Collect latent states z_t from each supervision step
+        Zs = []
+        z = X
+        
+        for s in range(args.trm_supervision_steps):
+            # Run one TRM step: n inner updates
+            old_iters = self.block.max_inner_iters
+            self.block.max_inner_iters = inner_updates
+            y, aux = self.block(z, attn_mask=None, return_aux=True, collect_all=False, return_final_z=True)
+            self.block.max_inner_iters = old_iters
+            
+            z_next = aux["z_final"]  # [B,T,D]
+            Zs.append(z_next)
+            
+            # HRM-style across steps if grad_mode==last
+            if hasattr(self.block, "grad_mode") and self.block.grad_mode == "last" and s < args.trm_supervision_steps - 1:
+                z_next = z_next.detach()
+            z = z_next
+        
+        # Deep supervision over refreshes
+        from utils.trm_losses import trm_supervised_loss
+        head_loss, head_logits = trm_supervised_loss(self.pointer, Zs, Y_heads, pad, ramp_strength=args.trm_ramp_strength)
+        
+        # Metrics (from final refresh)
+        with torch.no_grad():
+            pred_heads = head_logits.argmax(-1)
+            uas = (pred_heads[pad]==Y_heads[pad]).float().mean().item()
+        
+        # Label prediction (only on final z for simplicity)
+        total_loss = head_loss
+        las = uas
+        pred_labels = None
+        
+        if self.use_labels and labels_gold is not None:
+            z_final = Zs[-1]
+            head_indices = Y_heads if self.training else pred_heads
+            root_repr = self.pointer.root.view(1, 1, -1).expand(z_final.size(0), 1, z_final.size(-1))
+            X_with_root = torch.cat([root_repr, z_final], dim=1)
+            
+            label_logits = self.labeler(z_final, X_with_root, head_indices, pad)
+            Y_labels, label_pad = make_targets(labels_gold, z_final.size(1), device)
+            label_loss = F.cross_entropy(label_logits.view(-1, label_logits.size(-1))[pad.view(-1)],
+                                         Y_labels.view(-1)[pad.view(-1)])
+            total_loss = head_loss + label_loss
+            
+            with torch.no_grad():
+                pred_labels = label_logits.argmax(-1)
+                las = ((pred_heads[pad]==Y_heads[pad]) & (pred_labels[pad]==Y_labels[pad])).float().mean().item()
+        
+        out = {"uas": uas, "las": las, "tokens": pad.sum().item()}
+        out["inner_iters_used"] = float(inner_updates * args.trm_supervision_steps)
+        out["trm_supervision_steps"] = args.trm_supervision_steps
+        
+        if not self.training:
+            out["pred_heads"] = [pred_heads[b, :pad[b].sum()].cpu().tolist() for b in range(pred_heads.size(0))]
+            if pred_labels is not None:
+                out["pred_labels"] = [pred_labels[b, :pad[b].sum()].cpu().tolist() for b in range(pred_labels.size(0))]
+        return total_loss, out
 
 # === batching ===
 def collate(examples, tokenizer, device, label_vocab=None, return_deprels=False):
@@ -428,8 +501,8 @@ def collate(examples, tokenizer, device, label_vocab=None, return_deprels=False)
         heads = examples["head"]
         labels = examples.get("deprel", None)
     else:
-    toks = [ex["tokens"] for ex in examples]
-    heads = [ex["head"] for ex in examples]
+        toks = [ex["tokens"] for ex in examples]
+        heads = [ex["head"] for ex in examples]
         labels = [ex.get("deprel", [0]*len(ex["tokens"])) for ex in examples] if any("deprel" in ex for ex in examples) else None
     
     enc = tokenizer(toks, is_split_into_words=True, padding=True, truncation=True, return_tensors="pt", max_length=512)
@@ -473,7 +546,7 @@ def get_linear_schedule_with_warmup(optimizer, num_warmup_steps, num_training_st
     return LambdaLR(optimizer, lr_lambda)
 
 def epoch(model, data, tokenizer, device, label_vocab=None, bs=8, train=True, lr=5e-5, weight_decay=0.01, scheduler=None, 
-          emit_conllu=False, conllu_path=None, ignore_punct=False):
+          emit_conllu=False, conllu_path=None, ignore_punct=False, args=None):
     import time
     if train:
         model.train()
@@ -519,7 +592,11 @@ def epoch(model, data, tokenizer, device, label_vocab=None, bs=8, train=True, lr
             subw, wids, heads, labels = collate(batch, tokenizer, device, label_vocab, return_deprels=False)
             deprels_str = None
         
-        loss, m = model(subw, wids, heads, labels)
+        # TRM mode: use forward_trm if enabled
+        if args and args.trm_mode and hasattr(model, 'forward_trm'):
+            loss, m = model.forward_trm(subw, wids, heads, labels, args=args)
+        else:
+            loss, m = model(subw, wids, heads, labels)
         
         # Apply punctuation masking if requested
         if ignore_punct and deprels_str is not None and "pred_heads" in m:
@@ -798,12 +875,12 @@ def main():
     warmup_steps = int(total_steps_baseline * args.warmup_ratio)
 
     for ep in range(1, args.epochs+1):
-        tr_b = epoch(baseline, train, tokenizer, device, label_vocab, bs=args.batch_size, train=True, lr=args.lr, weight_decay=args.weight_decay)
+        tr_b = epoch(baseline, train, tokenizer, device, label_vocab, bs=args.batch_size, train=True, lr=args.lr, weight_decay=args.weight_decay, args=args)
         dv_b = epoch(baseline, dev, tokenizer, device, label_vocab, bs=args.batch_size, train=False,
-                     emit_conllu=args.emit_conllu, conllu_path=f"baseline_pred_dev_ep{ep}.conllu", ignore_punct=args.ignore_punct)
-        tr_p = epoch(poh, train, tokenizer, device, label_vocab, bs=args.batch_size, train=True, lr=args.lr, weight_decay=args.weight_decay)
+                     emit_conllu=args.emit_conllu, conllu_path=f"baseline_pred_dev_ep{ep}.conllu", ignore_punct=args.ignore_punct, args=args)
+        tr_p = epoch(poh, train, tokenizer, device, label_vocab, bs=args.batch_size, train=True, lr=args.lr, weight_decay=args.weight_decay, args=args)
         dv_p = epoch(poh, dev, tokenizer, device, label_vocab, bs=args.batch_size, train=False,
-                     emit_conllu=args.emit_conllu, conllu_path=f"poh_pred_dev_ep{ep}.conllu", ignore_punct=args.ignore_punct)
+                     emit_conllu=args.emit_conllu, conllu_path=f"poh_pred_dev_ep{ep}.conllu", ignore_punct=args.ignore_punct, args=args)
         
         # Log to CSV
         timestamp = datetime.now().isoformat()
