@@ -60,16 +60,19 @@ def get_env_info(extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     # Library versions
     try:
         import torch
+
         info["torch_version"] = torch.__version__
     except Exception:
         info["torch_version"] = None
     try:
         import transformers
+
         info["transformers_version"] = transformers.__version__
     except Exception:
         info["transformers_version"] = None
     try:
         import datasets
+
         info["datasets_version"] = datasets.__version__
     except Exception:
         info["datasets_version"] = None
@@ -80,9 +83,11 @@ def get_env_info(extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
 
     # Git commit (best-effort)
     try:
-        commit = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL
-        ).decode().strip()
+        commit = (
+            subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL)
+            .decode()
+            .strip()
+        )
     except Exception:
         commit = None
     info["git_commit"] = commit
