@@ -167,6 +167,71 @@ Full dependency parser combining:
 
 ---
 
+## Training and Loss Flow
+
+This diagram captures the iterative refinement (inner updates), optional deep supervision, ACT-style halting, and TRM outer steps, along with gradient modes.
+
+```mermaid
+flowchart TB
+  classDef io fill:#e8f5e9,stroke:#333,stroke-width:1px,color:#111
+  classDef mod fill:#cfe8ff,stroke:#333,stroke-width:1px,color:#111
+  classDef head fill:#ffe0c2,stroke:#333,stroke-width:1px,color:#111
+  classDef ctrl fill:#e0d7ff,stroke:#333,stroke-width:1px,color:#111
+  classDef loss fill:#fff9c4,stroke:#333,stroke-width:1px,color:#111
+  classDef note fill:#f0f0f0,stroke:#999,stroke-width:1px,color:#333
+
+  X["Input tokens"]:::io
+  ENC["Encoder (BERT/Transformer)"]:::mod
+  Z0["Init latent z0"]:::mod
+
+  X --> ENC --> Z0
+
+  Zin["Latent z_t (start of step)"]:::mod
+  ZinI["z_t (inner)"]:::mod
+  PC["Pointer Controller (soft/ST-Gumbel)"]:::ctrl
+  H["Self-Attention Heads"]:::head
+  COMB["Combine Heads (mask_concat/mixture)"]:::mod
+  Zmid["Latent z_{t+1}"]:::mod
+
+  PTR["Pointer Scorer (biaffine): logits over heads"]:::mod
+  HALT["Halting Head h_t (optional ACT)"]:::ctrl
+
+  Lsup["Deep Supervision CE (weights w_t increasing)"]:::loss
+  Lact["ACT Expected Loss (Σ p_t·CE_t + λ·ponder)"]:::loss
+
+  Znext["z_{t+1} (becomes next z_t)"]:::mod
+
+  Z0 --> Zin
+  Zin --> ZinI
+  ZinI --> PC --> H --> COMB --> Zmid
+  Zmid -.->|repeat I times| ZinI
+
+  Zmid --> PTR
+  Zmid --> HALT
+  PTR --> Lsup
+  HALT --> Lact
+
+  Zmid --> Znext
+  Znext -.->|repeat S times (TRM)| Zin
+
+  Ltot[Total Loss]:::loss
+  Lsup --> Ltot
+  Lact --> Ltot
+
+  GMFULL["grad_mode=full — BPTT through steps"]:::note
+  GMLAST["grad_mode=last — HRM-style stop-grad"]:::note
+
+  Ltot -. uses .-> GMFULL
+  Ltot -. or .-> GMLAST
+```
+
+Notes:
+- I = inner updates per step; S = TRM outer supervision steps.
+- Deep supervision and ACT can be combined (expected loss with ramped weights).
+- grad_mode=last keeps forward refinement but cuts early-step gradients.
+
+---
+
 ## Data Flow
 
 ### Training Pipeline

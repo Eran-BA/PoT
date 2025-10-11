@@ -52,6 +52,8 @@ flowchart TB
   Y -.next step context.-> PC
 ```
 
+For the end-to-end training and loss flow (deep supervision, ACT halting, TRM steps, gradient modes), see the Training and Loss Flow diagram in `docs/architecture.md`.
+
 ---
 
 ## 📁 Project Structure
