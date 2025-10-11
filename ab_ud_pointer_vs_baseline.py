@@ -285,39 +285,110 @@ class BaselineParser(ParserBase):
 class PoHParser(ParserBase):
     def __init__(self, enc_name="distilbert-base-uncased", d_model=768, n_heads=8, d_ff=2048,
                  halting_mode="entropy", max_inner_iters=3, routing_topk=2, combination="mask_concat",
-                 ent_threshold=0.8, n_labels=50, use_labels=True):
+                 ent_threshold=0.8, n_labels=50, use_labels=True,
+                 deep_supervision=False, act_halting=False, ponder_coef=1e-3, ramp_strength=1.0,
+                 grad_mode="full"):
         super().__init__(enc_name, d_model)
         self.block = PointerMoHTransformerBlock(
             d_model=d_model, n_heads=n_heads, d_ff=d_ff,
             halting_mode=halting_mode, max_inner_iters=max_inner_iters,
             min_inner_iters=1, ent_threshold=ent_threshold,
             routing_topk=routing_topk, combination=combination,
-            controller_recurrent=True, controller_summary="mean")
+            controller_recurrent=True, controller_summary="mean",
+            grad_mode=grad_mode)
         self.pointer = BiaffinePointer(d_model)
         self.use_labels = use_labels
         if use_labels:
             self.labeler = BiaffineLabeler(d_model, n_labels)
         self.n_labels = n_labels
         
+        # NEW: Iterative refinement modes
+        self.deep_supervision = deep_supervision
+        self.act_halting = act_halting
+        self.ponder_coef = ponder_coef
+        self.ramp_strength = ramp_strength
+        
     def forward(self, subw, word_ids, heads_gold, labels_gold=None):
         device = next(self.parameters()).device
         last_hidden = self.encoder(**subw).last_hidden_state
         words = mean_pool_subwords(last_hidden, word_ids)
         X, mask = pad_words(words)
-        X, aux = self.block(X, attn_mask=None, return_aux=True)
         
-        # Head prediction
-        head_logits = self.pointer(X, X, mask, mask)
+        # NEW: Use collect_all mode if deep_supervision or act_halting enabled
+        collect_all = self.training and (self.deep_supervision or self.act_halting)
+        X, aux = self.block(X, attn_mask=None, return_aux=True, collect_all=collect_all)
+        
         Y_heads, pad = make_targets(heads_gold, X.size(1), device)
-        head_loss = F.cross_entropy(head_logits.view(-1, head_logits.size(-1))[pad.view(-1)],
-                                     Y_heads.view(-1)[pad.view(-1)])
         
-        # Metrics
+        # === NEW: Iterative refinement loss computation ===
+        if collect_all and "routed" in aux:
+            # Deep supervision or ACT halting mode
+            routed_seq = aux["routed"]  # [B, iters, T, D]
+            
+            # Pointer function for loss computation
+            def pointer_fn(x, _, m, __):
+                return self.pointer(x, x, m, m)
+            
+            if self.act_halting and self.deep_supervision and "halt_logits" in aux:
+                # COMBINED: ACT + deep supervision (recommended)
+                from utils.iterative_losses import act_deep_supervision_loss
+                halt_logits_seq = aux["halt_logits"]
+                
+                head_loss, diagnostics = act_deep_supervision_loss(
+                    routed_seq, halt_logits_seq, pointer_fn,
+                    Y_heads, pad,
+                    ponder_coef=self.ponder_coef,
+                    ramp_strength=self.ramp_strength
+                )
+                # Store diagnostics for logging
+                for key, value in diagnostics.items():
+                    aux[key] = value
+                
+            elif self.act_halting and "halt_logits" in aux:
+                # ACT-style expected loss only (no deep supervision ramp)
+                from utils.iterative_losses import act_expected_loss
+                halt_logits_seq = aux["halt_logits"]
+                
+                head_loss, ponder_cost = act_expected_loss(
+                    routed_seq, halt_logits_seq, pointer_fn,
+                    Y_heads, pad, ponder_coef=self.ponder_coef,
+                    per_token=False  # Per-sequence halting (simpler)
+                )
+                # Store ponder cost for logging
+                aux["ponder_cost"] = ponder_cost.item()
+                
+            elif self.deep_supervision:
+                # Deep supervision only (no ACT)
+                from utils.iterative_losses import deep_supervision_loss
+                
+                head_loss = deep_supervision_loss(
+                    routed_seq, pointer_fn, Y_heads, pad,
+                    weight_schedule="linear"  # Ramp from 0.3 to 1.0
+                )
+            else:
+                # Fallback: just use final state (shouldn't happen)
+                head_logits = self.pointer(X, X, mask, mask)
+                head_loss = F.cross_entropy(
+                    head_logits.view(-1, head_logits.size(-1))[pad.view(-1)],
+                    Y_heads.view(-1)[pad.view(-1)]
+                )
+            
+            # For metrics, always use final iteration
+            head_logits = self.pointer(X, X, mask, mask)
+        else:
+            # Standard single-pass mode
+            head_logits = self.pointer(X, X, mask, mask)
+            head_loss = F.cross_entropy(
+                head_logits.view(-1, head_logits.size(-1))[pad.view(-1)],
+                Y_heads.view(-1)[pad.view(-1)]
+            )
+        
+        # Metrics (always computed on final output)
         with torch.no_grad():
             pred_heads = head_logits.argmax(-1)
             uas = (pred_heads[pad]==Y_heads[pad]).float().mean().item()
         
-        # Label prediction
+        # Label prediction (only on final output for simplicity)
         total_loss = head_loss
         las = uas  # default to UAS if no labels
         pred_labels = None
@@ -340,6 +411,8 @@ class PoHParser(ParserBase):
         
         out = {"uas": uas, "las": las, "tokens": pad.sum().item()}
         if "inner_iters_used" in aux: out["inner_iters_used"] = aux["inner_iters_used"].item()
+        if "ponder_cost" in aux: out["ponder_cost"] = aux["ponder_cost"]
+        
         # Add predictions for CoNLL-U export
         if not self.training:
             out["pred_heads"] = [pred_heads[b, :pad[b].sum()].cpu().tolist() for b in range(pred_heads.size(0))]
@@ -355,8 +428,8 @@ def collate(examples, tokenizer, device, label_vocab=None, return_deprels=False)
         heads = examples["head"]
         labels = examples.get("deprel", None)
     else:
-        toks = [ex["tokens"] for ex in examples]
-        heads = [ex["head"] for ex in examples]
+    toks = [ex["tokens"] for ex in examples]
+    heads = [ex["head"] for ex in examples]
         labels = [ex.get("deprel", [0]*len(ex["tokens"])) for ex in examples] if any("deprel" in ex for ex in examples) else None
     
     enc = tokenizer(toks, is_split_into_words=True, padding=True, truncation=True, return_tensors="pt", max_length=512)
@@ -572,6 +645,21 @@ def main():
     ap.add_argument("--combination", type=str, default="mask_concat", choices=["mask_concat","mixture"])
     ap.add_argument("--ent_threshold", type=float, default=0.8,
                     help="Entropy threshold for early stopping (halting_mode=entropy)")
+    
+    # NEW: Iterative refinement modes
+    ap.add_argument("--deep_supervision", action="store_true",
+                    help="Enable deep supervision (loss on each iteration)")
+    ap.add_argument("--act_halting", action="store_true",
+                    help="Enable differentiable ACT-style halting (expected loss)")
+    ap.add_argument("--ponder_coef", type=float, default=1e-3,
+                    help="Ponder cost coefficient for ACT halting")
+    ap.add_argument("--ramp_strength", type=float, default=1.0,
+                    help="Deep supervision ramp strength (0=no ramp, 1=full ramp). "
+                         "Only used when both --deep_supervision and --act_halting are enabled")
+    ap.add_argument("--grad_mode", type=str, default="full", choices=["full", "last"],
+                    help="Gradient mode: 'full'=full BPTT through all iters (default), "
+                         "'last'=HRM-style last-iterate gradients (constant memory)")
+    
     args = ap.parse_args()
     
     # Set seed for reproducibility
@@ -586,10 +674,10 @@ def main():
     print(f"\n{'='*80}")
     print(f"Loading data source: {args.data_source}")
     print(f"{'='*80}")
-    
+
     train = get_data(args.data_source, "train", args.conllu_dir)
     dev   = get_data(args.data_source, "validation", args.conllu_dir)
-    
+
     print(f"✓ Train set: {len(train)} examples")
     print(f"✓ Dev set:   {len(dev)} examples")
     
@@ -618,7 +706,10 @@ def main():
                             halting_mode=args.halting_mode, max_inner_iters=args.max_inner_iters,
                             routing_topk=args.routing_topk, combination=args.combination,
                             ent_threshold=args.ent_threshold,
-                            n_labels=max(n_labels, 50), use_labels=use_labels)
+                            n_labels=max(n_labels, 50), use_labels=use_labels,
+                            deep_supervision=args.deep_supervision, act_halting=args.act_halting,
+                            ponder_coef=args.ponder_coef, ramp_strength=args.ramp_strength,
+                            grad_mode=args.grad_mode)
         
         baseline_params = sum(p.numel() for p in temp_baseline.parameters())
         poh_params = sum(p.numel() for p in temp_poh.parameters())
@@ -643,7 +734,12 @@ def main():
                          routing_topk=args.routing_topk,
                          combination=args.combination,
                          ent_threshold=args.ent_threshold,
-                         n_labels=max(n_labels, 50), use_labels=use_labels).to(device)
+                         n_labels=max(n_labels, 50), use_labels=use_labels,
+                         deep_supervision=args.deep_supervision,
+                         act_halting=args.act_halting,
+                         ponder_coef=args.ponder_coef,
+                         ramp_strength=args.ramp_strength,
+                         grad_mode=args.grad_mode).to(device)
     
     # Freeze encoder if requested
     if args.freeze_encoder:
@@ -690,7 +786,7 @@ def main():
     total_steps_baseline = (len(train) // args.batch_size) * args.epochs
     total_steps_poh = (len(train) // args.batch_size) * args.epochs
     warmup_steps = int(total_steps_baseline * args.warmup_ratio)
-    
+
     for ep in range(1, args.epochs+1):
         tr_b = epoch(baseline, train, tokenizer, device, label_vocab, bs=args.batch_size, train=True, lr=args.lr, weight_decay=args.weight_decay)
         dv_b = epoch(baseline, dev, tokenizer, device, label_vocab, bs=args.batch_size, train=False,

@@ -208,10 +208,12 @@ class PointerMoHTransformerBlock(nn.Module):
         min_inner_iters: int = 1,
         ent_threshold: float = 0.7,               # for 'entropy'
         ponder_coef: float = 0.001,               # for 'halting'
+        grad_mode: str = "full",                  # NEW: 'full' = full BPTT | 'last' = HRM-style
     ):
         super().__init__()
         assert combination in ("mask_concat", "mixture")
         assert halting_mode in ("fixed", "entropy", "halting")
+        assert grad_mode in ("full", "last"), f"grad_mode must be 'full' or 'last', got {grad_mode}"
 
         self.d_model = d_model
         self.n_heads = n_heads
@@ -226,6 +228,7 @@ class PointerMoHTransformerBlock(nn.Module):
         self.min_inner_iters = max(1, min_inner_iters)
         self.ent_threshold = ent_threshold
         self.ponder_coef = ponder_coef
+        self.grad_mode = grad_mode  # NEW: Gradient mode control
 
         self.ln1 = nn.LayerNorm(d_model)
         self.ln2 = nn.LayerNorm(d_model)
@@ -279,7 +282,8 @@ class PointerMoHTransformerBlock(nn.Module):
         self,
         x: torch.Tensor,
         attn_mask: Optional[torch.Tensor] = None,
-        return_aux: bool = True
+        return_aux: bool = True,
+        collect_all: bool = False  # NEW: collect per-iteration states for deep supervision
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         aux: Dict[str, torch.Tensor] = {}
 
@@ -289,9 +293,14 @@ class PointerMoHTransformerBlock(nn.Module):
         it_used = 0
         ponder_cost = torch.zeros((), device=x.device)
         alphas_hist, logits_hist = [], []
+        routed_hist = []  # NEW: collect routed states for deep supervision
+        halt_logits_hist = []  # NEW: for differentiable ACT
         last_attn = None
 
-        for it in range(self.max_inner_iters):
+        # If collect_all=True, run full max_inner_iters (no breaks for gradient flow)
+        max_iters = self.max_inner_iters if collect_all else self.max_inner_iters
+
+        for it in range(max_iters):
             heads_out, last_attn = self.mha(token_ctx, attn_mask)       # [B,T,H,Dh], [B,H,T,T]
             logits = self.controller(token_ctx, provisional_heads=heads_out)  # [B,T,H]
             alphas = self._route(logits)                                 # [B,T,H]
@@ -299,25 +308,40 @@ class PointerMoHTransformerBlock(nn.Module):
 
             alphas_hist.append(alphas)
             logits_hist.append(logits)
-            token_ctx = routed
+            routed_hist.append(routed)  # NEW: collect intermediate state
+            
+            # Feedback to next iteration
+            token_ctx_next = routed
+            
+            # NEW: HRM-style "last" gradient mode - stop gradient before final step
+            if self.grad_mode == "last" and it < max_iters - 1:
+                token_ctx_next = token_ctx_next.detach()  # Cut computational graph here
+            
+            token_ctx = token_ctx_next
             it_used = it + 1
 
-            # Halting rules
-            if it + 1 < self.min_inner_iters:
-                continue
+            # NEW: Collect halting logits for differentiable ACT (before sigmoid)
+            if self.halting_mode == "halting" and collect_all:
+                halt_logit = self.halt_head(token_ctx)  # [B,T,1] or reduce to [B,1]
+                halt_logits_hist.append(halt_logit)
 
-            if self.halting_mode == "fixed":
-                pass  # run full max_inner_iters
-            elif self.halting_mode == "entropy":
-                with torch.no_grad():
-                    ent = entropy_from_logits(logits)  # scalar
-                if ent.item() < self.ent_threshold:
-                    break
-            elif self.halting_mode == "halting":
-                p_halt = self.halt_head(token_ctx).mean()  # scalar
-                ponder_cost = ponder_cost + p_halt
-                if p_halt.item() > 0.5:  # threshold; tune
-                    break
+            # Halting rules (only apply if NOT collect_all mode)
+            if not collect_all:
+                if it + 1 < self.min_inner_iters:
+                    continue
+
+                if self.halting_mode == "fixed":
+                    pass  # run full max_inner_iters
+                elif self.halting_mode == "entropy":
+                    with torch.no_grad():
+                        ent = entropy_from_logits(logits)  # scalar
+                    if ent.item() < self.ent_threshold:
+                        break
+                elif self.halting_mode == "halting":
+                    p_halt = self.halt_head(token_ctx).mean()  # scalar
+                    ponder_cost = ponder_cost + p_halt
+                    if p_halt.item() > 0.5:  # threshold; tune
+                        break
 
         # Attention residual
         attn_out = token_ctx + (x if self.use_pre_norm else 0.0)
@@ -335,7 +359,16 @@ class PointerMoHTransformerBlock(nn.Module):
             aux["logits"] = torch.stack(logits_hist, dim=1)            # [B, iters, T, H]
             aux["attn_probs"] = last_attn                              # [B, H, T, T]
             aux["inner_iters_used"] = torch.tensor(it_used, device=x.device)
-            if self.halting_mode == "halting":
+            
+            # NEW: Return per-iteration routed states for deep supervision
+            if collect_all and routed_hist:
+                aux["routed"] = torch.stack(routed_hist, dim=1)        # [B, iters, T, D]
+            
+            # NEW: Return halting logits for differentiable ACT
+            if collect_all and halt_logits_hist:
+                aux["halt_logits"] = torch.stack(halt_logits_hist, dim=1)  # [B, iters, T, 1]
+            
+            if self.halting_mode == "halting" and not collect_all:
                 aux["ponder_cost"] = self.ponder_coef * ponder_cost    # scalar
         return y, aux
 
