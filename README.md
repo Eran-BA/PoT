@@ -256,9 +256,57 @@ This provides:
 - Complete tree accuracy
 - Compatible with CoNLL 2018 shared task format
 
+## Utilities
+
+### CSV Logging
+Automatically tracks all experiments with minimal overhead:
+
+```python
+from utils.logger import append_row, flatten_cfg
+
+# Log a single row
+append_row("results.csv", flatten_cfg(
+    seed=42,
+    model="PoH",
+    dev_uas=0.892,
+    train_uas=0.945,
+    mean_iters=2.3
+))
+```
+
+### CoNLL-U Export
+Write predictions for official evaluation:
+
+```python
+from utils.conllu_writer import write_conllu
+
+write_conllu(
+    "predictions.conllu",
+    tokens=token_lists,
+    heads_gold=gold_heads,
+    heads_pred=predicted_heads,
+    deprels_pred=predicted_labels
+)
+```
+
+### Punctuation Masking
+Proper UAS/LAS computation excluding punctuation:
+
+```python
+from utils.metrics import compute_uas_las, build_masks_for_metrics
+
+uas, las = compute_uas_las(
+    pred_heads, gold_heads, 
+    pred_labels, gold_labels,
+    mask, deprels=deprel_strings,
+    ignore_punct=True
+)
+```
+
 ## Visualization
 
-Generate plots from ablation study results:
+### Comprehensive Plots
+Generate publication-quality figures from ablation results:
 
 ```bash
 # Plot all results
@@ -278,6 +326,14 @@ Generated plots include:
 - **Baseline vs PoH**: Direct improvement comparison
 - **Iterations vs Accuracy**: Relationship between inner iterations and performance
 - **Multi-seed variance**: Stability across random seeds
+
+### Quick Plot
+For rapid iteration:
+
+```bash
+# Simple UAS vs iterations scatter plot
+python plot_simple.py results.csv --out quick_plot.png
+```
 
 ## Google Colab
 
@@ -303,11 +359,16 @@ PoT/
 ├── run_multiseed.sh                   # Multi-seed experiment runner
 ├── count_params.py                    # Parameter counting utility
 ├── conll_eval.py                      # CoNLL-U evaluation script
-├── plot_results.py                    # Visualization utilities
+├── plot_results.py                    # Comprehensive visualization suite
+├── plot_simple.py                     # Quick UAS vs iterations plot
 ├── PoT_Colab.ipynb                    # Google Colab notebook
 ├── requirements.txt                   # Python dependencies
 ├── LICENSE                            # Apache 2.0 license
-└── README.md                          # This file
+├── README.md                          # This file
+└── utils/
+    ├── logger.py                      # CSV logging utilities
+    ├── conllu_writer.py              # CoNLL-U format writer
+    └── metrics.py                     # Evaluation metrics with punct masking
 ```
 
 ## Citation
