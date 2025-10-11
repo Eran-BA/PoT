@@ -24,7 +24,7 @@ def append_row(csv_path: str, row: dict[str, Any]) -> None:
         row: Dictionary of values to write
     """
     os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
-    row = dict(timestamp=time.strftime("%Y-%m-%d %H:%M:%S"), **row)
+    row = {"timestamp": time.strftime("%Y-%m-%d %H:%M:%S"), **row}
     write_header = not os.path.exists(csv_path)
 
     with open(csv_path, "a", newline="", encoding="utf-8") as f:
