@@ -404,9 +404,29 @@ def epoch(model, data, tokenizer, device, label_vocab=None, bs=8, train=True, lr
     import time
     if train:
         model.train()
-        if not hasattr(epoch, 'optimizer'):
-            epoch.optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-        opt = epoch.optimizer
+        # Create separate optimizer for each model (use model id as key)
+        model_id = id(model)
+        if not hasattr(epoch, 'optimizers'):
+            epoch.optimizers = {}
+        
+        if model_id not in epoch.optimizers:
+            # FIX: Use different learning rates for PoH components to handle gradient imbalance
+            # Controller has much smaller gradients (~30x) than FFN, needs higher LR
+            if hasattr(model, 'block') and hasattr(model.block, 'controller'):
+                # PoH model: use parameter groups
+                encoder_params = list(model.encoder.parameters())
+                controller_params = list(model.block.controller.parameters())
+                other_params = [p for n, p in model.named_parameters() 
+                               if 'encoder' not in n and 'controller' not in n]
+                epoch.optimizers[model_id] = torch.optim.AdamW([
+                    {'params': encoder_params, 'lr': lr},
+                    {'params': controller_params, 'lr': lr * 20},  # 20x higher for controller
+                    {'params': other_params, 'lr': lr * 2}         # 2x higher for other components
+                ], weight_decay=weight_decay)
+            else:
+                # Baseline model: uniform LR
+                epoch.optimizers[model_id] = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+        opt = epoch.optimizers[model_id]
     else:
         model.eval(); opt = None
     from math import ceil
