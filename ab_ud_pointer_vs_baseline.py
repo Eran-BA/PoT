@@ -285,12 +285,12 @@ class BaselineParser(ParserBase):
 class PoHParser(ParserBase):
     def __init__(self, enc_name="distilbert-base-uncased", d_model=768, n_heads=8, d_ff=2048,
                  halting_mode="entropy", max_inner_iters=3, routing_topk=2, combination="mask_concat",
-                 n_labels=50, use_labels=True):
+                 ent_threshold=0.8, n_labels=50, use_labels=True):
         super().__init__(enc_name, d_model)
         self.block = PointerMoHTransformerBlock(
             d_model=d_model, n_heads=n_heads, d_ff=d_ff,
             halting_mode=halting_mode, max_inner_iters=max_inner_iters,
-            min_inner_iters=1, ent_threshold=0.8,
+            min_inner_iters=1, ent_threshold=ent_threshold,
             routing_topk=routing_topk, combination=combination,
             controller_recurrent=True, controller_summary="mean")
         self.pointer = BiaffinePointer(d_model)
@@ -570,6 +570,8 @@ def main():
     ap.add_argument("--max_inner_iters", type=int, default=3)
     ap.add_argument("--routing_topk", type=int, default=2)
     ap.add_argument("--combination", type=str, default="mask_concat", choices=["mask_concat","mixture"])
+    ap.add_argument("--ent_threshold", type=float, default=0.8,
+                    help="Entropy threshold for early stopping (halting_mode=entropy)")
     args = ap.parse_args()
     
     # Set seed for reproducibility
@@ -615,6 +617,7 @@ def main():
         temp_poh = PoHParser(args.model_name, d_model, args.heads, args.d_ff,
                             halting_mode=args.halting_mode, max_inner_iters=args.max_inner_iters,
                             routing_topk=args.routing_topk, combination=args.combination,
+                            ent_threshold=args.ent_threshold,
                             n_labels=max(n_labels, 50), use_labels=use_labels)
         
         baseline_params = sum(p.numel() for p in temp_baseline.parameters())
@@ -639,6 +642,7 @@ def main():
                          max_inner_iters=args.max_inner_iters,
                          routing_topk=args.routing_topk,
                          combination=args.combination,
+                         ent_threshold=args.ent_threshold,
                          n_labels=max(n_labels, 50), use_labels=use_labels).to(device)
     
     # Freeze encoder if requested
