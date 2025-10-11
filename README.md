@@ -1,3 +1,10 @@
+# Pointer-over-Heads Transformer (PoT)
+
+Dynamic multi-head attention with adaptive routing for dependency parsing.
+
+## Architecture
+
+```mermaid
 flowchart TB
   %% Styles
   classDef head fill:#ffe0c2,stroke:#333,stroke-width:2px,color:#111
@@ -39,6 +46,7 @@ flowchart TB
   
   %% Optional recurrence over time
   Y -.next step context.-> PC
+```
 
 ## Usage
 
