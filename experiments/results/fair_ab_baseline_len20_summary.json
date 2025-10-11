@@ -1,0 +1,15 @@
+{
+  "model": "baseline",
+  "task": "partial_obs",
+  "array_len": 20,
+  "mask_rate": 0.5,
+  "n_seeds": 3,
+  "kendall_mean": 0.09126315789473684,
+  "kendall_ci": 0.017386699088127146,
+  "perfect_mean": 0.0,
+  "perfect_ci": 0.0,
+  "accuracy_mean": 0.16866666666666666,
+  "accuracy_ci": 0.004946960159008233,
+  "hamming_mean": 0.8313333333333333,
+  "hamming_ci": 0.004946960159008201
+}
