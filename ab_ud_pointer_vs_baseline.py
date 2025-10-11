@@ -501,13 +501,21 @@ def get_data(source, split, conllu_dir=None):
     if source == "hf":
         ds = try_hf_load(split)
         if ds is None:
-            print(f"\n⚠ HF load failed. Falling back to dummy data for testing.")
-            print(f"   For real experiments, use --data_source conllu with local UD files.")
-            print(f"\n📥 To download UD English EWT:")
-            print(f"   1. Visit: https://github.com/UniversalDependencies/UD_English-EWT")
-            print(f"   2. Download the .conllu files")
-            print(f"   3. Run with: --data_source conllu --conllu_dir /path/to/en_ewt/")
-            return dummy_ds(128 if split=="train" else 48)
+            raise RuntimeError(
+                "\n❌ HuggingFace dataset loading failed!\n\n"
+                "📥 Please download UD English EWT manually:\n\n"
+                "Option 1 - Direct download (in Colab/terminal):\n"
+                "  wget https://raw.githubusercontent.com/UniversalDependencies/UD_English-EWT/master/en_ewt-ud-train.conllu\n"
+                "  wget https://raw.githubusercontent.com/UniversalDependencies/UD_English-EWT/master/en_ewt-ud-dev.conllu\n"
+                "  wget https://raw.githubusercontent.com/UniversalDependencies/UD_English-EWT/master/en_ewt-ud-test.conllu\n"
+                "  mkdir -p ud_data && mv en_ewt-ud-*.conllu ud_data/\n\n"
+                "Option 2 - Clone full repository:\n"
+                "  git clone https://github.com/UniversalDependencies/UD_English-EWT.git\n\n"
+                "Then re-run with:\n"
+                "  --data_source conllu --conllu_dir ud_data/\n\n"
+                "Or use dummy data for quick testing:\n"
+                "  --data_source dummy\n"
+            )
         return list(ds)
     if source == "conllu":
         assert conllu_dir, "Provide --conllu_dir"
