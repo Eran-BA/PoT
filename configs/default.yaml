@@ -1,0 +1,18 @@
+data_source: conllu
+conllu_dir: data/
+model_name: distilbert-base-uncased
+d_model: 768
+n_heads: 8
+d_ff: 2048
+halting_mode: fixed  # fixed | entropy | halting
+max_inner_iters: 1
+routing_topk: 0
+combination: mask_concat  # mask_concat | mixture
+ent_threshold: 0.8
+epochs: 5
+batch_size: 32
+lr: 3e-5
+weight_decay: 0.01
+warmup_ratio: 0.1
+seed: 42
+

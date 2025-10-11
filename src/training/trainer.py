@@ -133,7 +133,10 @@ class Trainer:
         lr: float = 5e-5,
         weight_decay: float = 0.01,
         scheduler: Optional[Any] = None,
-        args: Optional[Any] = None
+        args: Optional[Any] = None,
+        *,
+        use_amp: bool = False,
+        grad_accum_steps: int = 1
     ) -> Dict[str, float]:
         """Run one training epoch.
         
@@ -150,13 +153,18 @@ class Trainer:
         """
         self.model.train()
         optimizer = self._get_optimizer(lr, weight_decay)
+        steps = 0
+        optimizer.zero_grad(set_to_none=True)
+
+        # AMP scaler (CUDA only)
+        has_cuda = torch.cuda.is_available()
+        scaler = torch.cuda.amp.GradScaler(enabled=(use_amp and has_cuda))
         
         total_loss = 0.0
         total_tokens = 0
         total_correct_uas = 0
         total_correct_las = 0
         total_iters = 0.0
-        steps = 0
         start_time = time.time()
         
         for i in range(0, len(data), batch_size):
@@ -167,18 +175,42 @@ class Trainer:
             
             # TRM mode support
             if args and hasattr(args, 'trm_mode') and args.trm_mode and hasattr(self.model, 'forward_trm'):
-                loss, metrics = self.model.forward_trm(subw, word_ids, heads, labels, args=args)
+                if scaler.is_enabled():
+                    with torch.cuda.amp.autocast():
+                        loss, metrics = self.model.forward_trm(subw, word_ids, heads, labels, args=args)
+                else:
+                    loss, metrics = self.model.forward_trm(subw, word_ids, heads, labels, args=args)
             else:
-                loss, metrics = self.model(subw, word_ids, heads, labels)
-            
-            # Backpropagation
-            optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-            optimizer.step()
-            
-            if scheduler is not None:
-                scheduler.step()
+                if scaler.is_enabled():
+                    with torch.cuda.amp.autocast():
+                        loss, metrics = self.model(subw, word_ids, heads, labels)
+                else:
+                    loss, metrics = self.model(subw, word_ids, heads, labels)
+
+            # Gradient scaling / accumulation
+            loss_to_backprop = loss / max(1, grad_accum_steps)
+            if scaler.is_enabled():
+                scaler.scale(loss_to_backprop).backward()
+            else:
+                loss_to_backprop.backward()
+
+            # Step when reaching accumulation boundary
+            if (steps + 1) % max(1, grad_accum_steps) == 0:
+                # Clip gradients
+                if scaler.is_enabled():
+                    scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+
+                # Optimizer step
+                if scaler.is_enabled():
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+
+                if scheduler is not None:
+                    scheduler.step()
             
             # Accumulate metrics
             total_loss += loss.item()

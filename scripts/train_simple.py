@@ -25,11 +25,14 @@ from src.models import PoHParser
 from src.data.loaders import get_dataset, build_label_vocab
 from src.training.trainer import Trainer
 from src.training.schedulers import get_linear_schedule_with_warmup
+from src.utils.helpers import seed_everything, load_yaml_config
+from src.utils.logger import get_env_info
 
 
 def main():
     """Main training function for single PoH parser."""
     ap = argparse.ArgumentParser(description="Train PoH dependency parser")
+    ap.add_argument("--config", type=str, default=None, help="Optional YAML config file")
     
     # Data
     ap.add_argument("--data_source", type=str, default="dummy", choices=["hf", "conllu", "dummy"])
@@ -55,15 +58,23 @@ def main():
     ap.add_argument("--weight_decay", type=float, default=0.01)
     ap.add_argument("--warmup_ratio", type=float, default=0.1)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--compile", action="store_true", help="Enable torch.compile for speed (PyTorch>=2.0)")
     
     # Logging
     ap.add_argument("--log_csv", type=str, default=None)
     ap.add_argument("--emit_conllu", action="store_true")
     
     args = ap.parse_args()
+
+    # Load YAML config and override defaults if provided
+    if args.config:
+        cfg = load_yaml_config(args.config)
+        for k, v in cfg.items():
+            if hasattr(args, k):
+                setattr(args, k, v)
     
-    # Set seed for reproducibility
-    torch.manual_seed(args.seed)
+    # Set seed for reproducibility (full determinism)
+    seed_everything(args.seed)
     
     # Device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -106,6 +117,14 @@ def main():
         n_labels=n_labels,
         use_labels=True
     ).to(device)
+
+    # Optional torch.compile for speed (PyTorch 2.0+)
+    if args.compile:
+        try:
+            parser = torch.compile(parser)  # type: ignore[attr-defined]
+            print("Enabled torch.compile")
+        except Exception as e:
+            print(f"Warning: torch.compile not available/failed: {e}")
     
     # Count parameters
     total_params = sum(p.numel() for p in parser.parameters())
@@ -132,7 +151,9 @@ def main():
             train_data,
             batch_size=args.batch_size,
             lr=args.lr,
-            weight_decay=args.weight_decay
+            weight_decay=args.weight_decay,
+            use_amp=True,
+            grad_accum_steps=1
         )
         
         # Evaluate
@@ -156,6 +177,11 @@ def main():
             best_uas = dev_metrics['uas']
             best_epoch = epoch + 1
             print(f"  ✓ New best UAS!")
+            try:
+                torch.save(parser.state_dict(), "best_poh.pt")
+                print("  Saved best checkpoint to best_poh.pt")
+            except Exception as e:
+                print(f"  Warning: failed to save checkpoint: {e}")
         
         # Log results
         results.append({
@@ -176,6 +202,9 @@ def main():
     # CSV logging
     if args.log_csv:
         import csv
+        # augment with env info on first row
+        env = get_env_info()
+        results[0].update({f"env_{k}": v for k, v in env.items()})
         with open(args.log_csv, 'w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=results[0].keys())
             writer.writeheader()

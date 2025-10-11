@@ -21,9 +21,11 @@ Year: 2025
 License: Apache 2.0
 """
 
-from typing import List, Tuple
-
+from typing import List, Tuple, Any, Dict
+import random
+import numpy as np
 import torch
+import yaml
 
 
 def mean_pool_subwords(
@@ -184,4 +186,31 @@ def make_targets(
             pad[b, :n] = True
             
     return Y, pad
+
+
+def seed_everything(seed: int = 42) -> None:
+    """Set random seeds and flags for deterministic training.
+
+    This enables reproducibility across torch, numpy, and python.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    # Determinism flags (may reduce perf)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+def load_yaml_config(path: str) -> Dict[str, Any]:
+    """Load a YAML config file into a dict.
+
+    SafeLoader is used; returns empty dict if file missing.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        return {}
 
