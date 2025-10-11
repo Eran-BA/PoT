@@ -16,8 +16,7 @@ from typing import Any, Optional
 
 
 def append_row(csv_path: str, row: dict[str, Any]) -> None:
-    """
-    Append a row to CSV file, creating it with headers if it doesn't exist.
+    """Append a row to CSV file, creating it with headers if it doesn't exist.
 
     Args:
         csv_path: Path to CSV file
@@ -35,8 +34,7 @@ def append_row(csv_path: str, row: dict[str, Any]) -> None:
 
 
 def flatten_cfg(**kwargs) -> dict[str, Any]:
-    """
-    Flatten nested config objects into CSV-able scalars.
+    """Flatten nested config objects into CSV-able scalars.
 
     Converts dicts, lists, tuples to JSON strings for CSV compatibility.
 
