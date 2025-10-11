@@ -1,0 +1,102 @@
+[
+  {
+    "test_length": 12,
+    "train_samples": 200,
+    "baseline_acc": 0.9916666666666667,
+    "baseline_perfect": 0.98,
+    "baseline_kendall": 0.989030303030303,
+    "poh_acc": 0.994,
+    "poh_perfect": 0.99,
+    "poh_kendall": 0.9932727272727273
+  },
+  {
+    "test_length": 12,
+    "train_samples": 500,
+    "baseline_acc": 0.9996666666666667,
+    "baseline_perfect": 0.998,
+    "baseline_kendall": 0.9994545454545455,
+    "poh_acc": 0.9996666666666667,
+    "poh_perfect": 0.998,
+    "poh_kendall": 0.9996969696969698
+  },
+  {
+    "test_length": 12,
+    "train_samples": 1000,
+    "baseline_acc": 1.0,
+    "baseline_perfect": 1.0,
+    "baseline_kendall": 1.0,
+    "poh_acc": 0.9995,
+    "poh_perfect": 0.998,
+    "poh_kendall": 0.9992727272727272
+  },
+  {
+    "test_length": 12,
+    "train_samples": 2000,
+    "baseline_acc": 0.9996666666666667,
+    "baseline_perfect": 0.998,
+    "baseline_kendall": 0.9993333333333334,
+    "poh_acc": 1.0,
+    "poh_perfect": 1.0,
+    "poh_kendall": 1.0
+  },
+  {
+    "test_length": 12,
+    "train_samples": 5000,
+    "baseline_acc": 0.9993333333333333,
+    "baseline_perfect": 0.996,
+    "baseline_kendall": 0.9997575757575757,
+    "poh_acc": 1.0,
+    "poh_perfect": 1.0,
+    "poh_kendall": 1.0
+  },
+  {
+    "test_length": 20,
+    "train_samples": 200,
+    "baseline_acc": 0.9839,
+    "baseline_perfect": 0.966,
+    "baseline_kendall": 0.9814526315789474,
+    "poh_acc": 0.9972,
+    "poh_perfect": 0.976,
+    "poh_kendall": 0.9964842105263158
+  },
+  {
+    "test_length": 20,
+    "train_samples": 500,
+    "baseline_acc": 1.0,
+    "baseline_perfect": 1.0,
+    "baseline_kendall": 1.0,
+    "poh_acc": 0.9992,
+    "poh_perfect": 0.992,
+    "poh_kendall": 0.9992000000000001
+  },
+  {
+    "test_length": 20,
+    "train_samples": 1000,
+    "baseline_acc": 1.0,
+    "baseline_perfect": 1.0,
+    "baseline_kendall": 1.0,
+    "poh_acc": 0.9994,
+    "poh_perfect": 0.994,
+    "poh_kendall": 0.9989263157894737
+  },
+  {
+    "test_length": 20,
+    "train_samples": 2000,
+    "baseline_acc": 1.0,
+    "baseline_perfect": 1.0,
+    "baseline_kendall": 1.0,
+    "poh_acc": 1.0,
+    "poh_perfect": 1.0,
+    "poh_kendall": 1.0
+  },
+  {
+    "test_length": 20,
+    "train_samples": 5000,
+    "baseline_acc": 1.0,
+    "baseline_perfect": 1.0,
+    "baseline_kendall": 1.0,
+    "poh_acc": 1.0,
+    "poh_perfect": 1.0,
+    "poh_kendall": 1.0
+  }
+]
