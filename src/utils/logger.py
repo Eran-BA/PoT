@@ -12,10 +12,10 @@ import os
 import platform
 import subprocess
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 
-def append_row(csv_path: str, row: Dict[str, Any]) -> None:
+def append_row(csv_path: str, row: dict[str, Any]) -> None:
     """
     Append a row to CSV file, creating it with headers if it doesn't exist.
 
@@ -34,7 +34,7 @@ def append_row(csv_path: str, row: Dict[str, Any]) -> None:
         w.writerow(row)
 
 
-def flatten_cfg(**kwargs) -> Dict[str, Any]:
+def flatten_cfg(**kwargs) -> dict[str, Any]:
     """
     Flatten nested config objects into CSV-able scalars.
 
@@ -52,13 +52,13 @@ def flatten_cfg(**kwargs) -> Dict[str, Any]:
     return out
 
 
-def get_env_info(extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_env_info(extra: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Collect environment info for reproducibility logs.
 
     Returns keys like torch_version, transformers_version, datasets_version,
     python_version, platform, git_commit.
     """
-    info: Dict[str, Any] = {}
+    info: dict[str, Any] = {}
     # Library versions
     try:
         import torch
@@ -83,7 +83,9 @@ def get_env_info(extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     # Git commit (best-effort)
     try:
         commit = (
-            subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL)
+            subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL
+            )
             .decode()
             .strip()
         )

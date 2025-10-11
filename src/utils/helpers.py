@@ -21,14 +21,17 @@ Year: 2025
 License: Apache 2.0
 """
 
-from typing import List, Tuple, Any, Dict, Optional
 import random
+from typing import Any, Optional
+
 import numpy as np
 import torch
 import yaml
 
 
-def mean_pool_subwords(last_hidden: torch.Tensor, word_ids: List[List[Optional[int]]]) -> List[torch.Tensor]:
+def mean_pool_subwords(
+    last_hidden: torch.Tensor, word_ids: list[list[Optional[int]]]
+) -> list[torch.Tensor]:
     """Pool subword token representations to word-level representations.
 
     Averages all subword pieces belonging to the same word. This is essential
@@ -91,8 +94,8 @@ def mean_pool_subwords(last_hidden: torch.Tensor, word_ids: List[List[Optional[i
 
 
 def pad_words(
-    word_batches: List[torch.Tensor], pad_value: float = 0.0
-) -> Tuple[torch.Tensor, torch.Tensor]:
+    word_batches: list[torch.Tensor], pad_value: float = 0.0
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Pad variable-length word sequences to uniform batch tensor.
 
     Collates a list of word-level representations (each potentially different length)
@@ -138,8 +141,8 @@ def pad_words(
 
 
 def make_targets(
-    heads: List[List[int]], max_len: int, device: torch.device
-) -> Tuple[torch.Tensor, torch.Tensor]:
+    heads: list[list[int]], max_len: int, device: torch.device
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Create padded target tensors from variable-length head lists.
 
     Converts list of gold dependency heads to padded batch tensors.
@@ -197,13 +200,13 @@ def seed_everything(seed: int = 42) -> None:
     torch.backends.cudnn.benchmark = False
 
 
-def load_yaml_config(path: str) -> Dict[str, Any]:
+def load_yaml_config(path: str) -> dict[str, Any]:
     """Load a YAML config file into a dict.
 
     SafeLoader is used; returns empty dict if file missing.
     """
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     except FileNotFoundError:
         return {}
