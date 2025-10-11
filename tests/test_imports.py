@@ -77,23 +77,23 @@ def test_basic_model_creation():
 
 
 if __name__ == "__main__":
-    print("="*80)
+    print("=" * 80)
     print("PoT Project Structure Validation")
-    print("="*80 + "\n")
-    
+    print("=" * 80 + "\n")
+
     try:
         test_model_imports()
         test_data_imports()
         test_training_imports()
         test_utils_imports()
         test_basic_model_creation()
-        
-        print("\n" + "="*80)
+
+        print("\n" + "=" * 80)
         print("✅ All tests passed! Project structure is valid.")
-        print("="*80)
-        
+        print("=" * 80)
+
     except Exception as e:
         print(f"\n❌ Test failed: {e}")
         import traceback
-        traceback.print_exc()
 
+        traceback.print_exc()
