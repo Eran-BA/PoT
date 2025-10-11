@@ -113,6 +113,7 @@ class BiaffinePointer(nn.Module):
       score[i, j] = dep_i^T W head_j + U^T head_j + b
     Includes learned ROOT embedding as candidate j=0.
     """
+
     def __init__(self, d_model: int):
         super().__init__()
         self.W = nn.Parameter(torch.empty(d_model, d_model))
@@ -121,7 +122,9 @@ class BiaffinePointer(nn.Module):
         self.root = nn.Parameter(torch.zeros(d_model))
         nn.init.normal_(self.root, std=0.02)
 
-    def forward(self, dep: torch.Tensor, head: torch.Tensor, mask_dep: torch.Tensor, mask_head: torch.Tensor):
+    def forward(
+        self, dep: torch.Tensor, head: torch.Tensor, mask_dep: torch.Tensor, mask_head: torch.Tensor
+    ):
         """
         dep:  [B, T, D] dependents (tokens)
         head: [B, T, D] head candidates (tokens)
@@ -140,7 +143,7 @@ class BiaffinePointer(nn.Module):
 
         # Linear head term (broadcast over dependents)
         u = self.U(heads_all).squeeze(-1)  # [B, T+1]
-        u = u.unsqueeze(1).expand(B, T, T+1)  # [B, T, T+1]
+        u = u.unsqueeze(1).expand(B, T, T + 1)  # [B, T, T+1]
 
         logits = bil + u  # [B, T, T+1]
 
@@ -208,20 +211,22 @@ class UDPointerParser(nn.Module):
         out = self.encoder(**batch_subword)
         last_hidden = out.last_hidden_state  # [B, S, D]
         word_reps_list = mean_pool_subwords(last_hidden, word_ids_batch)  # list of [n_i, D]
-        X, mask = pad_block_diagonal(word_reps_list, pad_value=0.0)      # [B,T,D], [B,T]
+        X, mask = pad_block_diagonal(word_reps_list, pad_value=0.0)  # [B,T,D], [B,T]
 
         # route with your block
-        routed, aux = self.router(X, attn_mask=None, return_aux=True)     # [B,T,D]
+        routed, aux = self.router(X, attn_mask=None, return_aux=True)  # [B,T,D]
         # pointer over candidates
         logits = self.pointer(routed, routed, mask_dep=mask, mask_head=mask)  # [B,T,T+1]
 
         # build targets
-        Y, pad = make_pointer_targets(heads_gold, max_len=logits.size(1), device=device)  # [B,T], [B,T]
+        Y, pad = make_pointer_targets(
+            heads_gold, max_len=logits.size(1), device=device
+        )  # [B,T], [B,T]
         # Cross-entropy over classes {0..T}
         # shift target indices: already 0..T (UD root=0)
-        logits_flat = logits.view(-1, logits.size(-1))       # [B*T, T+1]
-        Y_flat = Y.view(-1)                                   # [B*T]
-        pad_flat = pad.view(-1)                               # [B*T]
+        logits_flat = logits.view(-1, logits.size(-1))  # [B*T, T+1]
+        Y_flat = Y.view(-1)  # [B*T]
+        pad_flat = pad.view(-1)  # [B*T]
         loss = F.cross_entropy(logits_flat[pad_flat], Y_flat[pad_flat])
 
         with torch.no_grad():
@@ -253,6 +258,7 @@ def load_ud_en_ewt(split: str = "train"):
             # If neither works, create a small dummy dataset for testing
             print("Warning: Using dummy dataset. Please download UD_English-EWT manually.")
             from datasets import Dataset
+
             # Create minimal dummy data
             dummy_data = {
                 "tokens": [["The", "cat", "sat"], ["Dogs", "run"]],
@@ -262,10 +268,11 @@ def load_ud_en_ewt(split: str = "train"):
             if split == "validation":
                 ds = ds.select(range(min(1, len(ds))))
             return ds
-    
+
     # Keep sentences with all needed fields
     def filt(ex):
         return ex.get("tokens") is not None and ex.get("head") is not None
+
     return ds.filter(filt)
 
 
@@ -314,6 +321,7 @@ def run_epoch(model, ds, tokenizer, device, bs=8, train=True, lr=5e-5):
         opt = None
 
     from math import ceil
+
     n = len(ds)
     steps = ceil(n / bs)
     total_loss = 0.0
@@ -323,7 +331,7 @@ def run_epoch(model, ds, tokenizer, device, bs=8, train=True, lr=5e-5):
     steps_counted = 0
 
     for i in range(0, n, bs):
-        batch = ds[i:i+bs]
+        batch = ds[i : i + bs]
         subw, word_ids, heads = collate_batch(batch, tokenizer, device)
         loss, metrics = model(subw, word_ids, heads)
 
@@ -356,8 +364,12 @@ def main():
     # router config
     ap.add_argument("--router_heads", type=int, default=8)
     ap.add_argument("--router_ff", type=int, default=2048)
-    ap.add_argument("--router_mode", type=str, default="mask_concat", choices=["mask_concat", "mixture"])
-    ap.add_argument("--halting_mode", type=str, default="fixed", choices=["fixed", "entropy", "halting"])
+    ap.add_argument(
+        "--router_mode", type=str, default="mask_concat", choices=["mask_concat", "mixture"]
+    )
+    ap.add_argument(
+        "--halting_mode", type=str, default="fixed", choices=["fixed", "entropy", "halting"]
+    )
     ap.add_argument("--max_inner_iters", type=int, default=2)
     ap.add_argument("--routing_topk", type=int, default=0, help="0=soft; >0=hard top-k")
     ap.add_argument("--ent_threshold", type=float, default=0.7)
@@ -386,10 +398,14 @@ def main():
     print(f"Params: {sum(p.numel() for p in model.parameters())/1e6:.2f}M")
 
     for ep in range(1, args.epochs + 1):
-        tr = run_epoch(model, train_ds, tokenizer, device, bs=args.batch_size, train=True, lr=args.lr)
+        tr = run_epoch(
+            model, train_ds, tokenizer, device, bs=args.batch_size, train=True, lr=args.lr
+        )
         ev = run_epoch(model, dev_ds, tokenizer, device, bs=args.batch_size, train=False)
-        print(f"[Epoch {ep}] train loss {tr['loss']:.4f}  UAS {tr['uas']:.4f} "
-              f"| dev UAS {ev['uas']:.4f}  mean_inner_iters {ev['mean_inner_iters']:.2f}")
+        print(
+            f"[Epoch {ep}] train loss {tr['loss']:.4f}  UAS {tr['uas']:.4f} "
+            f"| dev UAS {ev['uas']:.4f}  mean_inner_iters {ev['mean_inner_iters']:.2f}"
+        )
 
     print("Done.")
 

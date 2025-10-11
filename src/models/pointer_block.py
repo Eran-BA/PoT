@@ -44,26 +44,26 @@ from src.models.layers import (
     MultiHeadSelfAttention,
     PointerOverHeadsController,
     entropy_from_logits,
-    gumbel_softmax_topk
+    gumbel_softmax_topk,
 )
 
 
 class PointerMoHTransformerBlock(nn.Module):
     """Pointer-over-Heads Transformer block with adaptive inner-loop halting.
-    
+
     This block performs iterative refinement by routing over multiple attention
     heads using a learnable controller. Unlike standard transformers that use all
     heads equally, PoH dynamically selects which heads to attend to at each step.
-    
+
     The block supports three halting modes:
     - 'fixed': Run exactly max_inner_iters iterations
     - 'entropy': Stop early when routing entropy drops below threshold
     - 'halting': Learned ACT-style halting with ponder cost
-    
+
     And two combination modes for routing:
     - 'mask_concat': Scale each head by routing weight, concat, project
     - 'mixture': Compute convex combination of heads directly
-    
+
     Args:
         d_model: Model hidden dimension
         n_heads: Number of attention heads
@@ -82,42 +82,42 @@ class PointerMoHTransformerBlock(nn.Module):
         ent_threshold: Entropy threshold for early stopping (entropy mode)
         ponder_coef: Coefficient for ponder cost (halting mode)
         grad_mode: Gradient mode ('full' for full BPTT, 'last' for HRM-style)
-        
+
     Attributes:
         mha: Multi-head self-attention layer
         controller: Pointer controller for head routing
         ff: Feed-forward network
         halt_head: Optional ACT-style halting head
         ln1, ln2: LayerNorm layers
-        
+
     Example:
         >>> # Basic fixed-iteration block
         >>> block = PointerMoHTransformerBlock(
         ...     d_model=768, n_heads=8, d_ff=2048,
         ...     halting_mode="fixed", max_inner_iters=2
         ... )
-        
+
         >>> # Entropy-based adaptive halting with hard top-2 routing
         >>> block = PointerMoHTransformerBlock(
         ...     d_model=768, n_heads=8, d_ff=2048,
         ...     halting_mode="entropy", ent_threshold=0.7,
         ...     routing_topk=2  # Hard top-2 selection
         ... )
-        
+
         >>> # ACT-style learned halting with soft routing
         >>> block = PointerMoHTransformerBlock(
         ...     d_model=768, n_heads=8, d_ff=2048,
         ...     halting_mode="halting", ponder_coef=0.001,
         ...     routing_topk=0  # Soft mixture
         ... )
-        
+
         >>> # HRM-style last-iterate gradients (memory efficient)
         >>> block = PointerMoHTransformerBlock(
         ...     d_model=768, n_heads=8, d_ff=2048,
         ...     grad_mode="last"  # Only backprop through last iteration
         ... )
     """
-    
+
     def __init__(
         self,
         d_model: int,
@@ -143,12 +143,16 @@ class PointerMoHTransformerBlock(nn.Module):
         grad_mode: str = "full",  # 'full' = full BPTT | 'last' = HRM-style
     ):
         super().__init__()
-        assert combination in ("mask_concat", "mixture"), \
-            f"combination must be 'mask_concat' or 'mixture', got {combination}"
-        assert halting_mode in ("fixed", "entropy", "halting"), \
-            f"halting_mode must be 'fixed', 'entropy', or 'halting', got {halting_mode}"
-        assert grad_mode in ("full", "last"), \
-            f"grad_mode must be 'full' or 'last', got {grad_mode}"
+        assert combination in (
+            "mask_concat",
+            "mixture",
+        ), f"combination must be 'mask_concat' or 'mixture', got {combination}"
+        assert halting_mode in (
+            "fixed",
+            "entropy",
+            "halting",
+        ), f"halting_mode must be 'fixed', 'entropy', or 'halting', got {halting_mode}"
+        assert grad_mode in ("full", "last"), f"grad_mode must be 'full' or 'last', got {grad_mode}"
 
         self.d_model = d_model
         self.n_heads = n_heads
@@ -183,8 +187,7 @@ class PointerMoHTransformerBlock(nn.Module):
         if self.halting_mode == "halting":
             # Per-sequence halting: output shape [B, 1]
             self.halt_head = nn.Sequential(
-                nn.LayerNorm(d_model),
-                nn.Linear(d_model, 1)  # Logit (sigmoid applied later)
+                nn.LayerNorm(d_model), nn.Linear(d_model, 1)  # Logit (sigmoid applied later)
             )
 
         # Feed-forward network
@@ -201,10 +204,10 @@ class PointerMoHTransformerBlock(nn.Module):
 
     def _route(self, logits: torch.Tensor) -> torch.Tensor:
         """Convert routing logits to weights (soft or hard top-k).
-        
+
         Args:
             logits: Routing logits [B, T, H]
-            
+
         Returns:
             Routing weights [B, T, H] (probabilities summing to 1)
         """
@@ -216,27 +219,23 @@ class PointerMoHTransformerBlock(nn.Module):
         # Soft routing (weighted mixture of all heads)
         return F.softmax(logits / max(self.routing_tau, 1e-6), dim=-1)
 
-    def _combine_heads(
-        self,
-        heads_out: torch.Tensor,
-        alphas: torch.Tensor
-    ) -> torch.Tensor:
+    def _combine_heads(self, heads_out: torch.Tensor, alphas: torch.Tensor) -> torch.Tensor:
         """Combine per-head outputs using routing weights.
-        
+
         Args:
             heads_out: Per-head outputs [B, T, H, Dh]
             alphas: Routing weights [B, T, H]
-            
+
         Returns:
             Combined output [B, T, D]
-            
+
         Note:
             Two combination modes:
             - 'mask_concat': Scale heads by weights, concat, project (like vanilla MHA)
             - 'mixture': Compute weighted average of heads directly (more efficient)
         """
         B, T, H, Dh = heads_out.shape
-        
+
         if self.combination == "mask_concat":
             # Scale each head by its routing weight
             scaled = heads_out * alphas.unsqueeze(-1)  # [B, T, H, Dh]
@@ -254,16 +253,16 @@ class PointerMoHTransformerBlock(nn.Module):
         attn_mask: Optional[torch.Tensor] = None,
         return_aux: bool = True,
         collect_all: bool = False,  # For deep supervision
-        return_final_z: bool = False  # For TRM-style outer supervision
+        return_final_z: bool = False,  # For TRM-style outer supervision
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Forward pass with iterative head routing and adaptive halting.
-        
+
         The block performs up to max_inner_iters iterations of:
         1. Compute attention with all heads
         2. Use controller to decide routing weights
         3. Combine heads according to routing
         4. Check halting criterion
-        
+
         Args:
             x: Input representations [B, T, D]
             attn_mask: Optional attention mask [B, H, T, T]
@@ -272,7 +271,7 @@ class PointerMoHTransformerBlock(nn.Module):
                         Disables early stopping to maintain full gradient graph.
             return_final_z: If True, return final latent before residual/FFN
                           (for TRM-style outer supervision steps)
-                          
+
         Returns:
             Tuple containing:
             - y: Output representations [B, T, D]
@@ -285,19 +284,19 @@ class PointerMoHTransformerBlock(nn.Module):
                 - (if collect_all & halting) halt_logits: Halting logits [B, iters]
                 - (if return_final_z) z_final: Final latent [B, T, D]
                 - (if halting mode) ponder_cost: ACT-style ponder cost
-                
+
         Example:
             >>> block = PointerMoHTransformerBlock(d_model=768, n_heads=8, d_ff=2048)
             >>> x = torch.randn(2, 10, 768)
-            
+
             >>> # Standard forward pass
             >>> y, aux = block(x)
             >>> print(f"Iterations used: {aux['inner_iters_used']}")
-            
+
             >>> # Deep supervision mode (collects all intermediate states)
             >>> y, aux = block(x, collect_all=True)
             >>> print(f"Routed states shape: {aux['routed'].shape}")  # [2, iters, 10, 768]
-            
+
             >>> # TRM-style outer supervision
             >>> y, aux = block(x, return_final_z=True)
             >>> z_final = aux['z_final']  # Use for next supervision step
@@ -311,7 +310,7 @@ class PointerMoHTransformerBlock(nn.Module):
         # Iteration tracking
         it_used = 0
         ponder_cost = torch.zeros((), device=x.device)
-        
+
         # History tracking
         alphas_hist, logits_hist = [], []
         routed_hist = []  # For deep supervision
@@ -324,11 +323,11 @@ class PointerMoHTransformerBlock(nn.Module):
         for it in range(max_iters):
             # 1. Compute attention with all heads
             heads_out, last_attn = self.mha(token_ctx, attn_mask)  # [B,T,H,Dh], [B,H,T,T]
-            
+
             # 2. Controller decides routing over heads
             logits = self.controller(token_ctx, provisional_heads=heads_out)  # [B,T,H]
             alphas = self._route(logits)  # [B,T,H]
-            
+
             # 3. Combine heads according to routing
             routed = self._combine_heads(heads_out, alphas)  # [B,T,D]
 
@@ -336,15 +335,15 @@ class PointerMoHTransformerBlock(nn.Module):
             alphas_hist.append(alphas)
             logits_hist.append(logits)
             routed_hist.append(routed)
-            
+
             # 4. Prepare context for next iteration
             token_ctx_next = routed
-            
+
             # HRM-style gradient mode: cut gradient graph between iterations
             # This keeps memory constant by only backpropagating through the last iteration
             if self.grad_mode == "last" and it < max_iters - 1:
                 token_ctx_next = token_ctx_next.detach()  # Stop gradients here
-            
+
             token_ctx = token_ctx_next
             it_used = it + 1
 
@@ -362,14 +361,14 @@ class PointerMoHTransformerBlock(nn.Module):
                 # Check halting mode
                 if self.halting_mode == "fixed":
                     pass  # Always run full max_inner_iters
-                    
+
                 elif self.halting_mode == "entropy":
                     # Stop when routing becomes confident (low entropy)
                     with torch.no_grad():
                         ent = entropy_from_logits(logits)  # Scalar
                     if ent.item() < self.ent_threshold:
                         break
-                        
+
                 elif self.halting_mode == "halting":
                     # ACT-style learned halting
                     p_halt = self.halt_head(token_ctx).mean()  # Scalar probability
@@ -379,7 +378,7 @@ class PointerMoHTransformerBlock(nn.Module):
 
         # Save final latent BEFORE residual/FFN (for TRM outer supervision)
         z_final = token_ctx
-        
+
         # Apply residual connection for attention
         attn_out = token_ctx + (x if self.use_pre_norm else 0.0)
         if not self.use_pre_norm:
@@ -397,22 +396,21 @@ class PointerMoHTransformerBlock(nn.Module):
             aux["logits"] = torch.stack(logits_hist, dim=1)  # [B, iters, T, H]
             aux["attn_probs"] = last_attn  # [B, H, T, T]
             aux["inner_iters_used"] = torch.tensor(it_used, device=x.device)
-            
+
             # Per-iteration routed states for deep supervision
             if collect_all and routed_hist:
                 aux["routed"] = torch.stack(routed_hist, dim=1)  # [B, iters, T, D]
-            
+
             # Halting logits for differentiable ACT
             if collect_all and halt_logits_hist:
                 aux["halt_logits"] = torch.stack(halt_logits_hist, dim=1)  # [B, iters]
-            
+
             # Final latent for TRM-style outer supervision
             if return_final_z:
                 aux["z_final"] = z_final  # [B, T, D]
-            
+
             # Ponder cost for ACT halting mode
             if self.halting_mode == "halting" and not collect_all:
                 aux["ponder_cost"] = self.ponder_coef * ponder_cost
-                
-        return y, aux
 
+        return y, aux

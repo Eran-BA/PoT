@@ -6,7 +6,7 @@ Exports:
     BaselineParser: Vanilla MHA baseline parser
     PoHParser: Pointer-over-Heads parser with adaptive routing
     PointerMoHTransformerBlock: Main PoH transformer block
-    
+
     BiaffinePointer: Biaffine head prediction layer
     BiaffineLabeler: Biaffine label classification layer
 
@@ -25,7 +25,7 @@ from src.models.layers import (
     MultiHeadSelfAttention,
     PointerOverHeadsController,
     entropy_from_logits,
-    gumbel_softmax_topk
+    gumbel_softmax_topk,
 )
 
 __all__ = [
@@ -41,4 +41,3 @@ __all__ = [
     "entropy_from_logits",
     "gumbel_softmax_topk",
 ]
-

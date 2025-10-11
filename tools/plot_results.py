@@ -12,8 +12,9 @@ from pathlib import Path
 
 # Set style
 sns.set_style("whitegrid")
-plt.rcParams['figure.figsize'] = (12, 6)
-plt.rcParams['font.size'] = 10
+plt.rcParams["figure.figsize"] = (12, 6)
+plt.rcParams["font.size"] = 10
+
 
 def load_results(csv_file):
     """Load results from CSV file."""
@@ -22,141 +23,157 @@ def load_results(csv_file):
     df = pd.read_csv(csv_file)
     return df
 
+
 def plot_ablation_comparison(df, ablation_name, output_dir="plots"):
     """Plot comparison across different configurations within an ablation."""
     Path(output_dir).mkdir(exist_ok=True)
-    
+
     # Filter for this ablation
-    ablation_df = df[df['ablation'] == ablation_name].copy()
-    
+    ablation_df = df[df["ablation"] == ablation_name].copy()
+
     if len(ablation_df) == 0:
         print(f"No data found for ablation: {ablation_name}")
         return
-    
+
     # Get last epoch for each config
-    last_epoch = ablation_df.groupby(['config_name', 'model'])['epoch'].max().reset_index()
-    final_results = pd.merge(ablation_df, last_epoch, on=['config_name', 'model', 'epoch'])
-    
+    last_epoch = ablation_df.groupby(["config_name", "model"])["epoch"].max().reset_index()
+    final_results = pd.merge(ablation_df, last_epoch, on=["config_name", "model", "epoch"])
+
     # Plot UAS and LAS
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-    
+
     # UAS comparison
-    pivot_uas = final_results.pivot(index='config_name', columns='model', values='dev_uas')
-    pivot_uas.plot(kind='bar', ax=axes[0], width=0.8, color=['#3498db', '#e74c3c'])
-    axes[0].set_title(f'{ablation_name.title()} Ablation: Dev UAS')
-    axes[0].set_ylabel('UAS')
-    axes[0].set_xlabel('Configuration')
-    axes[0].legend(title='Model')
-    axes[0].grid(axis='y', alpha=0.3)
+    pivot_uas = final_results.pivot(index="config_name", columns="model", values="dev_uas")
+    pivot_uas.plot(kind="bar", ax=axes[0], width=0.8, color=["#3498db", "#e74c3c"])
+    axes[0].set_title(f"{ablation_name.title()} Ablation: Dev UAS")
+    axes[0].set_ylabel("UAS")
+    axes[0].set_xlabel("Configuration")
+    axes[0].legend(title="Model")
+    axes[0].grid(axis="y", alpha=0.3)
     axes[0].set_ylim(0, 1.0)
-    
+
     # LAS comparison
-    if 'dev_las' in final_results.columns:
-        pivot_las = final_results.pivot(index='config_name', columns='model', values='las')
+    if "dev_las" in final_results.columns:
+        pivot_las = final_results.pivot(index="config_name", columns="model", values="las")
         if not pivot_las.empty:
-            pivot_las.plot(kind='bar', ax=axes[1], width=0.8, color=['#3498db', '#e74c3c'])
-            axes[1].set_title(f'{ablation_name.title()} Ablation: LAS')
-            axes[1].set_ylabel('LAS')
-            axes[1].set_xlabel('Configuration')
-            axes[1].legend(title='Model')
-            axes[1].grid(axis='y', alpha=0.3)
+            pivot_las.plot(kind="bar", ax=axes[1], width=0.8, color=["#3498db", "#e74c3c"])
+            axes[1].set_title(f"{ablation_name.title()} Ablation: LAS")
+            axes[1].set_ylabel("LAS")
+            axes[1].set_xlabel("Configuration")
+            axes[1].legend(title="Model")
+            axes[1].grid(axis="y", alpha=0.3)
             axes[1].set_ylim(0, 1.0)
-    
+
     plt.tight_layout()
-    output_file = os.path.join(output_dir, f'{ablation_name}_comparison.png')
-    plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    output_file = os.path.join(output_dir, f"{ablation_name}_comparison.png")
+    plt.savefig(output_file, dpi=300, bbox_inches="tight")
     print(f"✓ Saved: {output_file}")
     plt.close()
+
 
 def plot_learning_curves(df, output_dir="plots"):
     """Plot learning curves showing UAS over epochs."""
     Path(output_dir).mkdir(exist_ok=True)
-    
+
     # Plot for each ablation
-    ablations = df['ablation'].unique()
-    
+    ablations = df["ablation"].unique()
+
     for ablation in ablations:
-        ablation_df = df[df['ablation'] == ablation]
-        configs = ablation_df['config_name'].unique()
-        
+        ablation_df = df[df["ablation"] == ablation]
+        configs = ablation_df["config_name"].unique()
+
         if len(configs) > 10:  # Too many configs to plot
             continue
-        
+
         fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-        
+
         # Baseline
         for config in configs:
-            config_df = ablation_df[(ablation_df['config_name'] == config) & (ablation_df['model'] == 'BASE')]
+            config_df = ablation_df[
+                (ablation_df["config_name"] == config) & (ablation_df["model"] == "BASE")
+            ]
             if len(config_df) > 0:
-                axes[0].plot(config_df['epoch'], config_df['dev_uas'], marker='o', label=config, linewidth=2)
-        
-        axes[0].set_title(f'{ablation.title()}: Baseline Dev UAS')
-        axes[0].set_xlabel('Epoch')
-        axes[0].set_ylabel('Dev UAS')
-        axes[0].legend(loc='best', fontsize=8)
+                axes[0].plot(
+                    config_df["epoch"], config_df["dev_uas"], marker="o", label=config, linewidth=2
+                )
+
+        axes[0].set_title(f"{ablation.title()}: Baseline Dev UAS")
+        axes[0].set_xlabel("Epoch")
+        axes[0].set_ylabel("Dev UAS")
+        axes[0].legend(loc="best", fontsize=8)
         axes[0].grid(alpha=0.3)
         axes[0].set_ylim(0, 1.0)
-        
+
         # PoH
         for config in configs:
-            config_df = ablation_df[(ablation_df['config_name'] == config) & (ablation_df['model'] == 'PoH')]
+            config_df = ablation_df[
+                (ablation_df["config_name"] == config) & (ablation_df["model"] == "PoH")
+            ]
             if len(config_df) > 0:
-                axes[1].plot(config_df['epoch'], config_df['dev_uas'], marker='s', label=config, linewidth=2)
-        
-        axes[1].set_title(f'{ablation.title()}: PoH Dev UAS')
-        axes[1].set_xlabel('Epoch')
-        axes[1].set_ylabel('Dev UAS')
-        axes[1].legend(loc='best', fontsize=8)
+                axes[1].plot(
+                    config_df["epoch"], config_df["dev_uas"], marker="s", label=config, linewidth=2
+                )
+
+        axes[1].set_title(f"{ablation.title()}: PoH Dev UAS")
+        axes[1].set_xlabel("Epoch")
+        axes[1].set_ylabel("Dev UAS")
+        axes[1].legend(loc="best", fontsize=8)
         axes[1].grid(alpha=0.3)
         axes[1].set_ylim(0, 1.0)
-        
+
         plt.tight_layout()
-        output_file = os.path.join(output_dir, f'{ablation}_learning_curves.png')
-        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        output_file = os.path.join(output_dir, f"{ablation}_learning_curves.png")
+        plt.savefig(output_file, dpi=300, bbox_inches="tight")
         print(f"✓ Saved: {output_file}")
         plt.close()
+
 
 def plot_baseline_vs_poh(df, output_dir="plots"):
     """Direct comparison: Baseline vs PoH across all ablations."""
     Path(output_dir).mkdir(exist_ok=True)
-    
+
     # Get final epoch results for each ablation/config
-    last_epoch = df.groupby(['ablation', 'config_name', 'model'])['epoch'].max().reset_index()
-    final_results = pd.merge(df, last_epoch, on=['ablation', 'config_name', 'model', 'epoch'])
-    
+    last_epoch = df.groupby(["ablation", "config_name", "model"])["epoch"].max().reset_index()
+    final_results = pd.merge(df, last_epoch, on=["ablation", "config_name", "model", "epoch"])
+
     # Pivot to get Baseline vs PoH side by side
-    baseline_uas = final_results[final_results['model'] == 'BASE'][['ablation', 'config_name', 'dev_uas']]
-    poh_uas = final_results[final_results['model'] == 'PoH'][['ablation', 'config_name', 'dev_uas']]
-    
+    baseline_uas = final_results[final_results["model"] == "BASE"][
+        ["ablation", "config_name", "dev_uas"]
+    ]
+    poh_uas = final_results[final_results["model"] == "PoH"][["ablation", "config_name", "dev_uas"]]
+
     comparison = pd.merge(
-        baseline_uas.rename(columns={'dev_uas': 'baseline_uas'}),
-        poh_uas.rename(columns={'dev_uas': 'poh_uas'}),
-        on=['ablation', 'config_name']
+        baseline_uas.rename(columns={"dev_uas": "baseline_uas"}),
+        poh_uas.rename(columns={"dev_uas": "poh_uas"}),
+        on=["ablation", "config_name"],
     )
-    comparison['improvement'] = comparison['poh_uas'] - comparison['baseline_uas']
-    
+    comparison["improvement"] = comparison["poh_uas"] - comparison["baseline_uas"]
+
     # Plot improvement
     fig, ax = plt.subplots(figsize=(10, 6))
-    
+
     # Sort by improvement
-    comparison_sorted = comparison.sort_values('improvement', ascending=True)
-    colors = ['#e74c3c' if x < 0 else '#27ae60' for x in comparison_sorted['improvement']]
-    
+    comparison_sorted = comparison.sort_values("improvement", ascending=True)
+    colors = ["#e74c3c" if x < 0 else "#27ae60" for x in comparison_sorted["improvement"]]
+
     y_pos = range(len(comparison_sorted))
-    bars = ax.barh(y_pos, comparison_sorted['improvement'], color=colors, alpha=0.7)
+    bars = ax.barh(y_pos, comparison_sorted["improvement"], color=colors, alpha=0.7)
     ax.set_yticks(y_pos)
-    ax.set_yticklabels([f"{row['ablation']}/{row['config_name']}" for _, row in comparison_sorted.iterrows()], fontsize=8)
-    ax.set_xlabel('UAS Improvement (PoH - Baseline)')
-    ax.set_title('PoH vs Baseline: UAS Improvement Across All Configurations')
-    ax.axvline(0, color='black', linewidth=0.8, linestyle='--')
-    ax.grid(axis='x', alpha=0.3)
-    
+    ax.set_yticklabels(
+        [f"{row['ablation']}/{row['config_name']}" for _, row in comparison_sorted.iterrows()],
+        fontsize=8,
+    )
+    ax.set_xlabel("UAS Improvement (PoH - Baseline)")
+    ax.set_title("PoH vs Baseline: UAS Improvement Across All Configurations")
+    ax.axvline(0, color="black", linewidth=0.8, linestyle="--")
+    ax.grid(axis="x", alpha=0.3)
+
     plt.tight_layout()
-    output_file = os.path.join(output_dir, 'baseline_vs_poh_improvement.png')
-    plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    output_file = os.path.join(output_dir, "baseline_vs_poh_improvement.png")
+    plt.savefig(output_file, dpi=300, bbox_inches="tight")
     print(f"✓ Saved: {output_file}")
     plt.close()
-    
+
     # Summary statistics
     print(f"\n{'='*60}")
     print("Summary Statistics:")
@@ -167,135 +184,150 @@ def plot_baseline_vs_poh(df, output_dir="plots"):
     print(f"Min improvement: {comparison['improvement'].min():.4f}")
     print(f"{'='*60}\n")
 
+
 def plot_inner_iters_vs_accuracy(df, output_dir="plots"):
     """Plot relationship between inner iterations and accuracy."""
     Path(output_dir).mkdir(exist_ok=True)
-    
+
     # Filter PoH results with mean_iters data
-    poh_df = df[(df['model'] == 'PoH') & (df['mean_iters'].notna())].copy()
-    
+    poh_df = df[(df["model"] == "PoH") & (df["mean_iters"].notna())].copy()
+
     if len(poh_df) == 0:
         print("No inner iteration data found.")
         return
-    
+
     # Get final epoch
-    last_epoch = poh_df.groupby(['ablation', 'config_name'])['epoch'].max().reset_index()
-    final_poh = pd.merge(poh_df, last_epoch, on=['ablation', 'config_name', 'epoch'])
-    
+    last_epoch = poh_df.groupby(["ablation", "config_name"])["epoch"].max().reset_index()
+    final_poh = pd.merge(poh_df, last_epoch, on=["ablation", "config_name", "epoch"])
+
     fig, ax = plt.subplots(figsize=(10, 6))
-    
+
     # Scatter plot colored by ablation
-    ablations = final_poh['ablation'].unique()
+    ablations = final_poh["ablation"].unique()
     colors = sns.color_palette("husl", len(ablations))
-    
+
     for i, ablation in enumerate(ablations):
-        ablation_data = final_poh[final_poh['ablation'] == ablation]
-        ax.scatter(ablation_data['mean_iters'], ablation_data['dev_uas'], 
-                  label=ablation, alpha=0.7, s=100, color=colors[i])
-    
-    ax.set_xlabel('Mean Inner Iterations')
-    ax.set_ylabel('Dev UAS')
-    ax.set_title('PoH: Relationship Between Inner Iterations and Accuracy')
-    ax.legend(loc='best')
+        ablation_data = final_poh[final_poh["ablation"] == ablation]
+        ax.scatter(
+            ablation_data["mean_iters"],
+            ablation_data["dev_uas"],
+            label=ablation,
+            alpha=0.7,
+            s=100,
+            color=colors[i],
+        )
+
+    ax.set_xlabel("Mean Inner Iterations")
+    ax.set_ylabel("Dev UAS")
+    ax.set_title("PoH: Relationship Between Inner Iterations and Accuracy")
+    ax.legend(loc="best")
     ax.grid(alpha=0.3)
-    
+
     plt.tight_layout()
-    output_file = os.path.join(output_dir, 'iters_vs_accuracy.png')
-    plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    output_file = os.path.join(output_dir, "iters_vs_accuracy.png")
+    plt.savefig(output_file, dpi=300, bbox_inches="tight")
     print(f"✓ Saved: {output_file}")
     plt.close()
+
 
 def plot_multiseed_variance(df, output_dir="plots"):
     """Plot results across multiple seeds to show variance."""
     Path(output_dir).mkdir(exist_ok=True)
-    
-    multiseed_df = df[df['ablation'] == 'multiseed']
-    
+
+    multiseed_df = df[df["ablation"] == "multiseed"]
+
     if len(multiseed_df) == 0:
         print("No multi-seed data found.")
         return
-    
+
     # Get final epoch
-    last_epoch = multiseed_df.groupby(['seed', 'model'])['epoch'].max().reset_index()
-    final_results = pd.merge(multiseed_df, last_epoch, on=['seed', 'model', 'epoch'])
-    
+    last_epoch = multiseed_df.groupby(["seed", "model"])["epoch"].max().reset_index()
+    final_results = pd.merge(multiseed_df, last_epoch, on=["seed", "model", "epoch"])
+
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-    
+
     # Box plot for UAS
-    final_results.boxplot(column='dev_uas', by='model', ax=axes[0])
-    axes[0].set_title('Dev UAS Across Seeds')
-    axes[0].set_ylabel('Dev UAS')
-    axes[0].set_xlabel('Model')
+    final_results.boxplot(column="dev_uas", by="model", ax=axes[0])
+    axes[0].set_title("Dev UAS Across Seeds")
+    axes[0].set_ylabel("Dev UAS")
+    axes[0].set_xlabel("Model")
     plt.sca(axes[0])
     plt.xticks(rotation=0)
-    
+
     # Individual seed results
-    for model in final_results['model'].unique():
-        model_data = final_results[final_results['model'] == model]
-        axes[1].scatter(model_data['seed'], model_data['dev_uas'], label=model, s=100, alpha=0.7)
-    
-    axes[1].set_xlabel('Seed')
-    axes[1].set_ylabel('Dev UAS')
-    axes[1].set_title('Dev UAS by Seed and Model')
+    for model in final_results["model"].unique():
+        model_data = final_results[final_results["model"] == model]
+        axes[1].scatter(model_data["seed"], model_data["dev_uas"], label=model, s=100, alpha=0.7)
+
+    axes[1].set_xlabel("Seed")
+    axes[1].set_ylabel("Dev UAS")
+    axes[1].set_title("Dev UAS by Seed and Model")
     axes[1].legend()
     axes[1].grid(alpha=0.3)
-    
-    plt.suptitle('')  # Remove automatic title
+
+    plt.suptitle("")  # Remove automatic title
     plt.tight_layout()
-    output_file = os.path.join(output_dir, 'multiseed_variance.png')
-    plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    output_file = os.path.join(output_dir, "multiseed_variance.png")
+    plt.savefig(output_file, dpi=300, bbox_inches="tight")
     print(f"✓ Saved: {output_file}")
     plt.close()
-    
+
     # Print statistics
     print(f"\n{'='*60}")
     print("Multi-Seed Statistics:")
     print(f"{'='*60}")
-    for model in final_results['model'].unique():
-        model_data = final_results[final_results['model'] == model]
+    for model in final_results["model"].unique():
+        model_data = final_results[final_results["model"] == model]
         print(f"{model}:")
         print(f"  Mean UAS: {model_data['dev_uas'].mean():.4f} ± {model_data['dev_uas'].std():.4f}")
         print(f"  Min:  {model_data['dev_uas'].min():.4f}")
         print(f"  Max:  {model_data['dev_uas'].max():.4f}")
     print(f"{'='*60}\n")
 
+
 def main():
     parser = argparse.ArgumentParser(description="Plot ablation study results")
     parser.add_argument("csv_file", type=str, help="CSV file with results")
-    parser.add_argument("--output_dir", type=str, default="plots", help="Output directory for plots")
-    parser.add_argument("--plot_type", type=str, 
-                       choices=["all", "ablations", "learning_curves", "comparison", "iters", "seeds"],
-                       default="all", help="Type of plot to generate")
+    parser.add_argument(
+        "--output_dir", type=str, default="plots", help="Output directory for plots"
+    )
+    parser.add_argument(
+        "--plot_type",
+        type=str,
+        choices=["all", "ablations", "learning_curves", "comparison", "iters", "seeds"],
+        default="all",
+        help="Type of plot to generate",
+    )
     args = parser.parse_args()
-    
+
     # Load data
     print(f"Loading results from {args.csv_file}...")
     df = load_results(args.csv_file)
     print(f"✓ Loaded {len(df)} rows")
-    
+
     # Create plots
     print(f"\nGenerating plots...")
-    
+
     if args.plot_type in ["all", "ablations"]:
-        ablations = df['ablation'].unique()
+        ablations = df["ablation"].unique()
         for ablation in ablations:
-            if ablation != 'multiseed':
+            if ablation != "multiseed":
                 plot_ablation_comparison(df, ablation, args.output_dir)
-    
+
     if args.plot_type in ["all", "learning_curves"]:
         plot_learning_curves(df, args.output_dir)
-    
+
     if args.plot_type in ["all", "comparison"]:
         plot_baseline_vs_poh(df, args.output_dir)
-    
+
     if args.plot_type in ["all", "iters"]:
         plot_inner_iters_vs_accuracy(df, args.output_dir)
-    
+
     if args.plot_type in ["all", "seeds"]:
         plot_multiseed_variance(df, args.output_dir)
-    
+
     print(f"\n✓ All plots saved to {args.output_dir}/")
+
 
 if __name__ == "__main__":
     main()
-

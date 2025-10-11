@@ -13,27 +13,35 @@ from typing import List, Dict, Tuple
 from datetime import datetime
 import torch, torch.nn as nn, torch.nn.functional as F
 
+
 # === try HF datasets if requested ===
 def try_hf_load(split):
     try:
         from datasets import load_dataset
+
         # Try multiple UD dataset paths (most likely to work first)
         paths_to_try = [
             ("universal_dependencies", "en_ewt"),  # Standard UD format with config
             ("universal-dependencies/en_ewt", None),
             ("UniversalDependencies/UD_English-EWT", None),
         ]
-        
+
         for path_info in paths_to_try:
             path, config = path_info if isinstance(path_info, tuple) else (path_info, None)
             try:
-                print(f"Attempting to load from {path}" + (f" (config: {config})" if config else "") + "...")
+                print(
+                    f"Attempting to load from {path}"
+                    + (f" (config: {config})" if config else "")
+                    + "..."
+                )
                 if config:
                     ds = load_dataset(path, config, split=split, trust_remote_code=True)
                 else:
                     ds = load_dataset(path, split=split, trust_remote_code=True)
-                
-                filtered = ds.filter(lambda ex: ex.get("tokens") is not None and ex.get("head") is not None)
+
+                filtered = ds.filter(
+                    lambda ex: ex.get("tokens") is not None and ex.get("head") is not None
+                )
                 result = list(filtered)
                 if len(result) > 0:
                     print(f"✓ Successfully loaded {len(result)} examples from {path}")
@@ -41,7 +49,7 @@ def try_hf_load(split):
             except Exception as e:
                 print(f"  ✗ Failed: {str(e)[:100]}")
                 continue
-        
+
         print(f"\n⚠ Warning: Could not load UD dataset from HuggingFace.")
         print(f"   This is common if:")
         print(f"   - You're offline or have network issues")
@@ -49,16 +57,20 @@ def try_hf_load(split):
         print(f"   - HuggingFace Hub is temporarily unavailable")
         print(f"\n💡 Solutions:")
         print(f"   1. Use dummy data for testing: --data_source dummy")
-        print(f"   2. Download CoNLL-U manually and use: --data_source conllu --conllu_dir /path/to/data")
+        print(
+            f"   2. Download CoNLL-U manually and use: --data_source conllu --conllu_dir /path/to/data"
+        )
         print(f"   3. Check HuggingFace status: https://status.huggingface.co/")
         return None
     except Exception as e:
         print(f"Error loading dataset: {e}")
         return None
 
+
 # === local CoNLL-U ===
 def load_conllu_dir(path):
     from conllu import parse_incr
+
     samples = []
     for fp in sorted(glob.glob(os.path.join(path, "*.conllu"))):
         with open(fp, "r", encoding="utf-8") as f:
@@ -73,9 +85,11 @@ def load_conllu_dir(path):
                     samples.append({"tokens": tokens, "head": heads})
     return samples
 
+
 # === tiny dummy ===
 def dummy_ds(n=64):
     import random
+
     rng = random.Random(0)
     sents = []
     for _ in range(n):
@@ -86,8 +100,11 @@ def dummy_ds(n=64):
         sents.append({"tokens": toks, "head": heads})
     return sents
 
+
 # === tokenization & pooling ===
 from transformers import AutoTokenizer, AutoModel
+
+
 def mean_pool_subwords(last_hidden, word_ids):
     B, S, D = last_hidden.shape
     outs = []
@@ -95,7 +112,8 @@ def mean_pool_subwords(last_hidden, word_ids):
         ids = word_ids[b]
         accum, cnt = {}, {}
         for s, wid in enumerate(ids):
-            if wid is None: continue
+            if wid is None:
+                continue
             if wid not in accum:
                 accum[wid] = last_hidden[b, s]
                 cnt[wid] = 1
@@ -112,18 +130,20 @@ def mean_pool_subwords(last_hidden, word_ids):
         outs.append(M)
     return outs
 
+
 def pad_words(word_batches, pad_value=0.0):
     B = len(word_batches)
-    max_len = max(w.size(0) for w in word_batches) if B>0 else 0
-    D = word_batches[0].size(1) if max_len>0 else 1
+    max_len = max(w.size(0) for w in word_batches) if B > 0 else 0
+    D = word_batches[0].size(1) if max_len > 0 else 1
     X = word_batches[0].new_full((B, max_len, D), pad_value)
     mask = torch.zeros(B, max_len, dtype=torch.bool, device=X.device)
     for b, w in enumerate(word_batches):
         L = w.size(0)
-        if L>0:
-            X[b,:L] = w
-            mask[b,:L] = True
+        if L > 0:
+            X[b, :L] = w
+            mask[b, :L] = True
     return X, mask
+
 
 def make_targets(heads, max_len, device):
     B = len(heads)
@@ -131,29 +151,35 @@ def make_targets(heads, max_len, device):
     pad = torch.zeros(B, max_len, dtype=torch.bool, device=device)
     for b, h in enumerate(heads):
         n = min(len(h), max_len)
-        if n>0:
-            Y[b,:n] = torch.tensor(h[:n], device=device)
-            pad[b,:n] = True
+        if n > 0:
+            Y[b, :n] = torch.tensor(h[:n], device=device)
+            pad[b, :n] = True
     return Y, pad
+
 
 # === biaffine pointer ===
 class BiaffinePointer(nn.Module):
     def __init__(self, d):
         super().__init__()
-        self.W = nn.Parameter(torch.empty(d, d)); nn.init.xavier_uniform_(self.W)
+        self.W = nn.Parameter(torch.empty(d, d))
+        nn.init.xavier_uniform_(self.W)
         self.U = nn.Linear(d, 1, bias=True)
-        self.root = nn.Parameter(torch.zeros(d)); nn.init.normal_(self.root, std=0.02)
+        self.root = nn.Parameter(torch.zeros(d))
+        nn.init.normal_(self.root, std=0.02)
+
     def forward(self, dep, head, mask_dep, mask_head):
-        B,T,D = dep.shape
-        root = self.root.view(1,1,D).expand(B,1,D)
-        heads_all = torch.cat([root, head], dim=1)            # [B,T+1,D]
-        bil = (dep @ self.W) @ heads_all.transpose(1,2)       # [B,T,T+1]
-        u = self.U(heads_all).squeeze(-1).unsqueeze(1).expand(B,T,T+1)
+        B, T, D = dep.shape
+        root = self.root.view(1, 1, D).expand(B, 1, D)
+        heads_all = torch.cat([root, head], dim=1)  # [B,T+1,D]
+        bil = (dep @ self.W) @ heads_all.transpose(1, 2)  # [B,T,T+1]
+        u = self.U(heads_all).squeeze(-1).unsqueeze(1).expand(B, T, T + 1)
         logits = bil + u
-        C = torch.ones(B, T+1, dtype=torch.bool, device=dep.device); C[:,1:] = mask_head
+        C = torch.ones(B, T + 1, dtype=torch.bool, device=dep.device)
+        C[:, 1:] = mask_head
         logits = logits.masked_fill(~C.unsqueeze(1), float("-inf"))
         logits = logits.masked_fill((~mask_dep).unsqueeze(-1), float("-inf"))
         return logits
+
 
 # === biaffine label classifier ===
 class BiaffineLabeler(nn.Module):
@@ -167,7 +193,7 @@ class BiaffineLabeler(nn.Module):
         self.W = nn.Parameter(torch.empty(n_labels, d_label, d_label))
         self.bias = nn.Parameter(torch.zeros(n_labels))
         nn.init.xavier_uniform_(self.W)
-    
+
     def forward(self, dep, head, head_indices, mask):
         """
         dep: [B, T, D] - dependent representations
@@ -177,27 +203,28 @@ class BiaffineLabeler(nn.Module):
         Returns: [B, T, n_labels] label logits for each token's predicted head
         """
         B, T, D = dep.shape
-        
+
         # Project to label space
         dep_label = self.dep_proj(dep)  # [B, T, d_label]
         head_label = self.head_proj(head)  # [B, T+1, d_label]
-        
+
         # Gather head representations based on predicted indices
         head_indices_expanded = head_indices.unsqueeze(-1).expand(-1, -1, head_label.size(-1))
         selected_heads = torch.gather(head_label, 1, head_indices_expanded)  # [B, T, d_label]
-        
+
         # Biaffine scoring: dep^T W head for each label
         # dep_label: [B, T, d_label] -> [B, T, 1, d_label]
         # W: [n_labels, d_label, d_label]
         # selected_heads: [B, T, d_label] -> [B, T, d_label, 1]
         dep_expanded = dep_label.unsqueeze(2)  # [B, T, 1, d_label]
         head_expanded = selected_heads.unsqueeze(-1)  # [B, T, d_label, 1]
-        
+
         # Compute biaffine scores for all labels
-        logits = torch.einsum('btid,nde,btef->btn', dep_expanded, self.W, head_expanded).squeeze(-1)
+        logits = torch.einsum("btid,nde,btef->btn", dep_expanded, self.W, head_expanded).squeeze(-1)
         logits = logits + self.bias.view(1, 1, -1)  # [B, T, n_labels]
-        
+
         return logits
+
 
 # === Baseline block (vanilla MHA) ===
 class VanillaBlock(nn.Module):
@@ -206,17 +233,27 @@ class VanillaBlock(nn.Module):
         self.ln1 = nn.LayerNorm(d_model)
         self.attn = nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
         self.ln2 = nn.LayerNorm(d_model)
-        self.ff = nn.Sequential(nn.Linear(d_model, d_ff), nn.GELU(), nn.Dropout(dropout),
-                                nn.Linear(d_ff, d_model), nn.Dropout(dropout))
+        self.ff = nn.Sequential(
+            nn.Linear(d_model, d_ff),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_ff, d_model),
+            nn.Dropout(dropout),
+        )
+
     def forward(self, x, attn_mask=None):
         h = self.ln1(x)
-        y,_ = self.attn(h, h, h, need_weights=False, attn_mask=None)  # use key_padding with batch_first?
+        y, _ = self.attn(
+            h, h, h, need_weights=False, attn_mask=None
+        )  # use key_padding with batch_first?
         x = x + y
         y = self.ff(self.ln2(x))
         return x + y, {}
 
+
 # === Your pointer-over-heads block ===
 from pointer_over_heads_transformer import PointerMoHTransformerBlock
+
 
 # === Parsers ===
 class ParserBase(nn.Module):
@@ -225,8 +262,17 @@ class ParserBase(nn.Module):
         self.encoder = AutoModel.from_pretrained(enc_name)
         self.d_model = d_model
 
+
 class BaselineParser(ParserBase):
-    def __init__(self, enc_name="distilbert-base-uncased", d_model=768, n_heads=8, d_ff=2048, n_labels=50, use_labels=True):
+    def __init__(
+        self,
+        enc_name="distilbert-base-uncased",
+        d_model=768,
+        n_heads=8,
+        d_ff=2048,
+        n_labels=50,
+        use_labels=True,
+    ):
         super().__init__(enc_name, d_model)
         self.block = VanillaBlock(d_model, n_heads, d_ff)
         self.pointer = BiaffinePointer(d_model)
@@ -234,145 +280,192 @@ class BaselineParser(ParserBase):
         if use_labels:
             self.labeler = BiaffineLabeler(d_model, n_labels)
         self.n_labels = n_labels
-        
+
     def forward(self, subw, word_ids, heads_gold, labels_gold=None):
         device = next(self.parameters()).device
         last_hidden = self.encoder(**subw).last_hidden_state
         words = mean_pool_subwords(last_hidden, word_ids)
         X, mask = pad_words(words)
         X, _ = self.block(X)
-        
+
         # Head prediction
         head_logits = self.pointer(X, X, mask, mask)
         Y_heads, pad = make_targets(heads_gold, X.size(1), device)
-        head_loss = F.cross_entropy(head_logits.view(-1, head_logits.size(-1))[pad.view(-1)],
-                                     Y_heads.view(-1)[pad.view(-1)])
-        
+        head_loss = F.cross_entropy(
+            head_logits.view(-1, head_logits.size(-1))[pad.view(-1)], Y_heads.view(-1)[pad.view(-1)]
+        )
+
         # Metrics
         with torch.no_grad():
             pred_heads = head_logits.argmax(-1)
-            uas = (pred_heads[pad]==Y_heads[pad]).float().mean().item()
-        
+            uas = (pred_heads[pad] == Y_heads[pad]).float().mean().item()
+
         # Label prediction
         total_loss = head_loss
         las = uas  # default to UAS if no labels
         pred_labels = None
-        
+
         if self.use_labels and labels_gold is not None:
             # Use gold heads for training, predicted heads for evaluation
             head_indices = Y_heads if self.training else pred_heads
             root_repr = self.pointer.root.view(1, 1, -1).expand(X.size(0), 1, X.size(-1))
             X_with_root = torch.cat([root_repr, X], dim=1)
-            
+
             label_logits = self.labeler(X, X_with_root, head_indices, mask)
             Y_labels, label_pad = make_targets(labels_gold, X.size(1), device)
-            label_loss = F.cross_entropy(label_logits.view(-1, label_logits.size(-1))[pad.view(-1)],
-                                         Y_labels.view(-1)[pad.view(-1)])
+            label_loss = F.cross_entropy(
+                label_logits.view(-1, label_logits.size(-1))[pad.view(-1)],
+                Y_labels.view(-1)[pad.view(-1)],
+            )
             total_loss = head_loss + label_loss
-            
+
             with torch.no_grad():
                 pred_labels = label_logits.argmax(-1)
-                las = ((pred_heads[pad]==Y_heads[pad]) & (pred_labels[pad]==Y_labels[pad])).float().mean().item()
-        
+                las = (
+                    ((pred_heads[pad] == Y_heads[pad]) & (pred_labels[pad] == Y_labels[pad]))
+                    .float()
+                    .mean()
+                    .item()
+                )
+
         out = {"uas": uas, "las": las, "tokens": pad.sum().item()}
         # Add predictions for CoNLL-U export
         if not self.training:
-            out["pred_heads"] = [pred_heads[b, :pad[b].sum()].cpu().tolist() for b in range(pred_heads.size(0))]
+            out["pred_heads"] = [
+                pred_heads[b, : pad[b].sum()].cpu().tolist() for b in range(pred_heads.size(0))
+            ]
             if pred_labels is not None:
-                out["pred_labels"] = [pred_labels[b, :pad[b].sum()].cpu().tolist() for b in range(pred_labels.size(0))]
+                out["pred_labels"] = [
+                    pred_labels[b, : pad[b].sum()].cpu().tolist()
+                    for b in range(pred_labels.size(0))
+                ]
         return total_loss, out
 
+
 class PoHParser(ParserBase):
-    def __init__(self, enc_name="distilbert-base-uncased", d_model=768, n_heads=8, d_ff=2048,
-                 halting_mode="entropy", max_inner_iters=3, routing_topk=2, combination="mask_concat",
-                 ent_threshold=0.8, n_labels=50, use_labels=True,
-                 deep_supervision=False, act_halting=False, ponder_coef=1e-3, ramp_strength=1.0,
-                 grad_mode="full"):
+    def __init__(
+        self,
+        enc_name="distilbert-base-uncased",
+        d_model=768,
+        n_heads=8,
+        d_ff=2048,
+        halting_mode="entropy",
+        max_inner_iters=3,
+        routing_topk=2,
+        combination="mask_concat",
+        ent_threshold=0.8,
+        n_labels=50,
+        use_labels=True,
+        deep_supervision=False,
+        act_halting=False,
+        ponder_coef=1e-3,
+        ramp_strength=1.0,
+        grad_mode="full",
+    ):
         super().__init__(enc_name, d_model)
         self.block = PointerMoHTransformerBlock(
-            d_model=d_model, n_heads=n_heads, d_ff=d_ff,
-            halting_mode=halting_mode, max_inner_iters=max_inner_iters,
-            min_inner_iters=1, ent_threshold=ent_threshold,
-            routing_topk=routing_topk, combination=combination,
-            controller_recurrent=True, controller_summary="mean",
-            grad_mode=grad_mode)
+            d_model=d_model,
+            n_heads=n_heads,
+            d_ff=d_ff,
+            halting_mode=halting_mode,
+            max_inner_iters=max_inner_iters,
+            min_inner_iters=1,
+            ent_threshold=ent_threshold,
+            routing_topk=routing_topk,
+            combination=combination,
+            controller_recurrent=True,
+            controller_summary="mean",
+            grad_mode=grad_mode,
+        )
         self.pointer = BiaffinePointer(d_model)
         self.use_labels = use_labels
         if use_labels:
             self.labeler = BiaffineLabeler(d_model, n_labels)
         self.n_labels = n_labels
-        
+
         # NEW: Iterative refinement modes
         self.deep_supervision = deep_supervision
         self.act_halting = act_halting
         self.ponder_coef = ponder_coef
         self.ramp_strength = ramp_strength
-        
+
     def forward(self, subw, word_ids, heads_gold, labels_gold=None):
         device = next(self.parameters()).device
         last_hidden = self.encoder(**subw).last_hidden_state
         words = mean_pool_subwords(last_hidden, word_ids)
         X, mask = pad_words(words)
-        
+
         # NEW: Use collect_all mode if deep_supervision or act_halting enabled
         collect_all = self.training and (self.deep_supervision or self.act_halting)
         X, aux = self.block(X, attn_mask=None, return_aux=True, collect_all=collect_all)
-        
+
         Y_heads, pad = make_targets(heads_gold, X.size(1), device)
-        
+
         # === NEW: Iterative refinement loss computation ===
         if collect_all and "routed" in aux:
             # Deep supervision or ACT halting mode
             routed_seq = aux["routed"]  # [B, iters, T, D]
-            
+
             # Pointer function for loss computation
             def pointer_fn(x, _, m, __):
                 return self.pointer(x, x, m, m)
-            
+
             if self.act_halting and self.deep_supervision and "halt_logits" in aux:
                 # COMBINED: ACT + deep supervision (recommended)
                 from utils.iterative_losses import act_deep_supervision_loss
+
                 halt_logits_seq = aux["halt_logits"]
-                
+
                 head_loss, diagnostics = act_deep_supervision_loss(
-                    routed_seq, halt_logits_seq, pointer_fn,
-                    Y_heads, pad,
+                    routed_seq,
+                    halt_logits_seq,
+                    pointer_fn,
+                    Y_heads,
+                    pad,
                     ponder_coef=self.ponder_coef,
-                    ramp_strength=self.ramp_strength
+                    ramp_strength=self.ramp_strength,
                 )
                 # Store diagnostics for logging
                 for key, value in diagnostics.items():
                     aux[key] = value
-                
+
             elif self.act_halting and "halt_logits" in aux:
                 # ACT-style expected loss only (no deep supervision ramp)
                 from utils.iterative_losses import act_expected_loss
+
                 halt_logits_seq = aux["halt_logits"]
-                
+
                 head_loss, ponder_cost = act_expected_loss(
-                    routed_seq, halt_logits_seq, pointer_fn,
-                    Y_heads, pad, ponder_coef=self.ponder_coef,
-                    per_token=False  # Per-sequence halting (simpler)
+                    routed_seq,
+                    halt_logits_seq,
+                    pointer_fn,
+                    Y_heads,
+                    pad,
+                    ponder_coef=self.ponder_coef,
+                    per_token=False,  # Per-sequence halting (simpler)
                 )
                 # Store ponder cost for logging
                 aux["ponder_cost"] = ponder_cost.item()
-                
+
             elif self.deep_supervision:
                 # Deep supervision only (no ACT)
                 from utils.iterative_losses import deep_supervision_loss
-                
+
                 head_loss = deep_supervision_loss(
-                    routed_seq, pointer_fn, Y_heads, pad,
-                    weight_schedule="linear"  # Ramp from 0.3 to 1.0
+                    routed_seq,
+                    pointer_fn,
+                    Y_heads,
+                    pad,
+                    weight_schedule="linear",  # Ramp from 0.3 to 1.0
                 )
             else:
                 # Fallback: just use final state (shouldn't happen)
                 head_logits = self.pointer(X, X, mask, mask)
                 head_loss = F.cross_entropy(
                     head_logits.view(-1, head_logits.size(-1))[pad.view(-1)],
-                    Y_heads.view(-1)[pad.view(-1)]
+                    Y_heads.view(-1)[pad.view(-1)],
                 )
-            
+
             # For metrics, always use final iteration
             head_logits = self.pointer(X, X, mask, mask)
         else:
@@ -380,46 +473,60 @@ class PoHParser(ParserBase):
             head_logits = self.pointer(X, X, mask, mask)
             head_loss = F.cross_entropy(
                 head_logits.view(-1, head_logits.size(-1))[pad.view(-1)],
-                Y_heads.view(-1)[pad.view(-1)]
+                Y_heads.view(-1)[pad.view(-1)],
             )
-        
+
         # Metrics (always computed on final output)
         with torch.no_grad():
             pred_heads = head_logits.argmax(-1)
-            uas = (pred_heads[pad]==Y_heads[pad]).float().mean().item()
-        
+            uas = (pred_heads[pad] == Y_heads[pad]).float().mean().item()
+
         # Label prediction (only on final output for simplicity)
         total_loss = head_loss
         las = uas  # default to UAS if no labels
         pred_labels = None
-        
+
         if self.use_labels and labels_gold is not None:
             # Use gold heads for training, predicted heads for evaluation
             head_indices = Y_heads if self.training else pred_heads
             root_repr = self.pointer.root.view(1, 1, -1).expand(X.size(0), 1, X.size(-1))
             X_with_root = torch.cat([root_repr, X], dim=1)
-            
+
             label_logits = self.labeler(X, X_with_root, head_indices, mask)
             Y_labels, label_pad = make_targets(labels_gold, X.size(1), device)
-            label_loss = F.cross_entropy(label_logits.view(-1, label_logits.size(-1))[pad.view(-1)],
-                                         Y_labels.view(-1)[pad.view(-1)])
+            label_loss = F.cross_entropy(
+                label_logits.view(-1, label_logits.size(-1))[pad.view(-1)],
+                Y_labels.view(-1)[pad.view(-1)],
+            )
             total_loss = head_loss + label_loss
-            
+
             with torch.no_grad():
                 pred_labels = label_logits.argmax(-1)
-                las = ((pred_heads[pad]==Y_heads[pad]) & (pred_labels[pad]==Y_labels[pad])).float().mean().item()
-        
+                las = (
+                    ((pred_heads[pad] == Y_heads[pad]) & (pred_labels[pad] == Y_labels[pad]))
+                    .float()
+                    .mean()
+                    .item()
+                )
+
         out = {"uas": uas, "las": las, "tokens": pad.sum().item()}
-        if "inner_iters_used" in aux: out["inner_iters_used"] = aux["inner_iters_used"].item()
-        if "ponder_cost" in aux: out["ponder_cost"] = aux["ponder_cost"]
-        
+        if "inner_iters_used" in aux:
+            out["inner_iters_used"] = aux["inner_iters_used"].item()
+        if "ponder_cost" in aux:
+            out["ponder_cost"] = aux["ponder_cost"]
+
         # Add predictions for CoNLL-U export
         if not self.training:
-            out["pred_heads"] = [pred_heads[b, :pad[b].sum()].cpu().tolist() for b in range(pred_heads.size(0))]
+            out["pred_heads"] = [
+                pred_heads[b, : pad[b].sum()].cpu().tolist() for b in range(pred_heads.size(0))
+            ]
             if pred_labels is not None:
-                out["pred_labels"] = [pred_labels[b, :pad[b].sum()].cpu().tolist() for b in range(pred_labels.size(0))]
+                out["pred_labels"] = [
+                    pred_labels[b, : pad[b].sum()].cpu().tolist()
+                    for b in range(pred_labels.size(0))
+                ]
         return total_loss, out
-    
+
     def forward_trm(self, subw, word_ids, heads_gold, labels_gold=None, args=None):
         """
         TRM-style recursion: outer supervision steps, each does n inner updates then refresh pointer.
@@ -430,68 +537,96 @@ class PoHParser(ParserBase):
         words = mean_pool_subwords(last_hidden, word_ids)
         X, mask = pad_words(words)
         Y_heads, pad = make_targets(heads_gold, X.size(1), device)
-        
+
         # Decide inner updates per TRM step
-        inner_updates = args.trm_inner_updates if args.trm_inner_updates is not None else self.block.max_inner_iters
-        
+        inner_updates = (
+            args.trm_inner_updates
+            if args.trm_inner_updates is not None
+            else self.block.max_inner_iters
+        )
+
         # Collect latent states z_t from each supervision step
         Zs = []
         z = X
-        
+
         for s in range(args.trm_supervision_steps):
             # Run one TRM step: n inner updates
             old_iters = self.block.max_inner_iters
             self.block.max_inner_iters = inner_updates
-            y, aux = self.block(z, attn_mask=None, return_aux=True, collect_all=False, return_final_z=True)
+            y, aux = self.block(
+                z, attn_mask=None, return_aux=True, collect_all=False, return_final_z=True
+            )
             self.block.max_inner_iters = old_iters
-            
+
             z_next = aux["z_final"]  # [B,T,D]
             Zs.append(z_next)
-            
+
             # HRM-style across steps if grad_mode==last
-            if hasattr(self.block, "grad_mode") and self.block.grad_mode == "last" and s < args.trm_supervision_steps - 1:
+            if (
+                hasattr(self.block, "grad_mode")
+                and self.block.grad_mode == "last"
+                and s < args.trm_supervision_steps - 1
+            ):
                 z_next = z_next.detach()
             z = z_next
-        
+
         # Deep supervision over refreshes
         from utils.trm_losses import trm_supervised_loss
-        head_loss, head_logits = trm_supervised_loss(self.pointer, Zs, Y_heads, pad, ramp_strength=args.trm_ramp_strength)
-        
+
+        head_loss, head_logits = trm_supervised_loss(
+            self.pointer, Zs, Y_heads, pad, ramp_strength=args.trm_ramp_strength
+        )
+
         # Metrics (from final refresh)
         with torch.no_grad():
             pred_heads = head_logits.argmax(-1)
-            uas = (pred_heads[pad]==Y_heads[pad]).float().mean().item()
-        
+            uas = (pred_heads[pad] == Y_heads[pad]).float().mean().item()
+
         # Label prediction (only on final z for simplicity)
         total_loss = head_loss
         las = uas
         pred_labels = None
-        
+
         if self.use_labels and labels_gold is not None:
             z_final = Zs[-1]
             head_indices = Y_heads if self.training else pred_heads
-            root_repr = self.pointer.root.view(1, 1, -1).expand(z_final.size(0), 1, z_final.size(-1))
+            root_repr = self.pointer.root.view(1, 1, -1).expand(
+                z_final.size(0), 1, z_final.size(-1)
+            )
             X_with_root = torch.cat([root_repr, z_final], dim=1)
-            
+
             label_logits = self.labeler(z_final, X_with_root, head_indices, pad)
             Y_labels, label_pad = make_targets(labels_gold, z_final.size(1), device)
-            label_loss = F.cross_entropy(label_logits.view(-1, label_logits.size(-1))[pad.view(-1)],
-                                         Y_labels.view(-1)[pad.view(-1)])
+            label_loss = F.cross_entropy(
+                label_logits.view(-1, label_logits.size(-1))[pad.view(-1)],
+                Y_labels.view(-1)[pad.view(-1)],
+            )
             total_loss = head_loss + label_loss
-            
+
             with torch.no_grad():
                 pred_labels = label_logits.argmax(-1)
-                las = ((pred_heads[pad]==Y_heads[pad]) & (pred_labels[pad]==Y_labels[pad])).float().mean().item()
-        
+                las = (
+                    ((pred_heads[pad] == Y_heads[pad]) & (pred_labels[pad] == Y_labels[pad]))
+                    .float()
+                    .mean()
+                    .item()
+                )
+
         out = {"uas": uas, "las": las, "tokens": pad.sum().item()}
         out["inner_iters_used"] = float(inner_updates * args.trm_supervision_steps)
         out["trm_supervision_steps"] = args.trm_supervision_steps
-        
+
         if not self.training:
-            out["pred_heads"] = [pred_heads[b, :pad[b].sum()].cpu().tolist() for b in range(pred_heads.size(0))]
+            out["pred_heads"] = [
+                pred_heads[b, : pad[b].sum()].cpu().tolist() for b in range(pred_heads.size(0))
+            ]
             if pred_labels is not None:
-                out["pred_labels"] = [pred_labels[b, :pad[b].sum()].cpu().tolist() for b in range(pred_labels.size(0))]
+                out["pred_labels"] = [
+                    pred_labels[b, : pad[b].sum()].cpu().tolist()
+                    for b in range(pred_labels.size(0))
+                ]
         return total_loss, out
+
 
 # === batching ===
 def collate(examples, tokenizer, device, label_vocab=None, return_deprels=False):
@@ -503,26 +638,52 @@ def collate(examples, tokenizer, device, label_vocab=None, return_deprels=False)
     else:
         toks = [ex["tokens"] for ex in examples]
         heads = [ex["head"] for ex in examples]
-        labels = [ex.get("deprel", [0]*len(ex["tokens"])) for ex in examples] if any("deprel" in ex for ex in examples) else None
-    
-    enc = tokenizer(toks, is_split_into_words=True, padding=True, truncation=True, return_tensors="pt", max_length=512)
+        labels = (
+            [ex.get("deprel", [0] * len(ex["tokens"])) for ex in examples]
+            if any("deprel" in ex for ex in examples)
+            else None
+        )
+
+    enc = tokenizer(
+        toks,
+        is_split_into_words=True,
+        padding=True,
+        truncation=True,
+        return_tensors="pt",
+        max_length=512,
+    )
     word_ids = [enc.word_ids(i) for i in range(len(toks))]
-    for k in enc: enc[k] = enc[k].to(device)
-    
+    for k in enc:
+        enc[k] = enc[k].to(device)
+
     # Keep original string labels for punctuation masking
-    deprels_str = labels if (labels is not None and any(isinstance(lbl, str) for sent in labels for lbl in (sent if isinstance(sent, list) else [sent]))) else None
-    
+    deprels_str = (
+        labels
+        if (
+            labels is not None
+            and any(
+                isinstance(lbl, str)
+                for sent in labels
+                for lbl in (sent if isinstance(sent, list) else [sent])
+            )
+        )
+        else None
+    )
+
     # Convert string labels to indices if label_vocab provided
     if labels is not None and label_vocab is not None:
         label_indices = []
         for sent_labels in labels:
-            indices = [label_vocab.get(lbl, 0) if isinstance(lbl, str) else lbl for lbl in sent_labels]
+            indices = [
+                label_vocab.get(lbl, 0) if isinstance(lbl, str) else lbl for lbl in sent_labels
+            ]
             label_indices.append(indices)
         labels = label_indices
-    
+
     if return_deprels:
         return enc, word_ids, heads, labels, deprels_str
     return enc, word_ids, heads, labels
+
 
 def build_label_vocab(data):
     """Build label vocabulary from data."""
@@ -536,90 +697,139 @@ def build_label_vocab(data):
     vocab["<UNK>"] = len(vocab)  # unknown label
     return vocab
 
+
 def get_linear_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps):
     """Linear warmup then linear decay."""
+
     def lr_lambda(current_step):
         if current_step < num_warmup_steps:
             return float(current_step) / float(max(1, num_warmup_steps))
-        return max(0.0, float(num_training_steps - current_step) / float(max(1, num_training_steps - num_warmup_steps)))
+        return max(
+            0.0,
+            float(num_training_steps - current_step)
+            / float(max(1, num_training_steps - num_warmup_steps)),
+        )
+
     from torch.optim.lr_scheduler import LambdaLR
+
     return LambdaLR(optimizer, lr_lambda)
 
-def epoch(model, data, tokenizer, device, label_vocab=None, bs=8, train=True, lr=5e-5, weight_decay=0.01, scheduler=None, 
-          emit_conllu=False, conllu_path=None, ignore_punct=False, args=None):
+
+def epoch(
+    model,
+    data,
+    tokenizer,
+    device,
+    label_vocab=None,
+    bs=8,
+    train=True,
+    lr=5e-5,
+    weight_decay=0.01,
+    scheduler=None,
+    emit_conllu=False,
+    conllu_path=None,
+    ignore_punct=False,
+    args=None,
+):
     import time
+
     if train:
         model.train()
         # Create separate optimizer for each model (use model id as key)
         model_id = id(model)
-        if not hasattr(epoch, 'optimizers'):
+        if not hasattr(epoch, "optimizers"):
             epoch.optimizers = {}
-        
+
         if model_id not in epoch.optimizers:
             # FIX: Use different learning rates for PoH components to handle gradient imbalance
             # Controller has much smaller gradients (~30x) than FFN, needs higher LR
-            if hasattr(model, 'block') and hasattr(model.block, 'controller'):
+            if hasattr(model, "block") and hasattr(model.block, "controller"):
                 # PoH model: use parameter groups
                 encoder_params = list(model.encoder.parameters())
                 controller_params = list(model.block.controller.parameters())
-                other_params = [p for n, p in model.named_parameters() 
-                               if 'encoder' not in n and 'controller' not in n]
-                epoch.optimizers[model_id] = torch.optim.AdamW([
-                    {'params': encoder_params, 'lr': lr},
-                    {'params': controller_params, 'lr': lr * 20},  # 20x higher for controller
-                    {'params': other_params, 'lr': lr * 2}         # 2x higher for other components
-                ], weight_decay=weight_decay)
+                other_params = [
+                    p
+                    for n, p in model.named_parameters()
+                    if "encoder" not in n and "controller" not in n
+                ]
+                epoch.optimizers[model_id] = torch.optim.AdamW(
+                    [
+                        {"params": encoder_params, "lr": lr},
+                        {"params": controller_params, "lr": lr * 20},  # 20x higher for controller
+                        {"params": other_params, "lr": lr * 2},  # 2x higher for other components
+                    ],
+                    weight_decay=weight_decay,
+                )
             else:
                 # Baseline model: uniform LR
-                epoch.optimizers[model_id] = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+                epoch.optimizers[model_id] = torch.optim.AdamW(
+                    model.parameters(), lr=lr, weight_decay=weight_decay
+                )
         opt = epoch.optimizers[model_id]
     else:
-        model.eval(); opt = None
+        model.eval()
+        opt = None
     from math import ceil
+
     total_loss, total_tokens, total_correct_uas, total_correct_las, total_iters = 0.0, 0, 0, 0, 0.0
     total_routing_entropy = 0.0
     steps = 0
     start_time = time.time()
-    
+
     # For CoNLL-U export
-    all_tokens, all_heads_gold, all_deprels_gold, all_heads_pred, all_deprels_pred = [], [], [], [], []
-    
+    all_tokens, all_heads_gold, all_deprels_gold, all_heads_pred, all_deprels_pred = (
+        [],
+        [],
+        [],
+        [],
+        [],
+    )
+
     for i in range(0, len(data), bs):
-        batch = data[i:i+bs]
+        batch = data[i : i + bs]
         if ignore_punct:
-            subw, wids, heads, labels, deprels_str = collate(batch, tokenizer, device, label_vocab, return_deprels=True)
+            subw, wids, heads, labels, deprels_str = collate(
+                batch, tokenizer, device, label_vocab, return_deprels=True
+            )
         else:
-            subw, wids, heads, labels = collate(batch, tokenizer, device, label_vocab, return_deprels=False)
+            subw, wids, heads, labels = collate(
+                batch, tokenizer, device, label_vocab, return_deprels=False
+            )
             deprels_str = None
-        
+
         # TRM mode: use forward_trm if enabled
-        if args and args.trm_mode and hasattr(model, 'forward_trm'):
+        if args and args.trm_mode and hasattr(model, "forward_trm"):
             loss, m = model.forward_trm(subw, wids, heads, labels, args=args)
         else:
             loss, m = model(subw, wids, heads, labels)
-        
+
         # Apply punctuation masking if requested
         if ignore_punct and deprels_str is not None and "pred_heads" in m:
             from utils.metrics import build_masks_for_metrics
+
             _, is_eval = build_masks_for_metrics(heads, deprels_str)
             # Recompute UAS/LAS with punctuation mask
             # This requires access to predictions which are only in eval mode
             # For now, we'll keep the standard metrics and note this is a TODO for full integration
             pass
-        
+
         if train:
-            opt.zero_grad(); loss.backward()
+            opt.zero_grad()
+            loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
             if scheduler is not None:
                 scheduler.step()
-        total_loss += loss.item(); steps += 1
+        total_loss += loss.item()
+        steps += 1
         total_tokens += m["tokens"]
-        total_correct_uas += int(m["uas"]*m["tokens"])
-        total_correct_las += int(m.get("las", m["uas"])*m["tokens"])
-        if "inner_iters_used" in m: total_iters += m["inner_iters_used"]
-        if "routing_entropy" in m: total_routing_entropy += m["routing_entropy"]
-        
+        total_correct_uas += int(m["uas"] * m["tokens"])
+        total_correct_las += int(m.get("las", m["uas"]) * m["tokens"])
+        if "inner_iters_used" in m:
+            total_iters += m["inner_iters_used"]
+        if "routing_entropy" in m:
+            total_routing_entropy += m["routing_entropy"]
+
         # Collect predictions for CoNLL-U export
         if emit_conllu and not train:
             # Extract token lists from batch
@@ -631,41 +841,45 @@ def epoch(model, data, tokenizer, device, label_vocab=None, bs=8, train=True, lr
                 batch_tokens = [ex["tokens"] for ex in batch]
                 batch_heads = [ex["head"] for ex in batch]
                 batch_deprels = [ex.get("deprel", None) for ex in batch]
-            
+
             all_tokens.extend(batch_tokens)
             all_heads_gold.extend(batch_heads)
             if batch_deprels:
                 all_deprels_gold.extend(batch_deprels)
-            
+
             # Get predictions from model output
             if "pred_heads" in m:
                 all_heads_pred.extend(m["pred_heads"])
             if "pred_labels" in m:
                 all_deprels_pred.extend(m["pred_labels"])
-    
+
     # Write CoNLL-U if requested
     if emit_conllu and not train and conllu_path and all_tokens:
         from utils.conllu_writer import write_conllu
+
         write_conllu(
             conllu_path,
             tokens=all_tokens,
             heads_gold=all_heads_gold if all_heads_gold else None,
             deprels_gold=all_deprels_gold if all_deprels_gold else None,
             heads_pred=all_heads_pred if all_heads_pred else None,
-            deprels_pred=all_deprels_pred if all_deprels_pred else None
+            deprels_pred=all_deprels_pred if all_deprels_pred else None,
         )
         print(f"✓ Wrote predictions to {conllu_path}")
-    
+
     elapsed = time.time() - start_time
     return {
-        "loss": total_loss/max(1,steps),
-        "uas": total_correct_uas/max(1,total_tokens),
-        "las": total_correct_las/max(1,total_tokens),
-        "mean_inner_iters": (total_iters/max(1, steps)) if total_iters>0 else float("nan"),
-        "routing_entropy": (total_routing_entropy/max(1, steps)) if total_routing_entropy>0 else float("nan"),
+        "loss": total_loss / max(1, steps),
+        "uas": total_correct_uas / max(1, total_tokens),
+        "las": total_correct_las / max(1, total_tokens),
+        "mean_inner_iters": (total_iters / max(1, steps)) if total_iters > 0 else float("nan"),
+        "routing_entropy": (
+            (total_routing_entropy / max(1, steps)) if total_routing_entropy > 0 else float("nan")
+        ),
         "time": elapsed,
-        "steps": steps
+        "steps": steps,
     }
+
 
 def get_data(source, split, conllu_dir=None):
     if source == "hf":
@@ -689,8 +903,11 @@ def get_data(source, split, conllu_dir=None):
         return list(ds)
     if source == "conllu":
         assert conllu_dir, "Provide --conllu_dir"
-        return load_conllu_dir(conllu_dir if split!="validation" else conllu_dir)  # point to your dev dir
-    return dummy_ds(128 if split=="train" else 48)
+        return load_conllu_dir(
+            conllu_dir if split != "validation" else conllu_dir
+        )  # point to your dev dir
+    return dummy_ds(128 if split == "train" else 48)
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -699,56 +916,115 @@ def main():
     ap.add_argument("--batch_size", type=int, default=8)
     ap.add_argument("--lr", type=float, default=5e-5)
     ap.add_argument("--weight_decay", type=float, default=0.01)
-    ap.add_argument("--warmup_ratio", type=float, default=0.05, help="Warmup ratio (default: 0.05 = 5%%)")
+    ap.add_argument(
+        "--warmup_ratio", type=float, default=0.05, help="Warmup ratio (default: 0.05 = 5%%)"
+    )
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
-    ap.add_argument("--data_source", type=str, default="hf", choices=["hf","conllu","dummy"])
+    ap.add_argument("--data_source", type=str, default="hf", choices=["hf", "conllu", "dummy"])
     ap.add_argument("--conllu_dir", type=str, default=None)
-    ap.add_argument("--log_csv", type=str, default=None, help="CSV file to log results (auto-generated if not provided)")
+    ap.add_argument(
+        "--log_csv",
+        type=str,
+        default=None,
+        help="CSV file to log results (auto-generated if not provided)",
+    )
     # Evaluation options
-    ap.add_argument("--ignore_punct", action="store_true", help="Ignore punctuation in UAS/LAS computation")
-    ap.add_argument("--emit_conllu", action="store_true", help="Write predictions to CoNLL-U format")
-    ap.add_argument("--freeze_encoder", action="store_true", help="Freeze pretrained encoder (only train parsing head)")
+    ap.add_argument(
+        "--ignore_punct", action="store_true", help="Ignore punctuation in UAS/LAS computation"
+    )
+    ap.add_argument(
+        "--emit_conllu", action="store_true", help="Write predictions to CoNLL-U format"
+    )
+    ap.add_argument(
+        "--freeze_encoder",
+        action="store_true",
+        help="Freeze pretrained encoder (only train parsing head)",
+    )
     # Parameter matching
-    ap.add_argument("--param_match", type=str, default=None, choices=[None, "baseline", "poh"], 
-                    help="Match parameter counts by adjusting FFN size")
+    ap.add_argument(
+        "--param_match",
+        type=str,
+        default=None,
+        choices=[None, "baseline", "poh"],
+        help="Match parameter counts by adjusting FFN size",
+    )
     # baseline/PoH shared
     ap.add_argument("--heads", type=int, default=8)
     ap.add_argument("--d_ff", type=int, default=2048)
     # PoH knobs
-    ap.add_argument("--halting_mode", type=str, default="entropy", choices=["fixed","entropy","halting"])
+    ap.add_argument(
+        "--halting_mode", type=str, default="entropy", choices=["fixed", "entropy", "halting"]
+    )
     ap.add_argument("--max_inner_iters", type=int, default=3)
     ap.add_argument("--routing_topk", type=int, default=2)
-    ap.add_argument("--combination", type=str, default="mask_concat", choices=["mask_concat","mixture"])
-    ap.add_argument("--ent_threshold", type=float, default=0.8,
-                    help="Entropy threshold for early stopping (halting_mode=entropy)")
-    
+    ap.add_argument(
+        "--combination", type=str, default="mask_concat", choices=["mask_concat", "mixture"]
+    )
+    ap.add_argument(
+        "--ent_threshold",
+        type=float,
+        default=0.8,
+        help="Entropy threshold for early stopping (halting_mode=entropy)",
+    )
+
     # NEW: Iterative refinement modes
-    ap.add_argument("--deep_supervision", action="store_true",
-                    help="Enable deep supervision (loss on each iteration)")
-    ap.add_argument("--act_halting", action="store_true",
-                    help="Enable differentiable ACT-style halting (expected loss)")
-    ap.add_argument("--ponder_coef", type=float, default=1e-3,
-                    help="Ponder cost coefficient for ACT halting")
-    ap.add_argument("--ramp_strength", type=float, default=1.0,
-                    help="Deep supervision ramp strength (0=no ramp, 1=full ramp). "
-                         "Only used when both --deep_supervision and --act_halting are enabled")
-    ap.add_argument("--grad_mode", type=str, default="full", choices=["full", "last"],
-                    help="Gradient mode: 'full'=full BPTT through all iters (default), "
-                         "'last'=HRM-style last-iterate gradients (constant memory)")
-    
+    ap.add_argument(
+        "--deep_supervision",
+        action="store_true",
+        help="Enable deep supervision (loss on each iteration)",
+    )
+    ap.add_argument(
+        "--act_halting",
+        action="store_true",
+        help="Enable differentiable ACT-style halting (expected loss)",
+    )
+    ap.add_argument(
+        "--ponder_coef", type=float, default=1e-3, help="Ponder cost coefficient for ACT halting"
+    )
+    ap.add_argument(
+        "--ramp_strength",
+        type=float,
+        default=1.0,
+        help="Deep supervision ramp strength (0=no ramp, 1=full ramp). "
+        "Only used when both --deep_supervision and --act_halting are enabled",
+    )
+    ap.add_argument(
+        "--grad_mode",
+        type=str,
+        default="full",
+        choices=["full", "last"],
+        help="Gradient mode: 'full'=full BPTT through all iters (default), "
+        "'last'=HRM-style last-iterate gradients (constant memory)",
+    )
+
     # NEW: TRM-style (Tiny Recursive Model) recursion
-    ap.add_argument("--trm_mode", action="store_true",
-                    help="Enable TRM-style recursion: outer supervision steps, each does n inner updates then refresh pointer")
-    ap.add_argument("--trm_supervision_steps", type=int, default=2,
-                    help="Number of outer supervision steps (y refreshes)")
-    ap.add_argument("--trm_inner_updates", type=int, default=None,
-                    help="Inner updates per supervision step (default: use block.max_inner_iters)")
-    ap.add_argument("--trm_ramp_strength", type=float, default=1.0,
-                    help="Ramp weight for deep supervision across y refreshes (0=flat, 1=linear 0.3..1.0)")
-    
+    ap.add_argument(
+        "--trm_mode",
+        action="store_true",
+        help="Enable TRM-style recursion: outer supervision steps, each does n inner updates then refresh pointer",
+    )
+    ap.add_argument(
+        "--trm_supervision_steps",
+        type=int,
+        default=2,
+        help="Number of outer supervision steps (y refreshes)",
+    )
+    ap.add_argument(
+        "--trm_inner_updates",
+        type=int,
+        default=None,
+        help="Inner updates per supervision step (default: use block.max_inner_iters)",
+    )
+    ap.add_argument(
+        "--trm_ramp_strength",
+        type=float,
+        default=1.0,
+        help="Ramp weight for deep supervision across y refreshes (0=flat, 1=linear 0.3..1.0)",
+    )
+
     args = ap.parse_args()
-    
+
     # Set seed for reproducibility
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
@@ -763,11 +1039,11 @@ def main():
     print(f"{'='*80}")
 
     train = get_data(args.data_source, "train", args.conllu_dir)
-    dev   = get_data(args.data_source, "validation", args.conllu_dir)
+    dev = get_data(args.data_source, "validation", args.conllu_dir)
 
     print(f"✓ Train set: {len(train)} examples")
     print(f"✓ Dev set:   {len(dev)} examples")
-    
+
     # Sample check
     if len(train) > 0:
         sample = train[0]
@@ -775,59 +1051,89 @@ def main():
         print(f"✓ Sample fields: {list(sample.keys())}")
         print(f"✓ Dependency labels: {'present' if has_labels else 'absent'}")
     print(f"{'='*80}\n")
-    
+
     # Build label vocabulary from training data
     label_vocab = build_label_vocab(train)
     n_labels = len(label_vocab)
     use_labels = n_labels > 0
-    
+
     # Parameter matching: adjust FFN sizes to equalize param counts
     baseline_d_ff = args.d_ff
     poh_d_ff = args.d_ff
-    
+
     if args.param_match:
         # Create temporary models to measure params
-        temp_baseline = BaselineParser(args.model_name, d_model, args.heads, args.d_ff, 
-                                       n_labels=max(n_labels, 50), use_labels=use_labels)
-        temp_poh = PoHParser(args.model_name, d_model, args.heads, args.d_ff,
-                            halting_mode=args.halting_mode, max_inner_iters=args.max_inner_iters,
-                            routing_topk=args.routing_topk, combination=args.combination,
-                            ent_threshold=args.ent_threshold,
-                            n_labels=max(n_labels, 50), use_labels=use_labels,
-                            deep_supervision=args.deep_supervision, act_halting=args.act_halting,
-                            ponder_coef=args.ponder_coef, ramp_strength=args.ramp_strength,
-                            grad_mode=args.grad_mode)
-        
+        temp_baseline = BaselineParser(
+            args.model_name,
+            d_model,
+            args.heads,
+            args.d_ff,
+            n_labels=max(n_labels, 50),
+            use_labels=use_labels,
+        )
+        temp_poh = PoHParser(
+            args.model_name,
+            d_model,
+            args.heads,
+            args.d_ff,
+            halting_mode=args.halting_mode,
+            max_inner_iters=args.max_inner_iters,
+            routing_topk=args.routing_topk,
+            combination=args.combination,
+            ent_threshold=args.ent_threshold,
+            n_labels=max(n_labels, 50),
+            use_labels=use_labels,
+            deep_supervision=args.deep_supervision,
+            act_halting=args.act_halting,
+            ponder_coef=args.ponder_coef,
+            ramp_strength=args.ramp_strength,
+            grad_mode=args.grad_mode,
+        )
+
         baseline_params = sum(p.numel() for p in temp_baseline.parameters())
         poh_params = sum(p.numel() for p in temp_poh.parameters())
         delta = poh_params - baseline_params
-        
+
         if args.param_match == "baseline" and delta > 0:
             # Boost baseline FFN to match PoH
             # Rough estimate: each FFN layer adds 2*d_model*d_ff params
             # So increase d_ff by delta / (4*d_model) approximately
             baseline_d_ff = int(args.d_ff + delta / (4 * d_model))
-            print(f"⚙ Parameter matching: Boosting baseline d_ff to {baseline_d_ff} (from {args.d_ff})")
+            print(
+                f"⚙ Parameter matching: Boosting baseline d_ff to {baseline_d_ff} (from {args.d_ff})"
+            )
         elif args.param_match == "poh" and delta > 0:
             # Shrink PoH FFN
             poh_d_ff = int(args.d_ff - delta / (4 * d_model))
             print(f"⚙ Parameter matching: Reducing PoH d_ff to {poh_d_ff} (from {args.d_ff})")
-    
-    baseline = BaselineParser(args.model_name, d_model, args.heads, baseline_d_ff, 
-                              n_labels=max(n_labels, 50), use_labels=use_labels).to(device)
-    poh      = PoHParser(args.model_name, d_model, args.heads, poh_d_ff,
-                         halting_mode=args.halting_mode,
-                         max_inner_iters=args.max_inner_iters,
-                         routing_topk=args.routing_topk,
-                         combination=args.combination,
-                         ent_threshold=args.ent_threshold,
-                         n_labels=max(n_labels, 50), use_labels=use_labels,
-                         deep_supervision=args.deep_supervision,
-                         act_halting=args.act_halting,
-                         ponder_coef=args.ponder_coef,
-                         ramp_strength=args.ramp_strength,
-                         grad_mode=args.grad_mode).to(device)
-    
+
+    baseline = BaselineParser(
+        args.model_name,
+        d_model,
+        args.heads,
+        baseline_d_ff,
+        n_labels=max(n_labels, 50),
+        use_labels=use_labels,
+    ).to(device)
+    poh = PoHParser(
+        args.model_name,
+        d_model,
+        args.heads,
+        poh_d_ff,
+        halting_mode=args.halting_mode,
+        max_inner_iters=args.max_inner_iters,
+        routing_topk=args.routing_topk,
+        combination=args.combination,
+        ent_threshold=args.ent_threshold,
+        n_labels=max(n_labels, 50),
+        use_labels=use_labels,
+        deep_supervision=args.deep_supervision,
+        act_halting=args.act_halting,
+        ponder_coef=args.ponder_coef,
+        ramp_strength=args.ramp_strength,
+        grad_mode=args.grad_mode,
+    ).to(device)
+
     # Freeze encoder if requested
     if args.freeze_encoder:
         print(f"⚙ Freezing encoder parameters")
@@ -839,84 +1145,211 @@ def main():
     # Count parameters
     baseline_params = sum(p.numel() for p in baseline.parameters())
     poh_params = sum(p.numel() for p in poh.parameters())
-    
+
     print(f"\n{'='*80}")
-    print(f"Config: epochs={args.epochs}, bs={args.batch_size}, lr={args.lr}, wd={args.weight_decay}, warmup={args.warmup_ratio}, seed={args.seed}")
+    print(
+        f"Config: epochs={args.epochs}, bs={args.batch_size}, lr={args.lr}, wd={args.weight_decay}, warmup={args.warmup_ratio}, seed={args.seed}"
+    )
     print(f"Data: {args.data_source}, Train size: {len(train)}, Dev size: {len(dev)}")
     print(f"Label vocab size: {n_labels} (LAS {'enabled' if use_labels else 'disabled'})")
     print(f"Baseline params: {baseline_params:,}")
     print(f"PoH params:      {poh_params:,} (+{poh_params-baseline_params:,})")
     print(f"{'='*80}\n")
-    
+
     # CSV logging setup
     csv_file = args.log_csv
     if csv_file is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         csv_file = f"training_log_{timestamp}.csv"
-    
+
     csv_exists = os.path.exists(csv_file)
-    csv_fp = open(csv_file, 'a', newline='')
-    csv_writer = csv.DictWriter(csv_fp, fieldnames=[
-        'timestamp', 'seed', 'epoch', 'model', 'data_source', 
-        'train_loss', 'train_uas', 'train_las', 'train_time',
-        'dev_uas', 'dev_las', 'dev_time',
-        'mean_inner_iters', 'routing_entropy',
-        'params', 'lr', 'wd', 'bs', 'warmup',
-        'halting_mode', 'max_inner_iters', 'routing_topk', 'combination'
-    ])
+    csv_fp = open(csv_file, "a", newline="")
+    csv_writer = csv.DictWriter(
+        csv_fp,
+        fieldnames=[
+            "timestamp",
+            "seed",
+            "epoch",
+            "model",
+            "data_source",
+            "train_loss",
+            "train_uas",
+            "train_las",
+            "train_time",
+            "dev_uas",
+            "dev_las",
+            "dev_time",
+            "mean_inner_iters",
+            "routing_entropy",
+            "params",
+            "lr",
+            "wd",
+            "bs",
+            "warmup",
+            "halting_mode",
+            "max_inner_iters",
+            "routing_topk",
+            "combination",
+        ],
+    )
     if not csv_exists:
         csv_writer.writeheader()
-    
+
     print(f"Logging results to: {csv_file}\n")
-    
+
     # Warmup schedulers
     total_steps_baseline = (len(train) // args.batch_size) * args.epochs
     total_steps_poh = (len(train) // args.batch_size) * args.epochs
     warmup_steps = int(total_steps_baseline * args.warmup_ratio)
 
-    for ep in range(1, args.epochs+1):
-        tr_b = epoch(baseline, train, tokenizer, device, label_vocab, bs=args.batch_size, train=True, lr=args.lr, weight_decay=args.weight_decay, args=args)
-        dv_b = epoch(baseline, dev, tokenizer, device, label_vocab, bs=args.batch_size, train=False,
-                     emit_conllu=args.emit_conllu, conllu_path=f"baseline_pred_dev_ep{ep}.conllu", ignore_punct=args.ignore_punct, args=args)
-        tr_p = epoch(poh, train, tokenizer, device, label_vocab, bs=args.batch_size, train=True, lr=args.lr, weight_decay=args.weight_decay, args=args)
-        dv_p = epoch(poh, dev, tokenizer, device, label_vocab, bs=args.batch_size, train=False,
-                     emit_conllu=args.emit_conllu, conllu_path=f"poh_pred_dev_ep{ep}.conllu", ignore_punct=args.ignore_punct, args=args)
-        
+    for ep in range(1, args.epochs + 1):
+        tr_b = epoch(
+            baseline,
+            train,
+            tokenizer,
+            device,
+            label_vocab,
+            bs=args.batch_size,
+            train=True,
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+            args=args,
+        )
+        dv_b = epoch(
+            baseline,
+            dev,
+            tokenizer,
+            device,
+            label_vocab,
+            bs=args.batch_size,
+            train=False,
+            emit_conllu=args.emit_conllu,
+            conllu_path=f"baseline_pred_dev_ep{ep}.conllu",
+            ignore_punct=args.ignore_punct,
+            args=args,
+        )
+        tr_p = epoch(
+            poh,
+            train,
+            tokenizer,
+            device,
+            label_vocab,
+            bs=args.batch_size,
+            train=True,
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+            args=args,
+        )
+        dv_p = epoch(
+            poh,
+            dev,
+            tokenizer,
+            device,
+            label_vocab,
+            bs=args.batch_size,
+            train=False,
+            emit_conllu=args.emit_conllu,
+            conllu_path=f"poh_pred_dev_ep{ep}.conllu",
+            ignore_punct=args.ignore_punct,
+            args=args,
+        )
+
         # Log to CSV
         timestamp = datetime.now().isoformat()
-        csv_writer.writerow({
-            'timestamp': timestamp, 'seed': args.seed, 'epoch': ep, 'model': 'Baseline', 'data_source': args.data_source,
-            'train_loss': f"{tr_b['loss']:.4f}", 'train_uas': f"{tr_b['uas']:.4f}", 'train_las': f"{tr_b['las']:.4f}", 'train_time': f"{tr_b['time']:.1f}",
-            'dev_uas': f"{dv_b['uas']:.4f}", 'dev_las': f"{dv_b['las']:.4f}", 'dev_time': f"{dv_b['time']:.1f}",
-            'mean_inner_iters': '', 'routing_entropy': '',
-            'params': baseline_params, 'lr': args.lr, 'wd': args.weight_decay, 'bs': args.batch_size, 'warmup': args.warmup_ratio,
-            'halting_mode': '', 'max_inner_iters': '', 'routing_topk': '', 'combination': ''
-        })
-        csv_writer.writerow({
-            'timestamp': timestamp, 'seed': args.seed, 'epoch': ep, 'model': 'PoH', 'data_source': args.data_source,
-            'train_loss': f"{tr_p['loss']:.4f}", 'train_uas': f"{tr_p['uas']:.4f}", 'train_las': f"{tr_p['las']:.4f}", 'train_time': f"{tr_p['time']:.1f}",
-            'dev_uas': f"{dv_p['uas']:.4f}", 'dev_las': f"{dv_p['las']:.4f}", 'dev_time': f"{dv_p['time']:.1f}",
-            'mean_inner_iters': f"{dv_p['mean_inner_iters']:.2f}" if not math.isnan(dv_p['mean_inner_iters']) else '',
-            'routing_entropy': f"{dv_p['routing_entropy']:.3f}" if not math.isnan(dv_p.get('routing_entropy', float('nan'))) else '',
-            'params': poh_params, 'lr': args.lr, 'wd': args.weight_decay, 'bs': args.batch_size, 'warmup': args.warmup_ratio,
-            'halting_mode': args.halting_mode, 'max_inner_iters': args.max_inner_iters, 
-            'routing_topk': args.routing_topk, 'combination': args.combination
-        })
+        csv_writer.writerow(
+            {
+                "timestamp": timestamp,
+                "seed": args.seed,
+                "epoch": ep,
+                "model": "Baseline",
+                "data_source": args.data_source,
+                "train_loss": f"{tr_b['loss']:.4f}",
+                "train_uas": f"{tr_b['uas']:.4f}",
+                "train_las": f"{tr_b['las']:.4f}",
+                "train_time": f"{tr_b['time']:.1f}",
+                "dev_uas": f"{dv_b['uas']:.4f}",
+                "dev_las": f"{dv_b['las']:.4f}",
+                "dev_time": f"{dv_b['time']:.1f}",
+                "mean_inner_iters": "",
+                "routing_entropy": "",
+                "params": baseline_params,
+                "lr": args.lr,
+                "wd": args.weight_decay,
+                "bs": args.batch_size,
+                "warmup": args.warmup_ratio,
+                "halting_mode": "",
+                "max_inner_iters": "",
+                "routing_topk": "",
+                "combination": "",
+            }
+        )
+        csv_writer.writerow(
+            {
+                "timestamp": timestamp,
+                "seed": args.seed,
+                "epoch": ep,
+                "model": "PoH",
+                "data_source": args.data_source,
+                "train_loss": f"{tr_p['loss']:.4f}",
+                "train_uas": f"{tr_p['uas']:.4f}",
+                "train_las": f"{tr_p['las']:.4f}",
+                "train_time": f"{tr_p['time']:.1f}",
+                "dev_uas": f"{dv_p['uas']:.4f}",
+                "dev_las": f"{dv_p['las']:.4f}",
+                "dev_time": f"{dv_p['time']:.1f}",
+                "mean_inner_iters": (
+                    f"{dv_p['mean_inner_iters']:.2f}"
+                    if not math.isnan(dv_p["mean_inner_iters"])
+                    else ""
+                ),
+                "routing_entropy": (
+                    f"{dv_p['routing_entropy']:.3f}"
+                    if not math.isnan(dv_p.get("routing_entropy", float("nan")))
+                    else ""
+                ),
+                "params": poh_params,
+                "lr": args.lr,
+                "wd": args.weight_decay,
+                "bs": args.batch_size,
+                "warmup": args.warmup_ratio,
+                "halting_mode": args.halting_mode,
+                "max_inner_iters": args.max_inner_iters,
+                "routing_topk": args.routing_topk,
+                "combination": args.combination,
+            }
+        )
         csv_fp.flush()
-        
+
         # Console output
         if use_labels:
-            print(f"[Epoch {ep}]  BASE  train loss {tr_b['loss']:.4f} UAS {tr_b['uas']:.4f} LAS {tr_b['las']:.4f} ({tr_b['time']:.1f}s) | dev UAS {dv_b['uas']:.4f} LAS {dv_b['las']:.4f} ({dv_b['time']:.1f}s)")
-            ent_str = f" ent {dv_p['routing_entropy']:.3f}" if not math.isnan(dv_p.get('routing_entropy', float('nan'))) else ""
-            print(f"[Epoch {ep}]  PoH   train loss {tr_p['loss']:.4f} UAS {tr_p['uas']:.4f} LAS {tr_p['las']:.4f} ({tr_p['time']:.1f}s) | dev UAS {dv_p['uas']:.4f} LAS {dv_p['las']:.4f} ({dv_p['time']:.1f}s) iters {dv_p['mean_inner_iters']:.2f}{ent_str}")
+            print(
+                f"[Epoch {ep}]  BASE  train loss {tr_b['loss']:.4f} UAS {tr_b['uas']:.4f} LAS {tr_b['las']:.4f} ({tr_b['time']:.1f}s) | dev UAS {dv_b['uas']:.4f} LAS {dv_b['las']:.4f} ({dv_b['time']:.1f}s)"
+            )
+            ent_str = (
+                f" ent {dv_p['routing_entropy']:.3f}"
+                if not math.isnan(dv_p.get("routing_entropy", float("nan")))
+                else ""
+            )
+            print(
+                f"[Epoch {ep}]  PoH   train loss {tr_p['loss']:.4f} UAS {tr_p['uas']:.4f} LAS {tr_p['las']:.4f} ({tr_p['time']:.1f}s) | dev UAS {dv_p['uas']:.4f} LAS {dv_p['las']:.4f} ({dv_p['time']:.1f}s) iters {dv_p['mean_inner_iters']:.2f}{ent_str}"
+            )
         else:
-            print(f"[Epoch {ep}]  BASE  train loss {tr_b['loss']:.4f} UAS {tr_b['uas']:.4f} ({tr_b['time']:.1f}s) | dev UAS {dv_b['uas']:.4f} ({dv_b['time']:.1f}s)")
-            ent_str = f" ent {dv_p['routing_entropy']:.3f}" if not math.isnan(dv_p.get('routing_entropy', float('nan'))) else ""
-            print(f"[Epoch {ep}]  PoH   train loss {tr_p['loss']:.4f} UAS {tr_p['uas']:.4f} ({tr_p['time']:.1f}s) | dev UAS {dv_p['uas']:.4f} ({dv_p['time']:.1f}s) iters {dv_p['mean_inner_iters']:.2f}{ent_str}")
+            print(
+                f"[Epoch {ep}]  BASE  train loss {tr_b['loss']:.4f} UAS {tr_b['uas']:.4f} ({tr_b['time']:.1f}s) | dev UAS {dv_b['uas']:.4f} ({dv_b['time']:.1f}s)"
+            )
+            ent_str = (
+                f" ent {dv_p['routing_entropy']:.3f}"
+                if not math.isnan(dv_p.get("routing_entropy", float("nan")))
+                else ""
+            )
+            print(
+                f"[Epoch {ep}]  PoH   train loss {tr_p['loss']:.4f} UAS {tr_p['uas']:.4f} ({tr_p['time']:.1f}s) | dev UAS {dv_p['uas']:.4f} ({dv_p['time']:.1f}s) iters {dv_p['mean_inner_iters']:.2f}{ent_str}"
+            )
         print()
-    
+
     csv_fp.close()
     print(f"\n✓ Results logged to: {csv_file}")
+
 
 if __name__ == "__main__":
     main()
