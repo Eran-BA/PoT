@@ -1,0 +1,6 @@
+torch
+torchvision
+torchaudio
+transformers
+datasets
+conllu
