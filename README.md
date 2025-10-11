@@ -48,13 +48,87 @@ flowchart TB
   Y -.next step context.-> PC
 ```
 
+## Installation
+
+```bash
+pip install -r requirements.txt
+```
+
 ## Usage
 
-Run the parser with the following command:
+### Quick Start
+
+Run the basic parser:
 
 ```bash
 python ud_pointer_parser.py --epochs 2 --batch_size 8 --halting_mode entropy --max_inner_iters 3 --routing_topk 2
 ```
+
+### A/B Comparison: Baseline vs PoH
+
+Compare the Pointer-over-Heads model against a vanilla multi-head attention baseline:
+
+```bash
+# Using HuggingFace UD English EWT (default)
+python ab_ud_pointer_vs_baseline.py --data_source hf --epochs 5 --batch_size 16
+
+# Using local CoNLL-U files
+python ab_ud_pointer_vs_baseline.py --data_source conllu --conllu_dir /path/to/en_ewt --epochs 5 --batch_size 16
+
+# Quick test with dummy data
+python ab_ud_pointer_vs_baseline.py --data_source dummy --epochs 2 --batch_size 8
+```
+
+### Ablation Studies
+
+Run comprehensive ablation studies to understand what components matter:
+
+```bash
+# Quick mode (2 epochs per config)
+python run_ablations.py --quick
+
+# Full ablation suite
+python run_ablations.py
+
+# Specific ablation only
+python run_ablations.py --ablation iterations
+python run_ablations.py --ablation routing
+python run_ablations.py --ablation halting
+
+# Multi-seed evaluation for best config
+python run_ablations.py --multiseed
+```
+
+### Key Configuration Options
+
+**Data Sources:**
+- `--data_source hf`: HuggingFace Universal Dependencies (default)
+- `--data_source conllu`: Local CoNLL-U files
+- `--data_source dummy`: Small synthetic dataset for testing
+
+**PoH Parameters:**
+- `--max_inner_iters N`: Number of refinement iterations (1-3, default: 3)
+- `--routing_topk K`: Top-K head selection (0=soft mixture, 1-8=hard routing, default: 2)
+- `--halting_mode MODE`: fixed/entropy/halting (default: entropy)
+- `--combination MODE`: mask_concat/mixture (default: mask_concat)
+
+**Training:**
+- `--lr FLOAT`: Learning rate (default: 5e-5)
+- `--weight_decay FLOAT`: Weight decay (default: 0.01)
+- `--batch_size INT`: Batch size (default: 8)
+- `--seed INT`: Random seed for reproducibility (default: 42)
+
+## Model Comparison
+
+**Parameter counts** (with distilbert-base-uncased encoder):
+- Baseline Parser: ~72.5M parameters
+- PoH Parser: ~73.1M parameters
+- **Overhead: +676K parameters (~0.93% increase)**
+
+The PoH architecture adds minimal parameters while providing:
+- Dynamic computation through adaptive routing
+- Better accuracy through iterative refinement
+- More interpretable attention patterns
 
 ## License
 

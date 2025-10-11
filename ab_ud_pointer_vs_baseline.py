@@ -7,27 +7,21 @@ import torch, torch.nn as nn, torch.nn.functional as F
 # === try HF datasets if requested ===
 def try_hf_load(split):
     try:
-        from datasets import load_dataset, Dataset
-        # Try the new dataset paths
-        try:
-            ds = load_dataset("universal-dependencies/en_ewt", split=split)
-        except:
+        from datasets import load_dataset
+        # Try multiple UD dataset paths
+        for path in ["universal-dependencies/en_ewt", "UniversalDependencies/UD_English-EWT", "ud_english_ewt"]:
             try:
-                ds = load_dataset("UniversalDependencies/UD_English-EWT", split=split)
-            except:
-                # Fallback to dummy dataset
-                print(f"Warning: Using dummy dataset for {split}. Please download UD_English-EWT manually.")
-                dummy_data = {
-                    "tokens": [["The", "cat", "sat"], ["Dogs", "run"], ["I", "eat", "food"]],
-                    "head": [[2, 3, 0], [2, 0], [2, 3, 0]],
-                }
-                ds = Dataset.from_dict(dummy_data)
-                if split == "validation":
-                    ds = ds.select(range(min(1, len(ds))))
-                return list(ds)
-        
-        filtered = ds.filter(lambda ex: ex.get("tokens") is not None and ex.get("head") is not None)
-        return list(filtered)
+                print(f"Attempting to load from {path}...")
+                ds = load_dataset(path, split=split)
+                filtered = ds.filter(lambda ex: ex.get("tokens") is not None and ex.get("head") is not None)
+                result = list(filtered)
+                print(f"✓ Successfully loaded {len(result)} examples from {path}")
+                return result
+            except Exception as e:
+                continue
+        print(f"⚠ Warning: Could not load UD dataset from HuggingFace.")
+        print(f"   Try --data_source conllu with local CoNLL-U files, or --data_source dummy for testing.")
+        return None
     except Exception as e:
         print(f"Error loading dataset: {e}")
         return None
@@ -217,14 +211,17 @@ def collate(examples, tokenizer, device):
     for k in enc: enc[k] = enc[k].to(device)
     return enc, word_ids, heads
 
-def epoch(model, data, tokenizer, device, bs=8, train=True, lr=5e-5):
+def epoch(model, data, tokenizer, device, bs=8, train=True, lr=5e-5, weight_decay=0.01):
+    import time
     if train:
-        model.train(); opt = torch.optim.AdamW(model.parameters(), lr=lr)
+        model.train(); opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     else:
         model.eval(); opt = None
     from math import ceil
     total_loss, total_tokens, total_correct, total_iters = 0.0, 0, 0, 0.0
     steps = 0
+    start_time = time.time()
+    
     for i in range(0, len(data), bs):
         batch = data[i:i+bs]
         subw, wids, heads = collate(batch, tokenizer, device)
@@ -236,10 +233,14 @@ def epoch(model, data, tokenizer, device, bs=8, train=True, lr=5e-5):
         total_loss += loss.item(); steps += 1
         total_tokens += m["tokens"]; total_correct += int(m["uas"]*m["tokens"])
         if "inner_iters_used" in m: total_iters += m["inner_iters_used"]
+    
+    elapsed = time.time() - start_time
     return {
         "loss": total_loss/max(1,steps),
         "uas": total_correct/max(1,total_tokens),
-        "mean_inner_iters": (total_iters/max(1, len(data)//bs)) if total_iters>0 else float("nan")
+        "mean_inner_iters": (total_iters/max(1, steps)) if total_iters>0 else float("nan"),
+        "time": elapsed,
+        "steps": steps
     }
 
 def get_data(source, split, conllu_dir=None):
@@ -258,8 +259,10 @@ def main():
     ap.add_argument("--epochs", type=int, default=2)
     ap.add_argument("--batch_size", type=int, default=8)
     ap.add_argument("--lr", type=float, default=5e-5)
+    ap.add_argument("--weight_decay", type=float, default=0.01)
+    ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
-    ap.add_argument("--data_source", type=str, default="dummy", choices=["hf","conllu","dummy"])
+    ap.add_argument("--data_source", type=str, default="hf", choices=["hf","conllu","dummy"])
     ap.add_argument("--conllu_dir", type=str, default=None)
     # baseline/PoH shared
     ap.add_argument("--heads", type=int, default=8)
@@ -270,6 +273,11 @@ def main():
     ap.add_argument("--routing_topk", type=int, default=2)
     ap.add_argument("--combination", type=str, default="mask_concat", choices=["mask_concat","mixture"])
     args = ap.parse_args()
+    
+    # Set seed for reproducibility
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
 
     device = args.device
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
@@ -285,13 +293,22 @@ def main():
                          routing_topk=args.routing_topk,
                          combination=args.combination).to(device)
 
+    print(f"\n{'='*80}")
+    print(f"Config: epochs={args.epochs}, bs={args.batch_size}, lr={args.lr}, wd={args.weight_decay}, seed={args.seed}")
+    print(f"Data: {args.data_source}, Train size: {len(train)}, Dev size: {len(dev)}")
+    print(f"Baseline params: {sum(p.numel() for p in baseline.parameters()):,}")
+    print(f"PoH params:      {sum(p.numel() for p in poh.parameters()):,}")
+    print(f"{'='*80}\n")
+    
     for ep in range(1, args.epochs+1):
-        tr_b = epoch(baseline, train, tokenizer, device, bs=args.batch_size, train=True, lr=args.lr)
+        tr_b = epoch(baseline, train, tokenizer, device, bs=args.batch_size, train=True, lr=args.lr, weight_decay=args.weight_decay)
         dv_b = epoch(baseline, dev, tokenizer, device, bs=args.batch_size, train=False)
-        tr_p = epoch(poh, train, tokenizer, device, bs=args.batch_size, train=True, lr=args.lr)
+        tr_p = epoch(poh, train, tokenizer, device, bs=args.batch_size, train=True, lr=args.lr, weight_decay=args.weight_decay)
         dv_p = epoch(poh, dev, tokenizer, device, bs=args.batch_size, train=False)
-        print(f"[Epoch {ep}]  BASE  loss {tr_b['loss']:.4f} UAS {tr_b['uas']:.4f} | dev {dv_b['uas']:.4f}")
-        print(f"[Epoch {ep}]  PoH   loss {tr_p['loss']:.4f} UAS {tr_p['uas']:.4f} | dev {dv_p['uas']:.4f}  iters {dv_p['mean_inner_iters']:.2f}")
+        
+        print(f"[Epoch {ep}]  BASE  train loss {tr_b['loss']:.4f} UAS {tr_b['uas']:.4f} ({tr_b['time']:.1f}s) | dev UAS {dv_b['uas']:.4f} ({dv_b['time']:.1f}s)")
+        print(f"[Epoch {ep}]  PoH   train loss {tr_p['loss']:.4f} UAS {tr_p['uas']:.4f} ({tr_p['time']:.1f}s) | dev UAS {dv_p['uas']:.4f} ({dv_p['time']:.1f}s) iters {dv_p['mean_inner_iters']:.2f}")
+        print()
 
 if __name__ == "__main__":
     main()
