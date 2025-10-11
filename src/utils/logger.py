@@ -12,7 +12,7 @@ import os
 import platform
 import subprocess
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 
 def append_row(csv_path: str, row: Dict[str, Any]) -> None:
@@ -52,7 +52,7 @@ def flatten_cfg(**kwargs) -> Dict[str, Any]:
     return out
 
 
-def get_env_info(extra: Dict[str, Any] | None = None) -> Dict[str, Any]:
+def get_env_info(extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Collect environment info for reproducibility logs.
 
     Returns keys like torch_version, transformers_version, datasets_version,
@@ -61,20 +61,17 @@ def get_env_info(extra: Dict[str, Any] | None = None) -> Dict[str, Any]:
     info: Dict[str, Any] = {}
     # Library versions
     try:
-        import torch  # type: ignore
-
+        import torch
         info["torch_version"] = torch.__version__
     except Exception:
         info["torch_version"] = None
     try:
-        import transformers  # type: ignore
-
+        import transformers
         info["transformers_version"] = transformers.__version__
     except Exception:
         info["transformers_version"] = None
     try:
-        import datasets  # type: ignore
-
+        import datasets
         info["datasets_version"] = datasets.__version__
     except Exception:
         info["datasets_version"] = None

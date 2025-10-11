@@ -21,14 +21,14 @@ Year: 2025
 License: Apache 2.0
 """
 
-from typing import List, Tuple, Any, Dict
+from typing import List, Tuple, Any, Dict, Optional
 import random
 import numpy as np
 import torch
 import yaml
 
 
-def mean_pool_subwords(last_hidden: torch.Tensor, word_ids: List[List[int]]) -> List[torch.Tensor]:
+def mean_pool_subwords(last_hidden: torch.Tensor, word_ids: List[List[Optional[int]]]) -> List[torch.Tensor]:
     """Pool subword token representations to word-level representations.
 
     Averages all subword pieces belonging to the same word. This is essential
