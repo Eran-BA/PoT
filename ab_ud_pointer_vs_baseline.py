@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+A/B Comparison: Baseline vs Pointer-over-Heads Transformer
+Dependency parsing on Universal Dependencies with fair comparison setup.
+
+Author: Eran Ben Artzy
+Year: 2025
+License: Apache 2.0
+"""
 import argparse, math, os, glob, csv
 from typing import List, Dict, Tuple
 from datetime import datetime

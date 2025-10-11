@@ -9,7 +9,9 @@
 #   - Combination modes: 'mask_concat' (vanilla-like) or 'mixture'
 #   - Clean aux telemetry for analysis and logging
 #
-# Author: Eran (concept), implementation compiled by ChatGPT
+# Author: Eran Ben Artzy
+# Year: 2025
+# License: Apache 2.0
 
 import math
 import argparse

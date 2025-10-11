@@ -4,8 +4,12 @@
 UD Dependency Parsing with Pointer-over-Heads (UAS only)
 - Dataset: Universal Dependencies English EWT
 - Encoder: DistilBERT -> word-level pooling
-- Router: PointerMoHTransformerBlock (your innovation)
+- Router: PointerMoHTransformerBlock
 - Head prediction: biaffine/bilinear pointer over candidates {ROOT + words}
+
+Author: Eran Ben Artzy
+Year: 2025
+License: Apache 2.0
 """
 
 import argparse

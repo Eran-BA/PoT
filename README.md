@@ -1,6 +1,8 @@
 # Pointer-over-Heads Transformer (PoT)
 
-Dynamic multi-head attention with adaptive routing for dependency parsing.
+**Dynamic multi-head attention with adaptive routing for dependency parsing**
+
+**Author:** Eran Ben Artzy
 
 ## Architecture
 
@@ -313,11 +315,12 @@ PoT/
 If you use this code in your research, please cite:
 
 ```bibtex
-@software{pot2025,
-  title={Pointer-over-Heads Transformer},
-  author={PoT Contributors},
+@software{benartzy2025pot,
+  title={Pointer-over-Heads Transformer: Dynamic Multi-Head Attention with Adaptive Routing},
+  author={Ben Artzy, Eran},
   year={2025},
-  url={https://github.com/Eran-BA/PoT}
+  url={https://github.com/Eran-BA/PoT},
+  note={GitHub repository}
 }
 ```
 
