@@ -27,7 +27,7 @@ from transformers import AutoTokenizer
 from src.models import BaselineParser, PoHParser
 from src.data.loaders import get_dataset, build_label_vocab
 from src.training.trainer import Trainer
-from src.training.schedulers import get_linear_schedule_with_warmup
+from src.training.schedulers import get_linear_schedule_with_warmup  # noqa: F401 (reserved)
 
 
 def main():
@@ -152,7 +152,7 @@ def main():
     # Calculate training steps for scheduler
     steps_per_epoch = len(train_data) // args.batch_size
     total_steps = args.epochs * steps_per_epoch
-    warmup_steps = int(args.warmup_ratio * total_steps)
+    # warmup_steps computed by scheduler when used; reserved variable
     
     # Training loop
     print(f"\n{'='*80}")

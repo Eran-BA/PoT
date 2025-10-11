@@ -78,7 +78,7 @@ def main():
         use_labels=True
     ).to(device)
     
-    print(f"TRM Configuration:")
+    print("TRM Configuration:")
     print(f"  Supervision Steps: {args.trm_supervision_steps}")
     print(f"  Inner Updates: {args.trm_inner_updates}")
     print(f"  Ramp Strength: {args.trm_ramp_strength}")

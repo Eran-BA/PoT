@@ -97,7 +97,7 @@ class EvaluationMetrics:
         print(f"{'='*70}")
         print(f"Sentences: {self.total_sentences}")
         print(f"Tokens:    {self.total_tokens}")
-        print(f"\nOverall Metrics:")
+        print("\nOverall Metrics:")
         print(f"  UAS (Unlabeled Attachment Score): {self.get_uas():.4f}")
         print(f"  LAS (Labeled Attachment Score):   {self.get_las():.4f}")
         print(f"  Tree Accuracy:                     {self.get_tree_accuracy():.4f}")
@@ -105,7 +105,7 @@ class EvaluationMetrics:
         # Per-label breakdown
         per_label = self.get_per_label_metrics()
         if per_label:
-            print(f"\nPer-Relation Metrics:")
+            print("\nPer-Relation Metrics:")
             print(f"{'Relation':<15} {'Count':>8} {'UAS':>8} {'LAS':>8}")
             print(f"{'-'*44}")
             for label in sorted(per_label.keys(), key=lambda x: per_label[x]['count'], reverse=True):

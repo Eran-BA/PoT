@@ -24,7 +24,7 @@ from transformers import AutoTokenizer
 from src.models import PoHParser
 from src.data.loaders import get_dataset, build_label_vocab
 from src.training.trainer import Trainer
-from src.training.schedulers import get_linear_schedule_with_warmup
+from src.training.schedulers import get_linear_schedule_with_warmup  # noqa: F401 (reserved)
 from src.utils.helpers import seed_everything, load_yaml_config
 from src.utils.logger import get_env_info
 
@@ -176,7 +176,7 @@ def main():
         if dev_metrics['uas'] > best_uas:
             best_uas = dev_metrics['uas']
             best_epoch = epoch + 1
-            print(f"  ✓ New best UAS!")
+            print("  ✓ New best UAS!")
             try:
                 torch.save(parser.state_dict(), "best_poh.pt")
                 print("  Saved best checkpoint to best_poh.pt")

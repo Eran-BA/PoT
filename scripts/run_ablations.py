@@ -3,11 +3,9 @@
 Ablation study runner for Pointer-over-Heads Transformer.
 Executes multiple configurations and logs results to CSV.
 """
-import subprocess
 import csv
-import os
-import sys
 from datetime import datetime
+import subprocess
 
 # Base configuration
 BASE_CONFIG = {
@@ -151,7 +149,7 @@ def run_ablation(ablation_name, configs, output_file, quick=False):
                         print(f"  ✓ {m['model']}: dev UAS {m.get('dev_uas', 'N/A'):.4f}")
                 
             except subprocess.TimeoutExpired:
-                print(f"  ✗ Timeout")
+                print("  ✗ Timeout")
             except Exception as e:
                 print(f"  ✗ Error: {e}")
             
@@ -161,7 +159,7 @@ def run_ablation(ablation_name, configs, output_file, quick=False):
 def run_multiseed(config, seeds, output_file):
     """Run best config with multiple seeds."""
     print(f"\n{'='*80}")
-    print(f"Running multi-seed evaluation")
+    print("Running multi-seed evaluation")
     print(f"{'='*80}\n")
     
     full_config = {**BASE_CONFIG, **config}
@@ -213,7 +211,7 @@ def main():
     output_file = f"ablation_results_{timestamp}.csv"
     
     print(f"\n{'='*80}")
-    print(f"Pointer-over-Heads Ablation Study")
+    print("Pointer-over-Heads Ablation Study")
     print(f"Output: {output_file}")
     print(f"Quick mode: {args.quick}")
     print(f"{'='*80}")
@@ -236,7 +234,7 @@ def main():
         run_multiseed(best_config, SEEDS, output_file)
     
     print(f"\n{'='*80}")
-    print(f"✓ Ablation study complete!")
+    print("✓ Ablation study complete!")
     print(f"Results saved to: {output_file}")
     print(f"{'='*80}\n")
 

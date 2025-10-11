@@ -6,12 +6,12 @@ Year: 2025
 License: Apache 2.0
 """
 import csv
-import os
 import json
-import time
+import os
 import platform
 import subprocess
-from typing import Dict, Any
+import time
+from typing import Any, Dict
 
 
 def append_row(csv_path: str, row: Dict[str, Any]) -> None:

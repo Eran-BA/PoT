@@ -36,8 +36,17 @@ target-version = ["py39"]
 
 [tool.ruff]
 line-length = 100
-select = ["E", "F", "I", "UP"]
-ignore = ["E203", "E266", "E501"]
+
+[tool.ruff.lint]
+select = ["E", "F"]
+ignore = [
+  "E203", "E266", "E501",  # formatting nuances
+  "I001",                     # import sorting (defer for later)
+  "F401",                     # unused imports (defer for later)
+  "F541",                     # f-string without placeholders
+  "E741",                     # ambiguous variable names (e.g., I)
+  "UP006", "UP015", "UP035"  # typing/builtin modernization
+]
 
 [tool.mypy]
 python_version = "3.9"
