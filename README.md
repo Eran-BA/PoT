@@ -4,6 +4,31 @@
 
 **Author:** Eran Ben Artzy
 
+---
+
+## 🎯 Implementation Status
+
+**Core Features** (✅ Complete):
+- ✅ Pointer-over-Heads transformer architecture
+- ✅ Baseline vs PoH A/B comparison
+- ✅ Multi-head routing (soft, top-k)
+- ✅ Adaptive halting (fixed, entropy, ACT-style)
+- ✅ UAS and LAS support with biaffine labeler
+- ✅ Parameter matching (`--param_match`)
+- ✅ Encoder freezing (`--freeze_encoder`)
+- ✅ CSV logging (auto-generated)
+- ✅ Multi-seed runner (`run_multiseed.sh`)
+- ✅ Visualization suite
+
+**Utilities Ready** (🔧 Integration pending):
+- 🔧 `utils/logger.py` - Drop-in CSV logger (created, can replace built-in)
+- 🔧 `utils/conllu_writer.py` - Prediction export (created, needs `--emit_conllu` wire)
+- 🔧 `utils/metrics.py` - Punctuation masking (created, needs `--ignore_punct` wire)
+
+**Current State:** All utilities exist and are documented. Main scripts use built-in CSV logging. To use the utility versions, simply import and call them (examples below).
+
+---
+
 ## Architecture
 
 ```mermaid
@@ -63,33 +88,79 @@ pip install -r requirements.txt
 
 ## Quick Start (5 minutes)
 
-Run a complete experiment with dummy data to verify installation:
+### Verify Installation
+
+Run a complete experiment with dummy data:
 
 ```bash
 # 1. Quick sanity check (30 seconds)
 python ab_ud_pointer_vs_baseline.py --data_source dummy --epochs 2 --batch_size 8
 
-# 2. View the generated CSV log
-ls training_log_*.csv
+# 2. View the generated CSV log (auto-created)
+cat training_log_*.csv | head -n 5
 
-# 3. Plot results
-python plot_results.py training_log_*.csv
+# 3. Generate quick plot
+python plot_simple.py training_log_*.csv
 ```
 
 **Expected output:**
 ```
+================================================================================
+Loading data source: dummy
+================================================================================
+✓ Train set: 128 examples
+✓ Dev set:   48 examples
+✓ Sample fields: ['tokens', 'head']
+✓ Dependency labels: absent
+================================================================================
+
 Config: epochs=2, bs=8, lr=5e-05, wd=0.01, warmup=0.05, seed=42
 Data: dummy, Train size: 128, Dev size: 48
 Label vocab size: 0 (LAS disabled)
 Baseline params: 67,110,913
 PoH params:      67,786,769 (+675,856)
 
+Logging results to: training_log_20250111_143022.csv
+
 [Epoch 1]  BASE  train loss 4.7515 UAS 0.2500 (2.1s) | dev UAS 0.3333 (0.8s)
 [Epoch 1]  PoH   train loss 2.4897 UAS 0.6250 (2.3s) | dev UAS 0.6667 (0.9s) iters 3.00
 
 [Epoch 2]  BASE  train loss 2.2400 UAS 0.5000 (2.1s) | dev UAS 0.6667 (0.8s)
 [Epoch 2]  PoH   train loss 0.8710 UAS 0.7500 (2.3s) | dev UAS 1.0000 (0.9s) iters 3.00
+
+✓ Results logged to: training_log_20250111_143022.csv
 ```
+
+### Reproducible Full Run
+
+Complete workflow from installation to publication-ready figure:
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run on real data (HuggingFace UD English EWT)
+python ab_ud_pointer_vs_baseline.py \
+  --data_source hf \
+  --epochs 3 \
+  --batch_size 16 \
+  --lr 3e-5 \
+  --param_match baseline \
+  --log_csv my_results.csv
+
+# Generate visualization
+python plot_simple.py my_results.csv --out figure1.png
+
+# Multi-seed for paper
+./run_multiseed.sh
+# Output: training_log_multiseed_TIMESTAMP.csv with mean±std statistics
+```
+
+**This produces:**
+- ✅ CSV log with all hyperparameters and metrics
+- ✅ Parameter-matched fair comparison
+- ✅ Publication-ready PNG figure
+- ✅ Console output with detailed breakdown
 
 ---
 
@@ -301,6 +372,31 @@ uas, las = compute_uas_las(
     mask, deprels=deprel_strings,
     ignore_punct=True
 )
+```
+
+### Integration Examples
+
+**Quick integration** (~5 lines per feature):
+
+```python
+# 1. CoNLL-U export (add to eval loop)
+if args.emit_conllu:
+    from utils.conllu_writer import write_conllu
+    write_conllu("predictions.conllu", tokens, heads_gold, 
+                 deprels_gold, heads_pred, deprels_pred)
+
+# 2. Punctuation masking (replace UAS computation)
+if args.ignore_punct and deprels_available:
+    from utils.metrics import compute_uas_las
+    uas, las = compute_uas_las(pred_heads, gold_heads, pred_labels, 
+                                gold_labels, mask, deprels, ignore_punct=True)
+
+# 3. Enhanced CSV logging (replace current logging)
+from utils.logger import append_row, flatten_cfg
+append_row(args.log_csv, flatten_cfg(
+    seed=args.seed, epoch=ep, model="PoH", 
+    dev_uas=dv_uas, train_uas=tr_uas, **vars(args)
+))
 ```
 
 ## Visualization
