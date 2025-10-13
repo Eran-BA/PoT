@@ -22,7 +22,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# Add parent directory to path for imports - robust for Colab
+repo_root = None
+try:
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+except (NameError, OSError):
+    cwd = os.getcwd()
+    if os.path.exists(os.path.join(cwd, 'src', 'pot')):
+        repo_root = cwd
+    elif os.path.basename(cwd) == 'experiments':
+        repo_root = os.path.dirname(cwd)
+if repo_root:
+    sys.path.insert(0, repo_root)
 
 from src.pot.core.hrm_controller import HRMPointerController, HRMState
 

@@ -25,8 +25,43 @@ import os
 from pathlib import Path
 
 # Add parent directory to path for imports
-repo_root = Path(__file__).parent.parent
-sys.path.insert(0, str(repo_root))
+# Try multiple methods to find the correct path
+repo_root = None
+
+# Method 1: Try using __file__ (works when run as module)
+try:
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.dirname(script_dir)
+except (NameError, OSError):
+    pass
+
+# Method 2: Use current working directory (works in Colab/interactive)
+if repo_root is None or not os.path.exists(os.path.join(repo_root, 'src', 'pot')):
+    cwd = os.getcwd()
+    # Check if we're already in PoT root
+    if os.path.exists(os.path.join(cwd, 'src', 'pot')):
+        repo_root = cwd
+    # Check if we're in experiments subfolder
+    elif os.path.basename(cwd) == 'experiments':
+        repo_root = os.path.dirname(cwd)
+    # Search up directory tree
+    else:
+        current = cwd
+        for _ in range(5):  # Search up to 5 levels
+            if os.path.exists(os.path.join(current, 'src', 'pot')):
+                repo_root = current
+                break
+            parent = os.path.dirname(current)
+            if parent == current:  # Reached root
+                break
+            current = parent
+
+if repo_root is None:
+    print(f"ERROR: Could not find PoT repository root. Current directory: {os.getcwd()}")
+    print("Please run from the PoT directory or set PYTHONPATH appropriately.")
+    sys.exit(1)
+
+sys.path.insert(0, repo_root)
 
 # Try to import transformers for BERT, fallback if not available
 try:
@@ -36,19 +71,9 @@ except ImportError:
     BERT_AVAILABLE = False
     print("Warning: transformers library not available. BERT baseline will be skipped.")
 
-try:
-    from src.pot.core.poh_stack import PoHStack, PoHStackConfig
-    from src.pot.core.iter_refiner import IterRefiner
-except ModuleNotFoundError:
-    # If running from different location, try alternative imports
-    current_dir = Path.cwd()
-    if 'PoT' in str(current_dir):
-        pot_root = str(current_dir).split('PoT')[0] + 'PoT'
-        sys.path.insert(0, pot_root)
-        from src.pot.core.poh_stack import PoHStack, PoHStackConfig
-        from src.pot.core.iter_refiner import IterRefiner
-    else:
-        raise
+# Import PoT modules
+from src.pot.core.poh_stack import PoHStack, PoHStackConfig
+from src.pot.core.iter_refiner import IterRefiner
 
 
 # ============================================================================
