@@ -143,9 +143,12 @@ PYTHONPATH=$PWD python experiments/quick_nli_test.py
 
 **This will:**
 - Take 3 minutes
-- Show you BERT vs PoH comparison
+- Show you BERT vs PoH (12 iterations) comparison
 - Verify everything works
 - Then you can run longer benchmarks!
+
+**Note:** PoH uses 12 inner iterations (optimal from empirical analysis).  
+See `docs/POH_ITERATION_GUIDE.md` for details on iteration count selection.
 
 ---
 
