@@ -159,9 +159,7 @@ flowchart TB
 - **Router**: Produces per-token, per-head routing weights α from f_L state
 - **Weighted Mix**: Combines attention heads based on α
 - **Skip Connections**: Residual connections around attention and FFN
-- **Iterative Refinement**: Model refines representation R times per forward pass (R=12 optimal)
-
-**⚠️ Terminology:** "HRM inner/outer loops" (f_L/f_H timescales) ≠ "refinement iterations" (R multi-step processing) ≠ "training steps" (gradient descent). See [docs/TERMINOLOGY_GUIDE.md](docs/TERMINOLOGY_GUIDE.md) for official terminology.
+- **Refinement**: Model refines representation R times per forward pass (R=12 optimal)
 
 ### Hierarchy
 
