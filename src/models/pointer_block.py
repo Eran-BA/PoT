@@ -48,6 +48,52 @@ from src.models.layers import (
 )
 
 
+# src/models/pointer_block.py  (inside your PoT transformer block)
+
+from .layers import HRMPointerController, HRMState
+
+class PointerBlock(nn.Module):
+    def __init__(self, d_model, n_heads, **kw):
+        super().__init__()
+        self.attn_heads = MyMultiHeadSubmodule(d_model, n_heads, **kw)  # your existing per-head features
+        self.controller = HRMPointerController(
+            d_model=d_model,
+            n_heads=n_heads,
+            d_ctrl=kw.get("d_ctrl", d_model),
+            T=kw.get("hrm_T", 4),
+            topk=kw.get("routing_topk", None),
+            temperature_init=kw.get("temp_init", 2.0),
+            temperature_min=kw.get("temp_min", 0.7),
+            entropy_reg=kw.get("entropy_reg", 1e-3),
+            use_layernorm=True,
+            dropout=kw.get("ctrl_dropout", 0.0),
+        )
+        self.mix_proj = nn.Linear(d_model, d_model)  # if you already had a projection after mixing
+
+    def forward(self, x, mask=None, state: Optional[HRMState] = None, iters: int = 2, epoch_temp: Optional[float] = None):
+        B, L, D = x.shape
+        if state is None:
+            state = self.controller.init_state(B, x.device)
+        if epoch_temp is not None:
+            self.controller.set_temperature(epoch_temp)
+
+        # example: precompute per-head outputs once and (optionally) refresh each iteration if your heads depend on x
+        head_feats = self.attn_heads(x, mask=mask)    # [B, n_heads, L, d_head] or any per-head feature you mix later
+
+        # iterate like your current TRM loop
+        alphas_seq = []
+        for t in range(iters):
+            alphas, state, aux = self.controller(x, head_outputs=head_feats, mask=mask, state=state, return_aux=True)
+            alphas_seq.append(alphas)
+
+            # mix heads → aggregate to token level (example: weighted sum across heads, then residual)
+            mixed = (alphas.unsqueeze(-1).unsqueeze(-1) * head_feats).sum(dim=1)   # [B, L, d_head] if head_feats is [B,H,L,d]
+            x = x + self.mix_proj(mixed)  # residual; adapt to your shapes
+
+        # (Optional) deep supervision: return all alphas for per-iteration loss; or only the last
+        return x, state, {"alphas_seq": alphas_seq, **aux}
+
+
 class PointerMoHTransformerBlock(nn.Module):
     """Pointer-over-Heads Transformer block with adaptive inner-loop halting.
 

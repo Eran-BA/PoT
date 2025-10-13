@@ -24,6 +24,8 @@ from src.models.layers import (
     BiaffineLabeler,
     MultiHeadSelfAttention,
     PointerOverHeadsController,
+    HRMPointerController,
+    HRMState,
     entropy_from_logits,
     gumbel_softmax_topk,
 )
@@ -38,6 +40,8 @@ __all__ = [
     "BiaffineLabeler",
     "MultiHeadSelfAttention",
     "PointerOverHeadsController",
+    "HRMPointerController",
+    "HRMState",
     "entropy_from_logits",
     "gumbel_softmax_topk",
 ]
