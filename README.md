@@ -288,6 +288,7 @@ Explore PoH interactively in Colab or Jupyter:
 | **PoH_GPT_AB_Test** | Language Modeling | 2 min | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/PoH_GPT_AB_Test.ipynb) |
 | **PoH_NLI_Benchmark** | NLI | 3 min | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/PoH_NLI_Benchmark.ipynb) |
 | **Maze_AB_Test_Colab** 🆕 | Maze Solving (A100) | 30-60 min | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Maze_AB_Test_Colab.ipynb) |
+| **Connect_Four_AB_Test_Colab** 🆕 | Connect Four (A100) | 20-40 min | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Connect_Four_AB_Test_Colab.ipynb) |
 
 **See:** [notebooks/README.md](notebooks/README.md) for details
 
