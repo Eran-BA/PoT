@@ -793,26 +793,7 @@ def run_ab_test(train_games=500, test_games=100, minimax_depth=3, R=4, T=4, n_he
     baseline_params = sum(p.numel() for p in baseline.parameters())
     print(f"  Baseline parameters: {baseline_params / 1e6:.2f}M")
     
-    # BERT baseline (if available) - adjust layers to match PoH parameters
-    bert = None
-    bert_results = None
-    if BERT_AVAILABLE:
-        try:
-            # BERT with fewer layers to match parameter count
-            # PoH has routing overhead, so BERT needs ~4-5 layers instead of 6
-            bert = BERTConnectFourModel(
-                d_model=d_model,
-                n_heads=n_heads,
-                d_ff=d_ff,
-                num_layers=4  # Reduced from 6 for parameter parity
-            ).to(device)
-            bert_params = sum(p.numel() for p in bert.parameters())
-            print(f"  BERT parameters: {bert_params / 1e6:.2f}M")
-        except Exception as e:
-            print(f"  Warning: Could not create BERT model: {e}")
-            bert = None
-    
-    # PoH with HRM controller
+    # Create PoH-HRM first to get target parameter count
     poh = ConnectFourModel(
         d_model=d_model,
         n_heads=n_heads,
@@ -825,12 +806,47 @@ def run_ab_test(train_games=500, test_games=100, minimax_depth=3, R=4, T=4, n_he
     poh_params = sum(p.numel() for p in poh.parameters())
     print(f"  PoH-HRM parameters: {poh_params / 1e6:.2f}M")
     
-    # Check parameter parity
-    if bert is not None:
-        bert_parity = abs(bert_params - poh_params) / poh_params * 100
-        print(f"  Parameter difference (BERT vs PoH): {bert_parity:.2f}%")
-        if bert_parity > 5:
-            print(f"  ⚠️  Warning: Parameter difference > 5%")
+    # BERT baseline (if available) - dynamically adjust layers for parameter parity with PoH
+    bert = None
+    bert_results = None
+    if BERT_AVAILABLE:
+        try:
+            # Try different layer counts to match PoH parameters
+            for attempt_layers in [3, 2, 4, 1]:
+                bert_test = BERTConnectFourModel(
+                    d_model=d_model,
+                    n_heads=n_heads,
+                    d_ff=d_ff,
+                    num_layers=attempt_layers
+                ).to(device)
+                
+                bert_params = sum(p.numel() for p in bert_test.parameters())
+                parity_pct = abs(bert_params - poh_params) / poh_params * 100
+                
+                if parity_pct < 15:  # Accept if within 15%
+                    bert = bert_test
+                    print(f"  BERT parameters: {bert_params / 1e6:.2f}M (layers={attempt_layers}, parity={parity_pct:.1f}%)")
+                    break
+                else:
+                    del bert_test
+                    torch.cuda.empty_cache() if torch.cuda.is_available() else None
+            
+            if bert is None:
+                print(f"  Warning: Could not achieve parameter parity (<15%) for BERT")
+                # Use smallest BERT anyway for comparison
+                bert = BERTConnectFourModel(
+                    d_model=d_model,
+                    n_heads=n_heads,
+                    d_ff=d_ff,
+                    num_layers=1
+                ).to(device)
+                bert_params = sum(p.numel() for p in bert.parameters())
+                parity_pct = abs(bert_params - poh_params) / poh_params * 100
+                print(f"  BERT parameters: {bert_params / 1e6:.2f}M (layers=1, parity={parity_pct:.1f}%) [best effort]")
+                
+        except Exception as e:
+            print(f"  Warning: Could not create BERT model: {e}")
+            bert = None
     
     # Train baseline
     baseline_results = train_and_evaluate(

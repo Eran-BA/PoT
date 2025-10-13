@@ -20,7 +20,13 @@ from dataclasses import dataclass
 from collections import deque
 import time
 import json
+import sys
+import os
 from pathlib import Path
+
+# Add parent directory to path for imports
+repo_root = Path(__file__).parent.parent
+sys.path.insert(0, str(repo_root))
 
 # Try to import transformers for BERT, fallback if not available
 try:
@@ -30,11 +36,19 @@ except ImportError:
     BERT_AVAILABLE = False
     print("Warning: transformers library not available. BERT baseline will be skipped.")
 
-import sys
-sys.path.append(str(Path(__file__).parent.parent))
-
-from src.pot.core.poh_stack import PoHStack, PoHStackConfig
-from src.pot.core.iter_refiner import IterRefiner
+try:
+    from src.pot.core.poh_stack import PoHStack, PoHStackConfig
+    from src.pot.core.iter_refiner import IterRefiner
+except ModuleNotFoundError:
+    # If running from different location, try alternative imports
+    current_dir = Path.cwd()
+    if 'PoT' in str(current_dir):
+        pot_root = str(current_dir).split('PoT')[0] + 'PoT'
+        sys.path.insert(0, pot_root)
+        from src.pot.core.poh_stack import PoHStack, PoHStackConfig
+        from src.pot.core.iter_refiner import IterRefiner
+    else:
+        raise
 
 
 # ============================================================================
