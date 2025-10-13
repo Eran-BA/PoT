@@ -1,0 +1,15 @@
+{
+  "model": "pot",
+  "task": "partial_obs",
+  "array_len": 12,
+  "mask_rate": 0.5,
+  "n_seeds": 1,
+  "kendall_mean": 0.11747474747474747,
+  "kendall_ci": NaN,
+  "perfect_mean": 0.0,
+  "perfect_ci": NaN,
+  "accuracy_mean": 0.2288888888888889,
+  "accuracy_ci": NaN,
+  "hamming_mean": 0.7711111111111111,
+  "hamming_ci": NaN
+}
