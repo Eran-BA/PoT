@@ -2,12 +2,13 @@
 """
 Sorting A/B Test with Optimal R and T Parameters
 
-Tests PoH with optimal hyperparameters (R=4, T=4) against baseline
-on sorting tasks of varying difficulty.
+Tests PoH with optimal hyperparameters (R=4, T=4, n_heads=2) against baseline
+on sorting tasks using the proper pointer decoder architecture.
 
-Based on grid search results:
-- Best R = 4 (refinement steps)
-- Best T = 4 (HRM outer loop period)
+Based on:
+- Optimal n_heads=2 from head search
+- Optimal R=4, T=4 from R/T grid search
+- Working architecture from examples/synthetic/sort_pointer_fixed.py
 
 Author: Eran Ben Artzy
 Date: October 2025
@@ -29,7 +30,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.pot.modules import PoHConfig, PoHStack, IterRefiner
+from src.pot.core.hrm_controller import HRMPointerController, HRMState
 
 
 # ========== Data Generation ==========
@@ -58,147 +59,223 @@ def generate_sort_data(num_samples: int, array_len: int, seed: int = 42):
 
 # ========== Models ==========
 
-class BaselineTransformerSort(nn.Module):
-    """Standard transformer for sorting (baseline)."""
-    
+class PoHBlock(nn.Module):
+    """Single PoH transformer block with HRM controller and iterative refinement."""
+
     def __init__(
-        self,
-        d_model: int = 128,
-        n_heads: int = 2,  # Optimal from head search
-        d_ff: int = 512,
-        depth: int = 3,
-        dropout: float = 0.1,
+        self, d_model: int, n_heads: int, d_ff: int, max_iters: int, T: int = 4
     ):
         super().__init__()
         self.d_model = d_model
-        
-        # Input projection
-        self.input_proj = nn.Linear(1, d_model)
-        
-        # Positional encoding
-        self.pos_emb = nn.Parameter(torch.randn(1, 100, d_model) * 0.02)
-        
-        # Standard transformer layers
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=n_heads,
-            dim_feedforward=d_ff,
-            dropout=dropout,
-            batch_first=True,
-            norm_first=True
-        )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=depth)
-        
-        # Output projection (pointer logits)
-        self.output_proj = nn.Linear(d_model, 1)
-    
-    def forward(self, x):
-        """
-        Args:
-            x: [B, L, 1] - input values
-        Returns:
-            logits: [B, L, L] - pointer logits
-        """
-        B, L, _ = x.shape
-        
-        # Embed + positional
-        h = self.input_proj(x)  # [B, L, D]
-        h = h + self.pos_emb[:, :L, :]
-        
-        # Transform
-        h = self.transformer(h)  # [B, L, D]
-        
-        # Compute pointer logits (query x key)
-        queries = h  # [B, L, D]
-        keys = h     # [B, L, D]
-        
-        logits = torch.bmm(queries, keys.transpose(1, 2))  # [B, L, L]
-        logits = logits / np.sqrt(self.d_model)
-        
-        return logits
-    
-    def count_parameters(self):
-        return sum(p.numel() for p in self.parameters() if p.requires_grad)
-
-
-class PoHTransformerSort(nn.Module):
-    """PoH transformer for sorting with optimal R and T."""
-    
-    def __init__(
-        self,
-        d_model: int = 128,
-        n_heads: int = 2,  # Optimal from head search
-        d_ff: int = 512,
-        depth: int = 3,
-        R: int = 4,
-        T: int = 4,
-        dropout: float = 0.1,
-    ):
-        super().__init__()
-        self.d_model = d_model
-        self.R = R
+        self.n_heads = n_heads
+        self.max_iters = max_iters
         self.T = T
-        
-        # Input projection
-        self.input_proj = nn.Linear(1, d_model)
-        
-        # PoH stack with HRM controller
-        cfg = PoHConfig(
+
+        # HRM controller for routing (with T parameter)
+        self.controller = HRMPointerController(
             d_model=d_model,
             n_heads=n_heads,
-            d_ff=d_ff,
-            dropout=dropout,
-            route_mode="soft",
-            share_router=True,
-            pos_encoding="absolute",
-            max_seq_len=100,
+            T=T,
+            topk=None,  # Soft routing
+            temperature_init=2.0,
+            temperature_min=0.7,
+            entropy_reg=1e-3,
+            use_layernorm=True,
+            dropout=0.0
         )
-        
-        stack = PoHStack(cfg, depth=depth)
-        
-        # Set HRM period T in each block
-        for block in stack.blocks:
-            if hasattr(block, 'router'):
-                if hasattr(block.router, 'hrm_controller'):
-                    block.router.hrm_controller.T = T
-                elif hasattr(block.router, 'T'):
-                    block.router.T = T
-        
-        # Iterative refiner with R refinement steps
-        self.refiner = IterRefiner(
-            stack,
-            max_inner_iters=R,
-            outer_residual=True,
-            rezero_init=True
+
+        # Per-head attention projections
+        self.q_proj = nn.ModuleList(
+            [nn.Linear(d_model, d_model // n_heads) for _ in range(n_heads)]
         )
-        
-        # Output projection (pointer logits)
-        self.output_proj = nn.Linear(d_model, 1)
-    
-    def forward(self, x):
+        self.k_proj = nn.ModuleList(
+            [nn.Linear(d_model, d_model // n_heads) for _ in range(n_heads)]
+        )
+        self.v_proj = nn.ModuleList(
+            [nn.Linear(d_model, d_model // n_heads) for _ in range(n_heads)]
+        )
+        self.out_proj = nn.Linear(d_model, d_model)
+
+        # FFN
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, d_ff), nn.ReLU(), nn.Linear(d_ff, d_model)
+        )
+        self.ln1 = nn.LayerNorm(d_model)
+        self.ln2 = nn.LayerNorm(d_model)
+
+    def forward(self, z):
         """
-        Args:
-            x: [B, L, 1] - input values
+        Iteratively refine latent z using HRM controller.
+        Returns the refined latent (pre-FFN).
+        """
+        B = z.size(0)
+        device = z.device
+        
+        # Initialize HRM state
+        hrm_state = self.controller.init_state(B, device)
+        
+        for iter_idx in range(self.max_iters):
+            # HRM controller routing (updates f_L every step, f_H every T steps)
+            alphas, hrm_state, aux = self.controller(
+                x=z,  # [B, T, d_model]
+                state=hrm_state,
+                return_aux=True
+            )
+            
+            # alphas: [B, n_heads] - routing weights over heads
+
+            # Per-head attention
+            head_outs = []
+            for h_idx in range(self.n_heads):
+                q = self.q_proj[h_idx](z)  # [B, T, d_model//n_heads]
+                k = self.k_proj[h_idx](z)
+                v = self.v_proj[h_idx](z)
+
+                scores = torch.einsum("btd,bsd->bts", q, k) / (
+                    (self.d_model // self.n_heads) ** 0.5
+                )
+                attn = F.softmax(scores, dim=-1)
+                out = torch.einsum("bts,bsd->btd", attn, v)
+                head_outs.append(out)
+
+            # Weight heads by HRM routing weights
+            # alphas: [B, n_heads], expand to [B, 1, n_heads, 1]
+            # head_outs: list of [B, T, d_head]
+            head_outs_stacked = torch.stack(head_outs, dim=2)  # [B, T, n_heads, d_head]
+            alphas_expanded = alphas.unsqueeze(1).unsqueeze(-1)  # [B, 1, n_heads, 1]
+            
+            # Weighted sum of heads
+            weighted_heads = (head_outs_stacked * alphas_expanded).sum(dim=2)  # [B, T, d_head]
+            
+            # Project back to d_model
+            # Since we have n_heads outputs, concat them
+            head_outs_concat = torch.cat(head_outs, dim=-1)  # [B, T, d_model]
+            attn_out = self.out_proj(head_outs_concat)
+
+            # Residual + norm
+            z = self.ln1(z + attn_out)
+            z_refined = z  # Store latent before FFN
+
+            # FFN (only applied at the end, not used for next iteration's input)
+            z = self.ln2(z + self.ffn(z))
+
+        return z_refined  # Return pre-FFN latent
+
+
+class PointerDecoderSort(nn.Module):
+    """Pointer decoder with optional PoH routing."""
+
+    def __init__(
+        self,
+        d_model: int = 128,
+        n_heads: int = 2,
+        d_ff: int = 256,
+        max_inner_iters: int = 3,
+        T: int = 4,
+        use_poh: bool = False,
+    ):
+        super().__init__()
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.use_poh = use_poh
+
+        # Encoder: embed input values + positions
+        self.value_embed = nn.Sequential(
+            nn.Linear(1, d_model // 2), nn.ReLU(), nn.Linear(d_model // 2, d_model)
+        )
+        self.pos_embed = nn.Embedding(100, d_model)
+
+        # Encoder transformer
+        self.encoder_attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
+        self.encoder_ffn = nn.Sequential(
+            nn.Linear(d_model, d_ff), nn.ReLU(), nn.Linear(d_ff, d_model)
+        )
+        self.encoder_ln1 = nn.LayerNorm(d_model)
+        self.encoder_ln2 = nn.LayerNorm(d_model)
+
+        # Decoder: rank embeddings
+        self.rank_embed = nn.Embedding(100, d_model)
+
+        # PoH block for iterative refinement (if enabled)
+        if use_poh:
+            self.poh_block = PoHBlock(d_model, n_heads, d_ff, max_inner_iters, T=T)
+
+        # Pointer mechanism
+        self.query_proj = nn.Linear(d_model, d_model)
+        self.key_proj = nn.Linear(d_model, d_model)
+
+    def encode(self, x):
+        """Encode input array values."""
+        B, N, _ = x.shape
+
+        # Embed values + positions
+        positions = torch.arange(N, device=x.device).unsqueeze(0).expand(B, -1)
+        h = self.value_embed(x.squeeze(-1).unsqueeze(-1)) + self.pos_embed(positions)
+
+        # Encoder transformer
+        attn_out, _ = self.encoder_attn(h, h, h)
+        h = self.encoder_ln1(h + attn_out)
+        h = self.encoder_ln2(h + self.encoder_ffn(h))
+
+        return h
+
+    def forward(self, x, targets=None):
+        """
+        x: [B, N, 1] input array values
+        targets: [B, N] ground truth indices (for training)
+
         Returns:
-            logits: [B, L, L] - pointer logits
+        - logits: [B, N, N] pointer logits for each decoding step
+        - loss: scalar (if targets provided)
         """
-        B, L, _ = x.shape
-        
-        # Embed
-        h = self.input_proj(x)  # [B, L, D]
-        
-        # PoH encoding with R refinement iterations
-        h, _ = self.refiner(h)  # [B, L, D]
-        
-        # Compute pointer logits
-        queries = h  # [B, L, D]
-        keys = h     # [B, L, D]
-        
-        logits = torch.bmm(queries, keys.transpose(1, 2))  # [B, L, L]
-        logits = logits / np.sqrt(self.d_model)
-        
-        return logits
-    
+        B, N, _ = x.shape
+        enc = self.encode(x)  # [B, N, d_model]
+
+        # Apply PoH refinement if enabled
+        if self.use_poh:
+            enc = self.poh_block(enc)
+
+        # Prepare keys from encoder
+        keys = self.key_proj(enc)  # [B, N, d_model]
+
+        # Autoregressive decoding
+        logits_all = []
+
+        for rank in range(N):
+            # Query: current rank embedding
+            rank_ids = torch.full((B,), rank, dtype=torch.long, device=x.device)
+            query = self.query_proj(self.rank_embed(rank_ids))  # [B, d_model]
+
+            # Compute pointer logits
+            scores = torch.einsum("bd,bnd->bn", query, keys)  # [B, N]
+
+            # Mask already-selected positions
+            if rank > 0:
+                # Create mask for previously selected positions
+                mask = torch.zeros(B, N, device=x.device)
+                for r in range(rank):
+                    if targets is not None:
+                        prev_idx = targets[:, r]
+                    else:
+                        prev_idx = torch.argmax(logits_all[r], dim=-1)
+                    mask.scatter_(1, prev_idx.unsqueeze(1), float('-inf'))
+                scores = scores + mask
+
+            logits_all.append(scores)
+
+        # Stack all logits: [B, N, N]
+        logits = torch.stack(logits_all, dim=1)
+
+        if targets is not None:
+            # Compute cross-entropy loss
+            loss = F.cross_entropy(
+                logits.reshape(B * N, N),
+                targets.reshape(B * N)
+            )
+            return logits, loss
+        else:
+            return logits, None
+
     def count_parameters(self):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
@@ -222,14 +299,7 @@ def train_epoch(model, data, optimizer, batch_size, device):
         batch_targets = targets[batch_idx].to(device)
         
         # Forward
-        logits = model(batch_arrays)  # [B, L, L]
-        
-        # Pointer loss (cross-entropy at each position)
-        B, L, _ = logits.shape
-        loss = F.cross_entropy(
-            logits.reshape(B * L, L),
-            batch_targets.reshape(B * L)
-        )
+        _, loss = model(batch_arrays, targets=batch_targets)
         
         # Backward
         optimizer.zero_grad()
@@ -259,7 +329,7 @@ def evaluate(model, data, batch_size, device):
             batch_arrays = arrays[i:i+batch_size].to(device)
             batch_targets = targets[i:i+batch_size].to(device)
             
-            logits = model(batch_arrays)
+            logits, _ = model(batch_arrays, targets=None)
             preds = logits.argmax(dim=-1)
             
             # Accuracy
@@ -343,7 +413,7 @@ def train_and_evaluate(
 
 # ========== Main A/B Test ==========
 
-def run_ab_test(array_len, train_samples=2000, test_samples=500, R=4, T=4, 
+def run_ab_test(array_len, train_samples=2000, test_samples=500, R=4, T=4, n_heads=2,
                 epochs=100, seed=42):
     """Run A/B test for a specific array length."""
     
@@ -354,8 +424,9 @@ def run_ab_test(array_len, train_samples=2000, test_samples=500, R=4, T=4,
     print(f"  Array length: {array_len}")
     print(f"  Training samples: {train_samples:,}")
     print(f"  Test samples: {test_samples:,}")
-    print(f"  PoH R (refinement steps): {R}")
-    print(f"  PoH T (HRM period): {T}")
+    print(f"  PoH n_heads: {n_heads} (optimal from head search)")
+    print(f"  PoH R (refinement steps): {R} (optimal from R/T search)")
+    print(f"  PoH T (HRM outer loop period): {T} (optimal from R/T search)")
     print(f"  Epochs: {epochs}")
     print(f"  Seed: {seed}")
     
@@ -370,22 +441,22 @@ def run_ab_test(array_len, train_samples=2000, test_samples=500, R=4, T=4,
     # Build models
     print(f"\nBuilding models...")
     
-    baseline = BaselineTransformerSort(
+    baseline = PointerDecoderSort(
         d_model=128,
-        n_heads=2,  # Optimal from head search
-        d_ff=512,
-        depth=3,
-        dropout=0.1
+        n_heads=n_heads,
+        d_ff=256,
+        max_inner_iters=1,
+        T=1,
+        use_poh=False
     ).to(device)
     
-    poh = PoHTransformerSort(
+    poh = PointerDecoderSort(
         d_model=128,
-        n_heads=2,  # Optimal from head search
-        d_ff=512,
-        depth=3,
-        R=R,
-        T=T,
-        dropout=0.1
+        n_heads=n_heads,
+        d_ff=256,
+        max_inner_iters=R,
+        T=T,  # HRM outer loop period
+        use_poh=True
     ).to(device)
     
     # Train baseline
@@ -396,7 +467,7 @@ def run_ab_test(array_len, train_samples=2000, test_samples=500, R=4, T=4,
     
     # Train PoH
     poh_results = train_and_evaluate(
-        poh, f"PoH (R={R}, T={T})", train_data, test_data,
+        poh, f"PoH (R={R}, T={T}, n_heads={n_heads})", train_data, test_data,
         epochs=epochs, device=device
     )
     
@@ -405,7 +476,7 @@ def run_ab_test(array_len, train_samples=2000, test_samples=500, R=4, T=4,
     print("📊 RESULTS")
     print(f"{'='*80}")
     
-    print(f"\n📚 Baseline (Standard Transformer)")
+    print(f"\n📚 Baseline (Standard Pointer Decoder)")
     print(f"  Parameters: {baseline_results['params_M']:.2f}M")
     print(f"  Best Kendall's τ: {baseline_results['best_tau']:.4f}")
     print(f"  Final Kendall's τ: {baseline_results['final_tau']:.4f}")
@@ -413,7 +484,7 @@ def run_ab_test(array_len, train_samples=2000, test_samples=500, R=4, T=4,
     print(f"  Final perfect sorts: {baseline_results['final_perfect']:.2%}")
     print(f"  Training time: {baseline_results['time_min']:.2f} min")
     
-    print(f"\n🔬 PoH (R={R}, T={T})")
+    print(f"\n🔬 PoH with HRM (R={R}, T={T}, n_heads={n_heads})")
     print(f"  Parameters: {poh_results['params_M']:.2f}M")
     print(f"  Best Kendall's τ: {poh_results['best_tau']:.4f}")
     print(f"  Final Kendall's τ: {poh_results['final_tau']:.4f}")
@@ -431,10 +502,10 @@ def run_ab_test(array_len, train_samples=2000, test_samples=500, R=4, T=4,
     print(f"Kendall's τ delta: {delta_tau:+.4f} ({delta_pct:+.2f}%)")
     
     if delta_tau > 0.01:
-        print(f"✅ PoH WINS by {delta_tau:.4f} ({delta_pct:.2f}%)")
+        print(f"✅ PoH WINS by {delta_tau:.4f} ({delta_pct:+.1f}%)")
         winner = "PoH"
     elif delta_tau < -0.01:
-        print(f"❌ Baseline WINS by {-delta_tau:.4f} ({-delta_pct:.2f}%)")
+        print(f"❌ Baseline WINS by {-delta_tau:.4f} ({-delta_pct:+.1f}%)")
         winner = "Baseline"
     else:
         print(f"⚖️  TIE (difference < 0.01)")
@@ -453,11 +524,12 @@ def run_ab_test(array_len, train_samples=2000, test_samples=500, R=4, T=4,
 def main():
     import argparse
     
-    parser = argparse.ArgumentParser(description='Sorting A/B Test with Optimal R and T')
+    parser = argparse.ArgumentParser(description='Sorting A/B Test with Optimal Parameters')
     parser.add_argument('--lengths', type=int, nargs='+', default=[12, 16, 20],
                         help='Array lengths to test (default: 12 16 20)')
     parser.add_argument('--R', type=int, default=4, help='PoH refinement steps (default: 4)')
-    parser.add_argument('--T', type=int, default=4, help='HRM period (default: 4)')
+    parser.add_argument('--T', type=int, default=4, help='HRM outer loop period (default: 4)')
+    parser.add_argument('--n-heads', type=int, default=2, help='Number of heads (default: 2)')
     parser.add_argument('--train-samples', type=int, default=2000, help='Training samples')
     parser.add_argument('--test-samples', type=int, default=500, help='Test samples')
     parser.add_argument('--epochs', type=int, default=100, help='Training epochs')
@@ -471,8 +543,9 @@ def main():
     print("SORTING A/B TEST WITH OPTIMAL PARAMETERS")
     print("="*80)
     print(f"\nOptimal parameters from grid search:")
-    print(f"  R = {args.R} (refinement steps)")
-    print(f"  T = {args.T} (HRM outer loop period)")
+    print(f"  n_heads = {args.n_heads} (from head search)")
+    print(f"  R = {args.R} (refinement steps from R/T search)")
+    print(f"  T = {args.T} (HRM outer loop period from R/T search)")
     print(f"\nTesting on array lengths: {args.lengths}")
     print("="*80)
     
@@ -486,6 +559,7 @@ def main():
             test_samples=args.test_samples,
             R=args.R,
             T=args.T,
+            n_heads=args.n_heads,
             epochs=args.epochs,
             seed=args.seed
         )
@@ -493,11 +567,11 @@ def main():
     
     # Save results
     os.makedirs(args.save_dir, exist_ok=True)
-    results_file = os.path.join(args.save_dir, f"ab_results_R{args.R}_T{args.T}.csv")
+    results_file = os.path.join(args.save_dir, f"ab_results_R{args.R}_T{args.T}_nheads{args.n_heads}.csv")
     
     with open(results_file, 'w', newline='') as f:
         fieldnames = [
-            'timestamp', 'array_len', 'model', 'R', 'T',
+            'timestamp', 'array_len', 'model', 'R', 'T', 'n_heads',
             'best_tau', 'final_tau', 'final_accuracy', 'final_perfect',
             'time_min', 'params_M', 'delta_tau', 'winner'
         ]
@@ -514,6 +588,7 @@ def main():
                 'model': 'Baseline',
                 'R': '-',
                 'T': '-',
+                'n_heads': args.n_heads,
                 'best_tau': f"{result['baseline']['best_tau']:.4f}",
                 'final_tau': f"{result['baseline']['final_tau']:.4f}",
                 'final_accuracy': f"{result['baseline']['final_accuracy']:.4f}",
@@ -528,9 +603,10 @@ def main():
             writer.writerow({
                 'timestamp': timestamp,
                 'array_len': result['array_len'],
-                'model': 'PoH',
+                'model': 'PoH-HRM',
                 'R': args.R,
                 'T': args.T,
+                'n_heads': args.n_heads,
                 'best_tau': f"{result['poh']['best_tau']:.4f}",
                 'final_tau': f"{result['poh']['final_tau']:.4f}",
                 'final_accuracy': f"{result['poh']['final_accuracy']:.4f}",
@@ -561,4 +637,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
