@@ -26,6 +26,15 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from src.pot.core.hrm_controller import HRMPointerController, HRMState
 
+# Try to import transformers for BERT, fallback if not available
+try:
+    from transformers import BertModel, BertConfig
+    BERT_AVAILABLE = True
+except ImportError:
+    BERT_AVAILABLE = False
+    print("Warning: transformers library not available. BERT baseline will be skipped.")
+    print("Install with: pip install transformers")
+
 
 # ========== Maze Generation ==========
 
@@ -381,6 +390,138 @@ class MazeSolver(nn.Module):
             return generated[:, 1:]  # Remove SOS token
 
 
+class BERTMazeSolver(nn.Module):
+    """BERT-based maze solver for comparison."""
+    
+    def __init__(
+        self,
+        maze_size: int,
+        d_model: int = 256,
+        n_heads: int = 4,
+        d_ff: int = 1024,
+        dropout: float = 0.1
+    ):
+        super().__init__()
+        
+        if not BERT_AVAILABLE:
+            raise ImportError("transformers library required for BERT baseline")
+        
+        self.maze_size = maze_size
+        self.d_model = d_model
+        
+        # Embedding layers
+        self.cell_embed = nn.Embedding(4, d_model)  # 0=wall, 1=path, 2=start, 3=goal
+        self.pos_embed = nn.Embedding(maze_size * maze_size, d_model)
+        
+        # BERT encoder configuration
+        bert_config = BertConfig(
+            hidden_size=d_model,
+            num_hidden_layers=6,
+            num_attention_heads=n_heads,
+            intermediate_size=d_ff,
+            hidden_dropout_prob=dropout,
+            attention_probs_dropout_prob=dropout,
+        )
+        self.bert = BertModel(bert_config)
+        
+        # Decoder for path prediction (same as MazeSolver)
+        self.step_embed = nn.Embedding(maze_size * maze_size + 2, d_model)
+        self.decoder_attn = nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
+        self.decoder_cross_attn = nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
+        self.decoder_ffn = nn.Sequential(
+            nn.Linear(d_model, d_ff),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_ff, d_model)
+        )
+        self.decoder_ln1 = nn.LayerNorm(d_model)
+        self.decoder_ln2 = nn.LayerNorm(d_model)
+        self.decoder_ln3 = nn.LayerNorm(d_model)
+        
+        # Output projection
+        self.output_proj = nn.Linear(d_model, maze_size * maze_size + 1)
+    
+    def encode_maze(self, maze):
+        """Encode maze using BERT."""
+        B, H, W = maze.shape
+        
+        # Flatten maze
+        maze_flat = maze.view(B, H * W)
+        
+        # Embed cells
+        cell_emb = self.cell_embed(maze_flat)
+        
+        # Add position embeddings
+        positions = torch.arange(H * W, device=maze.device).unsqueeze(0).expand(B, -1)
+        pos_emb = self.pos_embed(positions)
+        
+        x = cell_emb + pos_emb
+        
+        # BERT encoding
+        bert_output = self.bert(inputs_embeds=x)
+        encoded = bert_output.last_hidden_state
+        
+        return encoded
+    
+    def decode_step(self, encoded, prev_steps, step_idx):
+        """Decode one step (same as MazeSolver)."""
+        step_emb = self.step_embed(prev_steps)
+        
+        seq_len = step_emb.size(1)
+        causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=step_emb.device), diagonal=1).bool()
+        
+        attn_out, _ = self.decoder_attn(step_emb, step_emb, step_emb, attn_mask=causal_mask)
+        step_emb = self.decoder_ln1(step_emb + attn_out)
+        
+        cross_out, _ = self.decoder_cross_attn(step_emb, encoded, encoded)
+        step_emb = self.decoder_ln2(step_emb + cross_out)
+        
+        ffn_out = self.decoder_ffn(step_emb)
+        step_emb = self.decoder_ln3(step_emb + ffn_out)
+        
+        logits = self.output_proj(step_emb[:, -1, :])
+        
+        return logits
+    
+    def forward(self, maze, target_path=None, max_steps=100):
+        """Forward pass (same interface as MazeSolver)."""
+        B = maze.size(0)
+        device = maze.device
+        
+        # Encode maze
+        encoded = self.encode_maze(maze)
+        
+        if self.training and target_path is not None:
+            # Teacher forcing
+            SOS_TOKEN = self.maze_size * self.maze_size
+            sos = torch.full((B, 1), SOS_TOKEN, device=device, dtype=torch.long)
+            decoder_input = torch.cat([sos, target_path[:, :-1]], dim=1)
+            
+            logits_list = []
+            for t in range(decoder_input.size(1)):
+                logits = self.decode_step(encoded, decoder_input[:, :t+1], t)
+                logits_list.append(logits)
+            
+            logits = torch.stack(logits_list, dim=1)
+            return logits
+        else:
+            # Autoregressive generation
+            SOS_TOKEN = self.maze_size * self.maze_size
+            EOS_TOKEN = self.maze_size * self.maze_size
+            
+            generated = torch.full((B, 1), SOS_TOKEN, device=device, dtype=torch.long)
+            
+            for _ in range(max_steps):
+                logits = self.decode_step(encoded, generated, generated.size(1) - 1)
+                next_token = logits.argmax(dim=-1, keepdim=True)
+                generated = torch.cat([generated, next_token], dim=1)
+                
+                if (next_token == EOS_TOKEN).all():
+                    break
+            
+            return generated[:, 1:]
+
+
 # ========== Training & Evaluation ==========
 
 def path_to_indices(path: List[Tuple[int, int]], maze_size: int) -> List[int]:
@@ -574,6 +715,21 @@ def run_ab_test(maze_size, train_samples=1000, test_samples=200, R=4, T=4, n_hea
         use_poh=False
     ).to(device)
     
+    # BERT baseline (if available)
+    bert = None
+    bert_results = None
+    if BERT_AVAILABLE:
+        try:
+            bert = BERTMazeSolver(
+                maze_size=maze_size,
+                d_model=256,
+                n_heads=n_heads,
+                d_ff=1024
+            ).to(device)
+        except Exception as e:
+            print(f"  Warning: Could not create BERT model: {e}")
+            bert = None
+    
     poh = MazeSolver(
         maze_size=maze_size,
         d_model=256,
@@ -586,9 +742,16 @@ def run_ab_test(maze_size, train_samples=1000, test_samples=200, R=4, T=4, n_hea
     
     # Train baseline
     baseline_results = train_and_evaluate(
-        baseline, "Baseline", train_data, test_data,
+        baseline, "Baseline (Transformer)", train_data, test_data,
         epochs=epochs, device=device, maze_size=maze_size
     )
+    
+    # Train BERT
+    if bert is not None:
+        bert_results = train_and_evaluate(
+            bert, "BERT", train_data, test_data,
+            epochs=epochs, device=device, maze_size=maze_size
+        )
     
     # Train PoH
     poh_results = train_and_evaluate(
@@ -608,6 +771,14 @@ def run_ab_test(maze_size, train_samples=1000, test_samples=200, R=4, T=4, n_hea
     print(f"  Final Path Overlap: {baseline_results['final_overlap']:.2%}")
     print(f"  Training time: {baseline_results['time_min']:.2f} min")
     
+    if bert_results is not None:
+        print(f"\n🤖 BERT Baseline")
+        print(f"  Parameters: {bert_results['params_M']:.2f}M")
+        print(f"  Best Success Rate: {bert_results['best_success']:.2%}")
+        print(f"  Final Success Rate: {bert_results['final_success']:.2%}")
+        print(f"  Final Path Overlap: {bert_results['final_overlap']:.2%}")
+        print(f"  Training time: {bert_results['time_min']:.2f} min")
+    
     print(f"\n🔬 PoH with HRM (R={R}, T={T}, n_heads={n_heads})")
     print(f"  Parameters: {poh_results['params_M']:.2f}M")
     print(f"  Best Success Rate: {poh_results['best_success']:.2%}")
@@ -616,30 +787,36 @@ def run_ab_test(maze_size, train_samples=1000, test_samples=200, R=4, T=4, n_hea
     print(f"  Training time: {poh_results['time_min']:.2f} min")
     
     # Comparison
-    delta_success = poh_results['final_success'] - baseline_results['final_success']
-    delta_pct = (delta_success / baseline_results['final_success'] * 100) if baseline_results['final_success'] > 0 else 0
-    
     print(f"\n{'='*80}")
     print("📈 COMPARISON")
     print(f"{'='*80}")
-    print(f"Success Rate delta: {delta_success:+.2%} ({delta_pct:+.1f}%)")
     
-    if delta_success > 0.05:
-        winner = "PoH-HRM"
-        print(f"🏆 Winner: {winner} by {delta_success:.2%}")
-    elif delta_success < -0.05:
-        winner = "Baseline"
-        print(f"🏆 Winner: {winner} by {-delta_success:.2%}")
-    else:
-        winner = "Tie"
-        print(f"⚖️  TIE (difference < 5%)")
+    # PoH vs Baseline
+    delta_baseline = poh_results['final_success'] - baseline_results['final_success']
+    delta_baseline_pct = (delta_baseline / baseline_results['final_success'] * 100) if baseline_results['final_success'] > 0 else 0
+    print(f"PoH vs Baseline: {delta_baseline:+.2%} ({delta_baseline_pct:+.1f}%)")
+    
+    # PoH vs BERT
+    if bert_results is not None:
+        delta_bert = poh_results['final_success'] - bert_results['final_success']
+        delta_bert_pct = (delta_bert / bert_results['final_success'] * 100) if bert_results['final_success'] > 0 else 0
+        print(f"PoH vs BERT: {delta_bert:+.2%} ({delta_bert_pct:+.1f}%)")
+    
+    # Determine winner
+    all_results = [('Baseline', baseline_results['final_success'])]
+    if bert_results is not None:
+        all_results.append(('BERT', bert_results['final_success']))
+    all_results.append(('PoH-HRM', poh_results['final_success']))
+    
+    winner_name, winner_score = max(all_results, key=lambda x: x[1])
+    print(f"\n🏆 Winner: {winner_name} ({winner_score:.2%})")
     
     return {
         'maze_size': maze_size,
         'baseline': baseline_results,
+        'bert': bert_results,
         'poh': poh_results,
-        'delta_success': delta_success,
-        'winner': winner
+        'winner': winner_name
     }
 
 
@@ -720,7 +897,27 @@ def main():
                 'winner': ''
             })
             
+            # BERT row (if available)
+            if result.get('bert') is not None:
+                delta_bert = result['poh']['final_success'] - result['bert']['final_success']
+                writer.writerow({
+                    'timestamp': timestamp,
+                    'maze_size': result['maze_size'],
+                    'model': 'BERT',
+                    'R': '-',
+                    'T': '-',
+                    'n_heads': args.n_heads,
+                    'best_success': f"{result['bert']['best_success']:.4f}",
+                    'final_success': f"{result['bert']['final_success']:.4f}",
+                    'final_overlap': f"{result['bert']['final_overlap']:.4f}",
+                    'time_min': f"{result['bert']['time_min']:.2f}",
+                    'params_M': f"{result['bert']['params_M']:.2f}",
+                    'delta_success': f"{delta_bert:+.4f}",
+                    'winner': ''
+                })
+            
             # PoH row
+            delta_baseline = result['poh']['final_success'] - result['baseline']['final_success']
             writer.writerow({
                 'timestamp': timestamp,
                 'maze_size': result['maze_size'],
@@ -733,7 +930,7 @@ def main():
                 'final_overlap': f"{result['poh']['final_overlap']:.4f}",
                 'time_min': f"{result['poh']['time_min']:.2f}",
                 'params_M': f"{result['poh']['params_M']:.2f}",
-                'delta_success': f"{result['delta_success']:+.4f}",
+                'delta_success': f"{delta_baseline:+.4f}",
                 'winner': result['winner']
             })
     
@@ -741,14 +938,27 @@ def main():
     print(f"\n\n{'='*80}")
     print("📊 FINAL SUMMARY")
     print(f"{'='*80}")
-    print(f"\n{'Size':<10} {'Baseline':<15} {'PoH-HRM':<15} {'Delta':<15} {'Winner':<10}")
-    print("-"*80)
-    for result in all_results:
-        print(f"{result['maze_size']:<10} "
-              f"{result['baseline']['final_success']:<15.2%} "
-              f"{result['poh']['final_success']:<15.2%} "
-              f"{result['delta_success']:+<15.2%} "
-              f"{result['winner']:<10}")
+    
+    has_bert = any(r.get('bert') is not None for r in all_results)
+    
+    if has_bert:
+        print(f"\n{'Size':<10} {'Baseline':<15} {'BERT':<15} {'PoH-HRM':<15} {'Winner':<10}")
+        print("-"*80)
+        for result in all_results:
+            bert_str = f"{result['bert']['final_success']:<15.2%}" if result.get('bert') else f"{'N/A':<15}"
+            print(f"{result['maze_size']:<10} "
+                  f"{result['baseline']['final_success']:<15.2%} "
+                  f"{bert_str} "
+                  f"{result['poh']['final_success']:<15.2%} "
+                  f"{result['winner']:<10}")
+    else:
+        print(f"\n{'Size':<10} {'Baseline':<15} {'PoH-HRM':<15} {'Winner':<10}")
+        print("-"*80)
+        for result in all_results:
+            print(f"{result['maze_size']:<10} "
+                  f"{result['baseline']['final_success']:<15.2%} "
+                  f"{result['poh']['final_success']:<15.2%} "
+                  f"{result['winner']:<10}")
     
     print(f"\n✅ Results saved to: {results_file}")
     print("="*80)

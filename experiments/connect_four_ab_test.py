@@ -26,6 +26,15 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from src.pot.core.hrm_controller import HRMPointerController, HRMState
 
+# Try to import transformers for BERT, fallback if not available
+try:
+    from transformers import BertModel, BertConfig
+    BERT_AVAILABLE = True
+except ImportError:
+    BERT_AVAILABLE = False
+    print("Warning: transformers library not available. BERT baseline will be skipped.")
+    print("Install with: pip install transformers")
+
 
 # ========== Connect Four Game Engine ==========
 
@@ -517,6 +526,89 @@ class ConnectFourModel(nn.Module):
         # Predict policy and value
         policy = self.policy_head(board_repr)  # (B, cols)
         value = self.value_head(board_repr)    # (B, 1)
+        
+        return policy, value
+
+
+class BERTConnectFourModel(nn.Module):
+    """BERT-based Connect Four model for comparison."""
+    
+    def __init__(
+        self,
+        rows: int = 6,
+        cols: int = 7,
+        d_model: int = 256,
+        n_heads: int = 4,
+        d_ff: int = 1024,
+        dropout: float = 0.1
+    ):
+        super().__init__()
+        
+        if not BERT_AVAILABLE:
+            raise ImportError("transformers library required for BERT baseline")
+        
+        self.rows = rows
+        self.cols = cols
+        self.d_model = d_model
+        
+        # Embed board positions
+        self.cell_embed = nn.Embedding(3, d_model)
+        self.pos_embed = nn.Embedding(rows * cols, d_model)
+        
+        # BERT encoder configuration
+        bert_config = BertConfig(
+            hidden_size=d_model,
+            num_hidden_layers=6,
+            num_attention_heads=n_heads,
+            intermediate_size=d_ff,
+            hidden_dropout_prob=dropout,
+            attention_probs_dropout_prob=dropout,
+        )
+        self.bert = BertModel(bert_config)
+        
+        # Policy head
+        self.policy_head = nn.Sequential(
+            nn.Linear(d_model, d_ff),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_ff, cols)
+        )
+        
+        # Value head
+        self.value_head = nn.Sequential(
+            nn.Linear(d_model, d_ff),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_ff, 1),
+            nn.Tanh()
+        )
+    
+    def forward(self, board):
+        """Forward pass using BERT encoder."""
+        B, rows, cols = board.shape
+        
+        # Flatten board
+        board_flat = board.view(B, rows * cols)
+        
+        # Embed cells
+        cell_emb = self.cell_embed(board_flat.long())
+        
+        # Add position embeddings
+        positions = torch.arange(rows * cols, device=board.device).unsqueeze(0).expand(B, -1)
+        pos_emb = self.pos_embed(positions)
+        
+        x = cell_emb + pos_emb
+        
+        # BERT encoding
+        bert_output = self.bert(inputs_embeds=x)
+        encoded = bert_output.last_hidden_state
+        
+        # Pool to get board representation
+        board_repr = encoded.mean(dim=1)
+        
+        # Predict policy and value
+        policy = self.policy_head(board_repr)
+        value = self.value_head(board_repr)
         
         return policy, value
 
