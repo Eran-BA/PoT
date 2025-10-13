@@ -53,24 +53,103 @@ except ImportError:
     BERT_AVAILABLE = False
     print("Warning: transformers library not available. BERT baseline will be skipped.")
 
-# Debug: Check paths before import
-print(f"✓ sys.path[0]: {sys.path[0]}")
-print(f"✓ Checking src/pot/core/poh_stack.py exists: {os.path.exists(os.path.join(sys.path[0], 'src', 'pot', 'core', 'poh_stack.py'))}")
+# Import PoT modules (correct paths!)
+from src.pot.core.hrm_controller import HRMPointerController, HRMState
+print("✓ Successfully imported PoT modules")
 
-# Import PoT modules
-try:
-    from src.pot.core.poh_stack import PoHStack, PoHStackConfig
-    from src.pot.core.iter_refiner import IterRefiner
-    print("✓ Successfully imported PoT modules")
-except ImportError as e:
-    print(f"ERROR importing PoT modules: {e}")
-    print(f"sys.path: {sys.path[:3]}")
-    print(f"Files in {sys.path[0]}: {os.listdir(sys.path[0])[:10]}")
-    if os.path.exists(os.path.join(sys.path[0], 'src')):
-        print(f"Files in src/: {os.listdir(os.path.join(sys.path[0], 'src'))}")
-        if os.path.exists(os.path.join(sys.path[0], 'src', 'pot')):
-            print(f"Files in src/pot/: {os.listdir(os.path.join(sys.path[0], 'src', 'pot'))}")
-    raise
+
+# ============================================================================
+# PoH Block with HRM Controller
+# ============================================================================
+
+class PoHBlock(nn.Module):
+    """PoH transformer block with HRM controller."""
+
+    def __init__(
+        self, d_model: int, n_heads: int, d_ff: int, max_iters: int, T: int = 4
+    ):
+        super().__init__()
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.max_iters = max_iters
+        self.T = T
+
+        # HRM controller for routing
+        self.controller = HRMPointerController(
+            d_model=d_model,
+            n_heads=n_heads,
+            T=T,
+            topk=None,
+            temperature_init=2.0,
+            temperature_min=0.7,
+            entropy_reg=1e-3,
+            use_layernorm=True,
+            dropout=0.1
+        )
+
+        # Per-head attention
+        self.q_proj = nn.ModuleList(
+            [nn.Linear(d_model, d_model // n_heads) for _ in range(n_heads)]
+        )
+        self.k_proj = nn.ModuleList(
+            [nn.Linear(d_model, d_model // n_heads) for _ in range(n_heads)]
+        )
+        self.v_proj = nn.ModuleList(
+            [nn.Linear(d_model, d_model // n_heads) for _ in range(n_heads)]
+        )
+        self.out_proj = nn.Linear(d_model, d_model)
+
+        # FFN
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, d_ff), 
+            nn.ReLU(), 
+            nn.Dropout(0.1),
+            nn.Linear(d_ff, d_model)
+        )
+        self.ln1 = nn.LayerNorm(d_model)
+        self.ln2 = nn.LayerNorm(d_model)
+
+    def forward(self, z):
+        B = z.size(0)
+        device = z.device
+        
+        # Initialize HRM state
+        hrm_state = self.controller.init_state(B, device)
+        
+        for iter_idx in range(self.max_iters):
+            # HRM controller routing
+            alphas, hrm_state, aux = self.controller(
+                x=z,
+                state=hrm_state,
+                return_aux=True
+            )
+            
+            # Per-head attention
+            head_outs = []
+            for h_idx in range(self.n_heads):
+                q = self.q_proj[h_idx](z)
+                k = self.k_proj[h_idx](z)
+                v = self.v_proj[h_idx](z)
+
+                scores = torch.einsum("btd,bsd->bts", q, k) / (
+                    (self.d_model // self.n_heads) ** 0.5
+                )
+                attn = torch.nn.functional.softmax(scores, dim=-1)
+                out = torch.einsum("bts,bsd->btd", attn, v)
+                head_outs.append(out)
+
+            # Concat heads and project
+            head_outs_concat = torch.cat(head_outs, dim=-1)
+            attn_out = self.out_proj(head_outs_concat)
+
+            # Residual + norm
+            z = self.ln1(z + attn_out)
+            z_refined = z
+
+            # FFN
+            z = self.ln2(z + self.ffn(z))
+
+        return z_refined
 
 
 # ============================================================================
@@ -174,21 +253,7 @@ class MazeSolver(nn.Module):
         
         # Encoder
         if use_poh:
-            cfg = PoHStackConfig(
-                d_model=d_model,
-                n_heads=n_heads,
-                d_ff=d_ff,
-                dropout=dropout,
-                use_hrm_controller=True,
-                hrm_period=T
-            )
-            stack = PoHStack(cfg, depth=4)
-            self.encoder = IterRefiner(
-                stack,
-                max_inner_iters=max_inner_iters,
-                outer_residual=True,
-                rezero_init=True
-            )
+            self.encoder = PoHBlock(d_model, n_heads, d_ff, max_inner_iters, T=T)
         else:
             encoder_layer = nn.TransformerEncoderLayer(
                 d_model=d_model,
