@@ -58,9 +58,22 @@ def plot_baseline_vs_poh(
     """Bar chart: Baseline vs PoH with error bars."""
     fig, ax = plt.subplots(figsize=(8, 6))
     
-    # Extract scores
-    baseline_scores = baseline_df[f'test_{metric}'].values if f'test_{metric}' in baseline_df.columns else baseline_df[metric].values
-    poh_scores = poh_df[f'test_{metric}'].values if f'test_{metric}' in poh_df.columns else poh_df[metric].values
+    # Extract scores - handle both formats
+    if f'test_{metric}' in baseline_df.columns:
+        baseline_scores = baseline_df[f'test_{metric}'].values
+    elif metric in baseline_df.columns:
+        baseline_scores = baseline_df[metric].values
+    else:
+        simple_metric = metric.split('_')[0] if '_' in metric else metric
+        baseline_scores = baseline_df[f'test_{simple_metric}'].values
+    
+    if f'test_{metric}' in poh_df.columns:
+        poh_scores = poh_df[f'test_{metric}'].values
+    elif metric in poh_df.columns:
+        poh_scores = poh_df[metric].values
+    else:
+        simple_metric = metric.split('_')[0] if '_' in metric else metric
+        poh_scores = poh_df[f'test_{simple_metric}'].values
     
     # Compute stats
     baseline_mean = baseline_scores.mean()

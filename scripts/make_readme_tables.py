@@ -70,7 +70,15 @@ def generate_comparison_table(
         table += "|---|---|---|---|---|---|---|---|---|\n"
     
     # Baseline row
-    baseline_scores = baseline_df[f'test_{metric}'].values if f'test_{metric}' in baseline_df.columns else baseline_df[metric].values
+    # Handle both formats: test_kendall_tau and test_kendall
+    if f'test_{metric}' in baseline_df.columns:
+        baseline_scores = baseline_df[f'test_{metric}'].values
+    elif metric in baseline_df.columns:
+        baseline_scores = baseline_df[metric].values
+    else:
+        # Try without underscore (e.g., 'kendall_tau' -> 'kendall')
+        simple_metric = metric.split('_')[0] if '_' in metric else metric
+        baseline_scores = baseline_df[f'test_{simple_metric}'].values
     baseline_mean = baseline_scores.mean()
     baseline_std = baseline_scores.std()
     baseline_n = len(baseline_scores)
@@ -79,7 +87,14 @@ def generate_comparison_table(
     
     # PoH variant rows
     for poh_name, poh_df in poh_variants.items():
-        poh_scores = poh_df[f'test_{metric}'].values if f'test_{metric}' in poh_df.columns else poh_df[metric].values
+        # Handle both formats
+        if f'test_{metric}' in poh_df.columns:
+            poh_scores = poh_df[f'test_{metric}'].values
+        elif metric in poh_df.columns:
+            poh_scores = poh_df[metric].values
+        else:
+            simple_metric = metric.split('_')[0] if '_' in metric else metric
+            poh_scores = poh_df[f'test_{simple_metric}'].values
         poh_mean = poh_scores.mean()
         poh_std = poh_scores.std()
         poh_n = len(poh_scores)
