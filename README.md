@@ -154,10 +154,14 @@ flowchart TB
 
 **Key Components:**
 - **HRM Controller**: Two-timescale recurrent modules (f_L fast, f_H slow)
+  - f_L (inner loop): Updates every refinement step - fast, reactive
+  - f_H (outer loop): Updates every T steps - slow, strategic planning
 - **Router**: Produces per-token, per-head routing weights α
 - **Weighted Mix**: Combines attention heads based on α
 - **Skip Connections**: Residual connections around attention and FFN
 - **Iterative Refinement**: Output feeds back as input for K iterations (K=12 optimal)
+
+**⚠️ Important:** HRM's "inner/outer loops" (controller timescales) ≠ refinement "inner/outer iterations" (processing/training). See [docs/HRM_VS_REFINEMENT_LOOPS.md](docs/HRM_VS_REFINEMENT_LOOPS.md) for clarification.
 
 ### Hierarchy
 
@@ -269,6 +273,20 @@ python scripts/train.py \
 ### 4. Synthetic Tasks (Partial-Observability Sorting)
 
 See [examples/synthetic/README.md](examples/synthetic/README.md)
+
+---
+
+## 📓 Interactive Notebooks
+
+Explore PoH interactively in Colab or Jupyter:
+
+| Notebook | Task | Duration | Quick Link |
+|----------|------|----------|------------|
+| **PoT_Colab** | Dependency Parsing | 10-15 min | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/PoT_Colab.ipynb) |
+| **PoH_GPT_AB_Test** | Language Modeling | 2 min | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/PoH_GPT_AB_Test.ipynb) |
+| **PoH_NLI_Benchmark** | NLI | 3 min | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/PoH_NLI_Benchmark.ipynb) |
+
+**See:** [notebooks/README.md](notebooks/README.md) for details
 
 ---
 
@@ -426,10 +444,13 @@ python scripts/make_readme_tables.py
 
 ### Key Documents
 - **[Architecture Summary](docs/architecture/POH_ARCHITECTURE_SUMMARY.md)** - Comprehensive architecture guide
-- **[Iteration Guide](docs/POH_ITERATION_GUIDE.md)** - Choosing optimal iteration counts
+- **[Iteration Guide](docs/POH_ITERATION_GUIDE.md)** - Choosing optimal iteration counts (why 12?)
+- **[HRM vs Refinement Loops](docs/HRM_VS_REFINEMENT_LOOPS.md)** - **Critical:** Disambiguating "inner/outer" terminology
+- **[Inner vs Outer Iterations](docs/INNER_VS_OUTER_ITERATIONS.md)** - Refinement iterations explained
 - **[Quick Start](QUICK_START.md)** - Copy-paste commands for NLI benchmarks
 - **[Contributing Guide](docs/guides/CONTRIBUTING.md)** - Development guidelines
 - **[Determinism Guide](docs/guides/DETERMINISM.md)** - Reproducibility best practices
+- **[Running Benchmarks](docs/guides/RUNNING_BENCHMARKS.md)** - Full benchmark guide
 
 ---
 
