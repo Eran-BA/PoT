@@ -1,89 +1,148 @@
-# Contributing to Pointer-over-Heads Transformer
+# Contributing to PoT
 
-Thank you for your interest in contributing to the Pointer-over-Heads Transformer (PoT) project!
+Thank you for your interest in contributing to Pointer-over-Heads Transformer!
 
-## How to Contribute
+## Development Setup
 
-### Reporting Issues
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/Eran-BA/PoT.git
+   cd PoT
+   ```
 
-- Use the [issue tracker](https://github.com/Eran-BA/PoT/issues) to report bugs or suggest features
-- Check existing issues before creating a new one
-- Provide a clear description, reproduction steps, and expected vs actual behavior
+2. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   pip install -e .  # Editable install
+   ```
 
-### Pull Requests
+3. **Run tests:**
+   ```bash
+   make test
+   ```
 
-1. **Fork** the repository
-2. **Clone** your fork: `git clone https://github.com/YOUR_USERNAME/PoT.git`
-3. **Create a branch**: `git checkout -b feature/your-feature-name`
-4. **Make your changes** following our code style
-5. **Run tests**: `pytest`
-6. **Run linting**: `ruff check .` and `black --check .`
-7. **Commit**: Use clear, descriptive commit messages
-8. **Push**: `git push origin feature/your-feature-name`
-9. **Open a Pull Request** with a clear description of your changes
+## Project Structure
 
-### Development Setup
-
-```bash
-# Clone the repository
-git clone https://github.com/Eran-BA/PoT.git
-cd PoT
-
-# Create a virtual environment
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -e .[dev]
-
-# Install pre-commit hooks
-pre-commit install
+```
+PoT/
+├── src/pot/
+│   ├── core/          # Task-agnostic architecture
+│   ├── tasks/         # Task adapters (sorting, parsing, etc.)
+│   └── utils/         # Utilities
+├── scripts/           # Training/analysis scripts
+├── experiments/       # Configs and results
+├── tests/             # Unit tests
+└── docs/              # Documentation
 ```
 
-### Code Style
+## Adding a New Task
 
-- We use **Black** for code formatting (line length: 88)
-- We use **Ruff** for linting
-- We use **mypy** for type checking
-- Add type hints to all function signatures
-- Write docstrings for public functions and classes
-- Pre-commit hooks will automatically check formatting
+To add a new task (e.g., `my_task`):
 
-### Testing
+1. **Create task adapter:** `src/pot/tasks/my_task.py`
+   ```python
+   from .base import TaskAdapter
+   
+   class MyTask(TaskAdapter):
+       def prepare_data(self, config):
+           # Load datasets
+           pass
+       
+       def build_model(self, config):
+           # Build model
+           pass
+       
+       def compute_loss(self, model_output, batch, config):
+           # Compute loss
+           pass
+       
+       def compute_metrics(self, model_output, batch, config):
+           # Compute metrics
+           return {'metric_name': value}
+       
+       def collate_fn(self, batch):
+           # Collate batch
+           pass
+   ```
 
-- Write tests for new features
-- Ensure all tests pass before submitting a PR
-- Run tests with: `pytest`
-- Check coverage with: `pytest --cov=src`
+2. **Register task:** Add to `src/pot/tasks/__init__.py`
+   ```python
+   from .my_task import MyTask
+   __all__ = [..., "MyTask"]
+   ```
 
-### Documentation
+3. **Add config:** `experiments/configs/my_task/default.yaml`
+   ```yaml
+   task: my_task
+   # ... task-specific config
+   ```
 
-- Update relevant documentation for any changes
-- Add docstrings to new functions and classes
-- Update `README.md` if adding major features
-- Add examples to `examples/` for new functionality
+4. **Update registry:** `experiments/registry.json`
+   ```json
+   {
+     "tasks": {
+       "my_task": {
+         "default": {
+           "config": "experiments/configs/my_task/default.yaml",
+           "baseline": null,
+           "hrm_poh": null,
+           "description": "My task description"
+         }
+       }
+     }
+   }
+   ```
 
-### Commit Messages
+5. **Add tests:** `tests/test_my_task.py`
 
-Follow the [Conventional Commits](https://www.conventionalcommits.org/) specification:
+6. **Run your task:**
+   ```bash
+   python scripts/train.py --task my_task --config experiments/configs/my_task/default.yaml
+   ```
 
-- `feat: add new routing mode`
-- `fix: correct gradient flow in TRM mode`
-- `docs: update architecture diagram`
-- `test: add tests for deep supervision`
-- `refactor: simplify loss computation`
-- `chore: update dependencies`
+## Code Style
 
-### Code of Conduct
+- Use **Black** for formatting: `make format`
+- Use **isort** for imports: `isort src/ tests/`
+- Use **flake8** for linting: `make lint`
+- Follow PEP 8 conventions
+- Add docstrings to all public functions/classes
 
-Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md).
+## Testing
 
-### Questions?
+- Write unit tests for new code
+- Ensure all tests pass: `pytest tests/`
+- Aim for >80% code coverage
 
-Feel free to open an issue for questions or discussions. We're happy to help!
+## Pull Request Process
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/my-feature`
+3. Make your changes
+4. Run tests: `make test`
+5. Format code: `make format`
+6. Commit: `git commit -m "Add: my feature"`
+7. Push: `git push origin feature/my-feature`
+8. Open a Pull Request
+
+## Commit Message Guidelines
+
+- Use present tense ("Add feature" not "Added feature")
+- Use imperative mood ("Move cursor to..." not "Moves cursor to...")
+- Start with a verb (Add, Fix, Update, Remove, etc.)
+- Keep first line under 72 characters
+- Reference issues: "Fix #123: bug description"
+
+## Documentation
+
+- Update README.md for user-facing changes
+- Update docstrings for API changes
+- Add examples to `docs/` for new features
+
+## Questions?
+
+Open an issue or discussion on GitHub!
 
 ---
 
-**Author:** Eran Ben Artzy  
-**License:** Apache 2.0
-
+**Happy coding! 🚀**

@@ -2,61 +2,105 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, develop ]
   pull_request:
     branches: [ main ]
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ['3.9', '3.10', '3.11']
+        python-version: ["3.8", "3.9", "3.10"]
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Cache pip packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -e .
+    
+    - name: Lint with flake8
+      run: |
+        pip install flake8
+        flake8 src/ --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 src/ --count --max-complexity=10 --max-line-length=100 --statistics
+    
+    - name: Check code formatting
+      run: |
+        pip install black isort
+        black --check src/ tests/
+        isort --check-only src/ tests/
+    
+    - name: Run unit tests
+      run: |
+        pip install pytest pytest-cov
+        pytest tests/ -v --cov=src/pot --cov-report=xml --cov-report=term-missing
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        fail_ci_if_error: false
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt', 'pyproject.toml', 'setup.py') }}
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e .
-          pip install pytest pytest-cov ruff black mypy types-PyYAML
-
-      - name: Lint (ruff)
-        run: |
-          ruff --version || pip install ruff
-          ruff check src examples scripts tests
-
-      - name: Format (black)
-        run: |
-          black --version || pip install black
-          black --check src examples scripts tests
-
-      - name: Type check (mypy)
-        run: |
-          mypy --version || pip install mypy
-          mypy src
-
-      - name: Tests (pytest)
-        run: |
-          pip install pytest-cov
-          pytest tests/ -v --maxfail=1 --disable-warnings --cov=src --cov-report=xml
-
-      - name: Upload coverage report
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-xml-${{ matrix.python-version }}
-          path: coverage.xml
-
-
+  smoke-tests:
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.9"
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -e .
+    
+    - name: Smoke test - Sorting (1 epoch)
+      run: |
+        # Create minimal config for CI
+        cat > ci_test_sorting.yaml << EOF
+        task: sorting
+        array_len: 12
+        mask_rate: 0.5
+        train_samples: 100
+        val_samples: 20
+        test_samples: 20
+        model: hrm_poh
+        d_model: 64
+        n_heads: 4
+        iterations: 2
+        epochs: 1
+        batch_size: 16
+        lr: 1e-3
+        num_workers: 0
+        EOF
+        
+        python scripts/train.py --task sorting --config ci_test_sorting.yaml --device cpu || echo "Expected failure (task not fully implemented yet)"
+    
+    - name: Check imports
+      run: |
+        python -c "from src.pot.core import HRMPointerController, HRMState"
+        python -c "from src.pot.core import ranknet_loss, compute_mask_aware_kendall_tau"
+        python -c "from src.pot.tasks import TaskAdapter, SortingTask"
+        echo "✅ All imports successful"

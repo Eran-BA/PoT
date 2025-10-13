@@ -1,0 +1,38 @@
+{
+  "tasks": {
+    "sorting": {
+      "len12": {
+        "config": "experiments/configs/sorting/len12.yaml",
+        "baseline": "experiments/results/fair_ab_baseline.csv",
+        "hrm_poh": "experiments/results/fair_ab_pot.csv",
+        "description": "Length 12 arrays, 50% masked (easy task)"
+      },
+      "len16": {
+        "config": "experiments/configs/sorting/len16.yaml",
+        "baseline": "experiments/results/fair_ab_baseline_len16.csv",
+        "hrm_poh": "experiments/results/fair_ab_pot_len16.csv",
+        "description": "Length 16 arrays, 50% masked (medium task)"
+      },
+      "len20": {
+        "config": "experiments/configs/sorting/len20.yaml",
+        "baseline": "experiments/results/fair_ab_baseline_len20.csv",
+        "hrm_poh": "experiments/results/fair_ab_pot_len20.csv",
+        "hrm_poh_12iters": "experiments/results/fair_ab_pot_len20_12iters.csv",
+        "description": "Length 20 arrays, 50% masked (hard task)"
+      }
+    },
+    "dependency": {
+      "ud_en": {
+        "config": "experiments/configs/parsing/ud_en.yaml",
+        "baseline": null,
+        "hrm_poh": null,
+        "description": "Universal Dependencies English (UD_English-EWT)"
+      }
+    }
+  },
+  "metrics": {
+    "sorting": "kendall_tau",
+    "dependency": "uas"
+  }
+}
+

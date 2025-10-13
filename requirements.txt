@@ -1,17 +1,26 @@
-# Core deep learning
-torch>=2.0.0,<3.0.0
-transformers>=4.35.0,<5.0.0
-datasets>=2.14.0,<3.0.0
+# Core dependencies
+torch>=1.13.0
+transformers>=4.25.0
+datasets>=2.8.0
+
+# Configuration
+pyyaml>=6.0
+
+# Data processing
+numpy>=1.20.0
+scipy>=1.7.0
+pandas>=1.3.0
 
 # Visualization
-matplotlib>=3.7.0,<4.0.0
-seaborn>=0.12.0,<1.0.0
-pandas>=2.0.0,<3.0.0
+matplotlib>=3.5.0
+seaborn>=0.11.0
 
-# Data format
-conllu>=4.5.0,<5.0.0
+# Utilities
+tqdm>=4.62.0
 
-# Optional: torchvision and torchaudio only if needed for specific tasks
-# Uncomment if your model uses vision or audio components
-# torchvision>=0.15.0,<1.0.0
-# torchaudio>=2.0.0,<3.0.0
+# Development (optional)
+pytest>=7.0.0
+pytest-cov>=3.0.0
+black>=22.0.0
+flake8>=4.0.0
+isort>=5.10.0

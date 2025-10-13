@@ -1,0 +1,34 @@
+# Dependency Parsing: Universal Dependencies English
+
+task: dependency
+dataset: ud_en_ewt
+
+# Model
+model: hrm_poh
+d_model: 768
+n_heads: 12
+d_ctrl: 768
+hrm_T: 4
+iterations: 8
+topk: null
+temperature_init: 2.0
+temperature_min: 0.8
+entropy_reg: 5e-4
+
+# Training
+epochs: 30
+batch_size: 16
+lr: 2e-4
+weight_decay: 0.01
+use_amp: true
+num_workers: 4
+
+# Controller
+controller_lr: 5e-5
+controller_warmup_epochs: 3
+deep_supervision: true
+
+# Encoder
+encoder: bert-base-uncased
+freeze_encoder: false
+

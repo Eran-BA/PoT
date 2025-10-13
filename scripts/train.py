@@ -1,234 +1,217 @@
-#!/usr/bin/env python3
 """
-Main training script for A/B comparison: Baseline vs Pointer-over-Heads.
+Unified training entry point for all PoT tasks.
 
 Usage:
-    python scripts/train.py --data_source conllu --conllu_dir data/ --epochs 5
-
-Examples:
-    # Basic training with dummy data
-    python scripts/train.py --data_source dummy --epochs 2
-
-    # Real data training
-    python scripts/train.py --data_source conllu --conllu_dir data/ --epochs 10
-
-    # TRM mode
-    python scripts/train.py --trm_mode --trm_supervision_steps 2 --trm_inner_updates 1
+    python scripts/train.py --task sorting --config experiments/configs/sorting/len12.yaml
+    python scripts/train.py --task dependency --config experiments/configs/parsing/ud_en.yaml
 
 Author: Eran Ben Artzy
 Year: 2025
-License: Apache 2.0
 """
 
 import argparse
-import torch
-from transformers import AutoTokenizer
+import yaml
+import json
+import sys
+from pathlib import Path
 
-from src.models import BaselineParser, PoHParser
-from src.data.loaders import get_dataset, build_label_vocab
-from src.training.trainer import Trainer
-from src.training.schedulers import get_linear_schedule_with_warmup  # noqa: F401 (reserved)
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
+from torch.optim import AdamW
+from torch.cuda.amp import GradScaler, autocast
+
+# Add src to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.pot.tasks import TaskAdapter, SortingTask, DependencyParsingTask
+
+
+TASK_REGISTRY = {
+    'sorting': SortingTask,
+    'dependency': DependencyParsingTask,
+}
+
+
+def load_config(config_path: str) -> dict:
+    """Load YAML configuration."""
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    return config
+
+
+def train_epoch(
+    model: nn.Module,
+    dataloader: DataLoader,
+    optimizer: torch.optim.Optimizer,
+    task: TaskAdapter,
+    config: dict,
+    scaler: GradScaler = None,
+    device: str = 'cuda'
+):
+    """Train for one epoch."""
+    model.train()
+    total_loss = 0.0
+    total_metrics = {}
+
+    for batch_idx, batch in enumerate(dataloader):
+        # Move to device
+        batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v
+                 for k, v in batch.items()}
+
+        optimizer.zero_grad()
+
+        # Forward pass (with AMP if enabled)
+        if scaler is not None:
+            with autocast():
+                output = model(batch)
+                loss = task.compute_loss(output, batch, config)
+        else:
+            output = model(batch)
+            loss = task.compute_loss(output, batch, config)
+
+        # Backward pass
+        if scaler is not None:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
+
+        total_loss += loss.item()
+
+        # Compute metrics
+        with torch.no_grad():
+            metrics = task.compute_metrics(output, batch, config)
+            for k, v in metrics.items():
+                total_metrics[k] = total_metrics.get(k, 0.0) + v
+
+    # Average
+    avg_loss = total_loss / len(dataloader)
+    avg_metrics = {k: v / len(dataloader) for k, v in total_metrics.items()}
+
+    return avg_loss, avg_metrics
+
+
+@torch.no_grad()
+def eval_epoch(
+    model: nn.Module,
+    dataloader: DataLoader,
+    task: TaskAdapter,
+    config: dict,
+    device: str = 'cuda'
+):
+    """Evaluate for one epoch."""
+    model.eval()
+    total_loss = 0.0
+    total_metrics = {}
+
+    for batch in dataloader:
+        batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v
+                 for k, v in batch.items()}
+
+        output = model(batch)
+        loss = task.compute_loss(output, batch, config)
+        total_loss += loss.item()
+
+        metrics = task.compute_metrics(output, batch, config)
+        for k, v in metrics.items():
+            total_metrics[k] = total_metrics.get(k, 0.0) + v
+
+    avg_loss = total_loss / len(dataloader)
+    avg_metrics = {k: v / len(dataloader) for k, v in total_metrics.items()}
+
+    return avg_loss, avg_metrics
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Train and compare Baseline vs PoH parsers")
+    parser = argparse.ArgumentParser(description='Train PoT model on any task')
+    parser.add_argument('--task', type=str, required=True,
+                        choices=list(TASK_REGISTRY.keys()),
+                        help='Task name')
+    parser.add_argument('--config', type=str, required=True,
+                        help='Path to config YAML')
+    parser.add_argument('--device', type=str, default='cuda',
+                        help='Device (cuda/cpu)')
+    parser.add_argument('--output_dir', type=str, default='experiments/results',
+                        help='Output directory')
+    args = parser.parse_args()
 
-    # Data
-    ap.add_argument("--data_source", type=str, default="dummy", choices=["hf", "conllu", "dummy"])
-    ap.add_argument("--conllu_dir", type=str, default=None)
+    # Load config
+    config = load_config(args.config)
+    print(f"Loaded config: {args.config}")
+    print(json.dumps(config, indent=2))
 
-    # Model architecture
-    ap.add_argument("--model_name", type=str, default="distilbert-base-uncased")
-    ap.add_argument("--d_model", type=int, default=768)
-    ap.add_argument("--n_heads", type=int, default=8)
-    ap.add_argument("--d_ff", type=int, default=2048)
+    # Initialize task
+    task_cls = TASK_REGISTRY[args.task]
+    task = task_cls()
 
-    # PoH-specific
-    ap.add_argument(
-        "--halting_mode", type=str, default="fixed", choices=["fixed", "entropy", "halting"]
+    # Prepare data
+    print(f"\nPreparing {args.task} data...")
+    train_ds, val_ds, test_ds = task.prepare_data(config)
+
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=config.get('batch_size', 64),
+        shuffle=True,
+        collate_fn=task.collate_fn,
+        num_workers=config.get('num_workers', 0)
     )
-    ap.add_argument("--max_inner_iters", type=int, default=1)
-    ap.add_argument("--routing_topk", type=int, default=0, help="0=soft, >0=hard top-k")
-    ap.add_argument(
-        "--combination", type=str, default="mask_concat", choices=["mask_concat", "mixture"]
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=config.get('batch_size', 64),
+        shuffle=False,
+        collate_fn=task.collate_fn,
+        num_workers=config.get('num_workers', 0)
     )
-    ap.add_argument("--ent_threshold", type=float, default=0.8)
 
-    # Iterative refinement
-    ap.add_argument("--deep_supervision", action="store_true")
-    ap.add_argument("--act_halting", action="store_true")
-    ap.add_argument("--ponder_coef", type=float, default=1e-3)
-    ap.add_argument("--ramp_strength", type=float, default=1.0)
-    ap.add_argument("--grad_mode", type=str, default="full", choices=["full", "last"])
+    # Build model
+    print("\nBuilding model...")
+    model = task.build_model(config)
+    model = model.to(args.device)
 
-    # TRM mode
-    ap.add_argument("--trm_mode", action="store_true")
-    ap.add_argument("--trm_supervision_steps", type=int, default=2)
-    ap.add_argument("--trm_inner_updates", type=int, default=None)
-    ap.add_argument("--trm_ramp_strength", type=float, default=1.0)
+    # Optimizer
+    optimizer = AdamW(
+        model.parameters(),
+        lr=config.get('lr', 1e-4),
+        weight_decay=config.get('weight_decay', 0.01)
+    )
 
-    # Training
-    ap.add_argument("--epochs", type=int, default=5)
-    ap.add_argument("--batch_size", type=int, default=32)
-    ap.add_argument("--lr", type=float, default=3e-5)
-    ap.add_argument("--weight_decay", type=float, default=0.01)
-    ap.add_argument("--warmup_ratio", type=float, default=0.1)
-    ap.add_argument("--seed", type=int, default=42)
-
-    # Evaluation
-    ap.add_argument("--ignore_punct", action="store_true")
-    ap.add_argument("--emit_conllu", action="store_true")
-
-    # Logging
-    ap.add_argument("--log_csv", type=str, default=None)
-
-    args = ap.parse_args()
-
-    # Set seed
-    torch.manual_seed(args.seed)
-
-    # Device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-
-    # Load data
-    print(f"\n{'='*80}")
-    print(f"Loading data from {args.data_source}...")
-    print(f"{'='*80}\n")
-
-    train_data = get_dataset(args.data_source, "train", args.conllu_dir)
-    dev_data = get_dataset(args.data_source, "validation", args.conllu_dir)
-
-    print(f"Train: {len(train_data)} examples")
-    print(f"Dev: {len(dev_data)} examples")
-
-    # Build label vocabulary
-    label_vocab = build_label_vocab(train_data + dev_data)
-    n_labels = len(label_vocab)
-    print(f"Labels: {n_labels} unique dependency relations")
-
-    # Tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-
-    # Create models
-    print(f"\n{'='*80}")
-    print("Creating models...")
-    print(f"{'='*80}\n")
-
-    baseline = BaselineParser(
-        enc_name=args.model_name,
-        d_model=args.d_model,
-        n_heads=args.n_heads,
-        d_ff=args.d_ff,
-        n_labels=n_labels,
-        use_labels=True,
-    ).to(device)
-
-    poh = PoHParser(
-        enc_name=args.model_name,
-        d_model=args.d_model,
-        n_heads=args.n_heads,
-        d_ff=args.d_ff,
-        halting_mode=args.halting_mode,
-        max_inner_iters=args.max_inner_iters,
-        routing_topk=args.routing_topk,
-        combination=args.combination,
-        ent_threshold=args.ent_threshold,
-        n_labels=n_labels,
-        use_labels=True,
-        deep_supervision=args.deep_supervision,
-        act_halting=args.act_halting,
-        ponder_coef=args.ponder_coef,
-        ramp_strength=args.ramp_strength,
-        grad_mode=args.grad_mode,
-    ).to(device)
-
-    # Count parameters
-    baseline_params = sum(p.numel() for p in baseline.parameters())
-    poh_params = sum(p.numel() for p in poh.parameters())
-    print(f"Baseline parameters: {baseline_params:,}")
-    print(f"PoH parameters: {poh_params:,}")
-
-    # Create trainers
-    baseline_trainer = Trainer(baseline, tokenizer, device, label_vocab)
-    poh_trainer = Trainer(poh, tokenizer, device, label_vocab)
-
-    # (Optional) Scheduler math can be added when using LR schedulers
+    # AMP scaler
+    scaler = GradScaler() if args.device == 'cuda' and config.get('use_amp', False) else None
 
     # Training loop
-    print(f"\n{'='*80}")
-    print("Training...")
-    print(f"{'='*80}\n")
+    print(f"\nTraining for {config.get('epochs', 10)} epochs...")
+    best_val_metric = -float('inf')
 
-    results = []
-
-    for epoch in range(args.epochs):
-        print(f"\nEpoch {epoch + 1}/{args.epochs}")
-        print("-" * 80)
-
-        # Train baseline
-        print("\n[Baseline]")
-        train_metrics_b = baseline_trainer.train_epoch(
-            train_data, batch_size=args.batch_size, lr=args.lr, weight_decay=args.weight_decay
-        )
-        eval_metrics_b = baseline_trainer.eval_epoch(dev_data, batch_size=args.batch_size)
-        print(f"  Train Loss: {train_metrics_b['loss']:.4f}")
-        print(f"  Dev UAS: {eval_metrics_b['uas']:.4f}, LAS: {eval_metrics_b['las']:.4f}")
-
-        # Train PoH
-        print("\n[PoH]")
-        train_metrics_p = poh_trainer.train_epoch(
-            train_data,
-            batch_size=args.batch_size,
-            lr=args.lr,
-            weight_decay=args.weight_decay,
-            args=args,
-        )
-        eval_metrics_p = poh_trainer.eval_epoch(dev_data, batch_size=args.batch_size, args=args)
-        print(f"  Train Loss: {train_metrics_p['loss']:.4f}")
-        print(f"  Dev UAS: {eval_metrics_p['uas']:.4f}, LAS: {eval_metrics_p['las']:.4f}")
-        if eval_metrics_p.get("mean_inner_iters", 0) > 0:
-            print(f"  Mean Inner Iters: {eval_metrics_p['mean_inner_iters']:.2f}")
-
-        # Log results
-        results.append(
-            {
-                "epoch": epoch + 1,
-                "baseline_dev_uas": eval_metrics_b["uas"],
-                "baseline_dev_las": eval_metrics_b["las"],
-                "poh_dev_uas": eval_metrics_p["uas"],
-                "poh_dev_las": eval_metrics_p["las"],
-                "poh_mean_inner_iters": eval_metrics_p.get("mean_inner_iters", 0.0),
-            }
+    for epoch in range(config.get('epochs', 10)):
+        # Train
+        train_loss, train_metrics = train_epoch(
+            model, train_loader, optimizer, task, config, scaler, args.device
         )
 
-    # Final summary
-    print(f"\n{'='*80}")
-    print("Final Results")
-    print(f"{'='*80}\n")
+        # Validate
+        val_loss, val_metrics = eval_epoch(
+            model, val_loader, task, config, args.device
+        )
 
-    best_baseline = max(results, key=lambda x: x["baseline_dev_uas"])
-    best_poh = max(results, key=lambda x: x["poh_dev_uas"])
+        print(f"\nEpoch {epoch + 1}/{config.get('epochs', 10)}:")
+        print(f"  Train loss: {train_loss:.4f} | {train_metrics}")
+        print(f"  Val loss:   {val_loss:.4f} | {val_metrics}")
 
-    print(
-        f"Best Baseline - Epoch {best_baseline['epoch']}: "
-        f"UAS={best_baseline['baseline_dev_uas']:.4f}, LAS={best_baseline['baseline_dev_las']:.4f}"
-    )
-    print(
-        f"Best PoH - Epoch {best_poh['epoch']}: "
-        f"UAS={best_poh['poh_dev_uas']:.4f}, LAS={best_poh['poh_dev_las']:.4f}"
-    )
+        # Save best model (based on first metric)
+        val_metric = list(val_metrics.values())[0]
+        if val_metric > best_val_metric:
+            best_val_metric = val_metric
+            # Save checkpoint
+            output_dir = Path(args.output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            torch.save(model.state_dict(), output_dir / f'{args.task}_best.pt')
+            print(f"  ✅ Saved best model (val_metric={val_metric:.4f})")
 
-    # CSV logging
-    if args.log_csv:
-        import csv
-
-        with open(args.log_csv, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=results[0].keys())
-            writer.writeheader()
-            writer.writerows(results)
-        print(f"\nResults saved to {args.log_csv}")
+    print("\n✅ Training complete!")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

@@ -1,0 +1,2 @@
+seed,model,n_params,best_epoch,best_dev_kendall,test_kendall,test_perfect,test_accuracy,test_hamming
+1,pot,332548,3,0.10040404040404041,0.09878787878787877,0.0,0.19833333333333333,0.8016666666666666
