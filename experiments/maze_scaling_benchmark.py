@@ -53,9 +53,24 @@ except ImportError:
     BERT_AVAILABLE = False
     print("Warning: transformers library not available. BERT baseline will be skipped.")
 
+# Debug: Check paths before import
+print(f"✓ sys.path[0]: {sys.path[0]}")
+print(f"✓ Checking src/pot/core/poh_stack.py exists: {os.path.exists(os.path.join(sys.path[0], 'src', 'pot', 'core', 'poh_stack.py'))}")
+
 # Import PoT modules
-from src.pot.core.poh_stack import PoHStack, PoHStackConfig
-from src.pot.core.iter_refiner import IterRefiner
+try:
+    from src.pot.core.poh_stack import PoHStack, PoHStackConfig
+    from src.pot.core.iter_refiner import IterRefiner
+    print("✓ Successfully imported PoT modules")
+except ImportError as e:
+    print(f"ERROR importing PoT modules: {e}")
+    print(f"sys.path: {sys.path[:3]}")
+    print(f"Files in {sys.path[0]}: {os.listdir(sys.path[0])[:10]}")
+    if os.path.exists(os.path.join(sys.path[0], 'src')):
+        print(f"Files in src/: {os.listdir(os.path.join(sys.path[0], 'src'))}")
+        if os.path.exists(os.path.join(sys.path[0], 'src', 'pot')):
+            print(f"Files in src/pot/: {os.listdir(os.path.join(sys.path[0], 'src', 'pot'))}")
+    raise
 
 
 # ============================================================================
