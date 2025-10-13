@@ -11,6 +11,29 @@ Based on: Hierarchical Reasoning Model (HRM) maze benchmarks
 Reference: arXiv 2506.21734
 """
 
+import sys
+import os
+
+# Setup paths for PoT imports (must be first!)
+try:
+    # Try importing the setup helper
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, script_dir)
+    from setup_colab import setup_pot_paths
+    pot_root = setup_pot_paths()
+    print(f"✓ PoT root: {pot_root}")
+except Exception as e:
+    # Fallback: simple path setup
+    cwd = os.getcwd()
+    if os.path.exists(os.path.join(cwd, 'src', 'pot')):
+        sys.path.insert(0, cwd)
+    elif os.path.exists(os.path.join(os.path.dirname(cwd), 'src', 'pot')):
+        sys.path.insert(0, os.path.dirname(cwd))
+    else:
+        print(f"ERROR: {e}")
+        sys.exit(1)
+
+# Now safe to import other modules
 import torch
 import torch.nn as nn
 import numpy as np
@@ -20,48 +43,7 @@ from dataclasses import dataclass
 from collections import deque
 import time
 import json
-import sys
-import os
 from pathlib import Path
-
-# Add parent directory to path for imports
-# Try multiple methods to find the correct path
-repo_root = None
-
-# Method 1: Try using __file__ (works when run as module)
-try:
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    repo_root = os.path.dirname(script_dir)
-except (NameError, OSError):
-    pass
-
-# Method 2: Use current working directory (works in Colab/interactive)
-if repo_root is None or not os.path.exists(os.path.join(repo_root, 'src', 'pot')):
-    cwd = os.getcwd()
-    # Check if we're already in PoT root
-    if os.path.exists(os.path.join(cwd, 'src', 'pot')):
-        repo_root = cwd
-    # Check if we're in experiments subfolder
-    elif os.path.basename(cwd) == 'experiments':
-        repo_root = os.path.dirname(cwd)
-    # Search up directory tree
-    else:
-        current = cwd
-        for _ in range(5):  # Search up to 5 levels
-            if os.path.exists(os.path.join(current, 'src', 'pot')):
-                repo_root = current
-                break
-            parent = os.path.dirname(current)
-            if parent == current:  # Reached root
-                break
-            current = parent
-
-if repo_root is None:
-    print(f"ERROR: Could not find PoT repository root. Current directory: {os.getcwd()}")
-    print("Please run from the PoT directory or set PYTHONPATH appropriately.")
-    sys.exit(1)
-
-sys.path.insert(0, repo_root)
 
 # Try to import transformers for BERT, fallback if not available
 try:

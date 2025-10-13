@@ -11,6 +11,21 @@ Date: October 2025
 
 import os
 import sys
+
+# Setup paths for PoT imports (must be first!)
+try:
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, script_dir)
+    from setup_colab import setup_pot_paths
+    setup_pot_paths()
+except Exception:
+    # Fallback
+    cwd = os.getcwd()
+    if os.path.exists(os.path.join(cwd, 'src', 'pot')):
+        sys.path.insert(0, cwd)
+    elif os.path.exists(os.path.join(os.path.dirname(cwd), 'src', 'pot')):
+        sys.path.insert(0, os.path.dirname(cwd))
+
 import time
 import csv
 from datetime import datetime
@@ -21,19 +36,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
-
-# Add parent directory to path for imports - robust for Colab
-repo_root = None
-try:
-    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-except (NameError, OSError):
-    cwd = os.getcwd()
-    if os.path.exists(os.path.join(cwd, 'src', 'pot')):
-        repo_root = cwd
-    elif os.path.basename(cwd) == 'experiments':
-        repo_root = os.path.dirname(cwd)
-if repo_root:
-    sys.path.insert(0, repo_root)
 
 from src.pot.core.hrm_controller import HRMPointerController, HRMState
 
