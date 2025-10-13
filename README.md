@@ -47,6 +47,34 @@ print(f"Inner iterations: {len(stats)}")  # 3
 
 **See [examples/poh_usage.py](examples/poh_usage.py) for 6 complete usage examples.**
 
+### Autoregressive PoH-GPT
+
+```python
+from src.pot.models.poh_gpt import PoHGPT
+from src.pot.modules import PoHConfig
+
+# Configure GPT-style model
+cfg = PoHConfig(
+    d_model=512, n_heads=8, d_ff=2048, depth=6,
+    is_causal=True,         # Enable causal masking
+    max_inner_iters=2,      # Iterative refinement
+    outer_residual=True,    # Skip connections across iterations
+    rezero_init=True,       # Start with identity mapping
+)
+
+# Build model
+model = PoHGPT(vocab_size=32000, cfg=cfg)
+
+# Train or generate
+input_ids = torch.randint(0, 32000, (1, 10))
+logits = model(input_ids)                                    # Training
+output = model.generate(input_ids, max_new_tokens=20)        # Generation
+```
+
+**Run A/B comparison:** `python experiments/quick_ab_test.py` (2 min)  
+**Full experiment:** `python experiments/fair_ab_lm.py` (15 min)  
+**Colab:** [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](PoH_GPT_AB_Test.ipynb)
+
 ---
 
 ## 🏗️ Architecture

@@ -29,6 +29,8 @@ from src.models.layers import (
     entropy_from_logits,
     gumbel_softmax_topk,
 )
+from src.pot.models.poh_gpt import PoHGPT
+from src.models.baseline_gpt import BaselineGPT
 
 __all__ = [
     "ParserBase",
@@ -44,4 +46,6 @@ __all__ = [
     "HRMState",
     "entropy_from_logits",
     "gumbel_softmax_topk",
+    "PoHGPT",
+    "BaselineGPT",
 ]
