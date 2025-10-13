@@ -15,7 +15,6 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import LinearLRWithWarmup
 from tqdm import tqdm
 from datetime import datetime
 
@@ -25,7 +24,7 @@ from src.pot.tasks.nli import NLIDataLoader, NLIMetrics, create_pair_sequence
 
 
 # Simple linear warmup scheduler
-class LinearLRWithWarmup:
+class LinearWarmupScheduler:
     def __init__(self, optimizer, warmup_steps, total_steps):
         self.optimizer = optimizer
         self.warmup_steps = warmup_steps
@@ -72,7 +71,7 @@ class NLITrainer:
         
         # Setup optimizer + scheduler
         self.opt = AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
-        self.scheduler = LinearLRWithWarmup(self.opt, self.warmup_steps, self.max_steps)
+        self.scheduler = LinearWarmupScheduler(self.opt, self.warmup_steps, self.max_steps)
         self.criterion = nn.CrossEntropyLoss()
         
         # Data loader
