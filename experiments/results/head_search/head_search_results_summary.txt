@@ -1,0 +1,11 @@
+Best Configuration:
+  n_heads = 2
+  Best τ: 0.0342 ± 0.0069
+  Final τ: 0.0266 ± 0.0038
+  Params: 0.61M
+
+Full Results:
+ n_heads  best_tau_mean  best_tau_std  final_tau_mean  final_tau_std  params_M
+       2        0.03420      0.006930         0.02660       0.003818      0.61
+       4        0.03170      0.002687         0.02165       0.004596      0.61
+       8        0.03155      0.006576         0.02360       0.004667      0.61
