@@ -64,7 +64,7 @@ class BaselineTransformerSort(nn.Module):
     def __init__(
         self,
         d_model: int = 128,
-        n_heads: int = 4,
+        n_heads: int = 2,  # Optimal from head search
         d_ff: int = 512,
         depth: int = 3,
         dropout: float = 0.1,
@@ -127,7 +127,7 @@ class PoHTransformerSort(nn.Module):
     def __init__(
         self,
         d_model: int = 128,
-        n_heads: int = 4,
+        n_heads: int = 2,  # Optimal from head search
         d_ff: int = 512,
         depth: int = 3,
         R: int = 4,
@@ -372,7 +372,7 @@ def run_ab_test(array_len, train_samples=2000, test_samples=500, R=4, T=4,
     
     baseline = BaselineTransformerSort(
         d_model=128,
-        n_heads=4,
+        n_heads=2,  # Optimal from head search
         d_ff=512,
         depth=3,
         dropout=0.1
@@ -380,7 +380,7 @@ def run_ab_test(array_len, train_samples=2000, test_samples=500, R=4, T=4,
     
     poh = PoHTransformerSort(
         d_model=128,
-        n_heads=4,
+        n_heads=2,  # Optimal from head search
         d_ff=512,
         depth=3,
         R=R,
