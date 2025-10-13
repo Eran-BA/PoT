@@ -1,0 +1,33 @@
+model:
+  type: poh_nli
+  vocab_size: 30522  # BERT vocab size
+  d_model: 768
+  n_heads: 12
+  d_ff: 3072
+  depth: 12
+  dropout: 0.1
+  max_seq_len: 128
+  max_inner_iters: 3
+  route_mode: soft
+  route_topk: null
+  outer_residual: true
+  rezero_init: true
+  share_router: true
+
+train:
+  batch_size: 32
+  lr: 2e-5
+  weight_decay: 0.01
+  grad_clip: 1.0
+  warmup_steps: 1000
+  max_steps: 10000
+  eval_interval: 500
+  seed: 42
+
+data:
+  dataset: snli  # or 'mnli'
+  max_length: 128
+  synthetic: true  # Use synthetic data for quick testing (no HF datasets needed)
+
+save_dir: experiments/results/nli/poh
+
