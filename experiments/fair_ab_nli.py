@@ -246,43 +246,43 @@ def run_ab():
     bert_model = build_model(cfg_bert)
     poh_model = build_model(cfg_poh)
     
-    print("\n🚀 Training BERT Baseline for NLI")
-    start = time.time()
-    bert_trainer = NLITrainer(bert_model, cfg_bert)
-    bert_acc = bert_trainer.train()
-    bert_time = (time.time() - start) / 60
-    
-    print("\n⚙️  Training PoH for NLI")
+    print("\n🚀 Training PoH for NLI (Novel Architecture)")
     start = time.time()
     poh_trainer = NLITrainer(poh_model, cfg_poh)
     poh_acc = poh_trainer.train()
     poh_time = (time.time() - start) / 60
+    
+    print("\n⚙️  Training BERT Baseline for NLI")
+    start = time.time()
+    bert_trainer = NLITrainer(bert_model, cfg_bert)
+    bert_acc = bert_trainer.train()
+    bert_time = (time.time() - start) / 60
     
     delta = (poh_acc - bert_acc) / bert_acc * 100
     
     print("\n" + "="*50)
     print("A/B Comparison Summary: NLI")
     print("="*50)
-    print(f"BERT Baseline: acc={bert_acc:.3f}, time={bert_time:.1f}m")
     print(f"PoH:           acc={poh_acc:.3f}, time={poh_time:.1f}m")
+    print(f"BERT Baseline: acc={bert_acc:.3f}, time={bert_time:.1f}m")
     print(f"Δ improvement: {delta:+.2f}%")
     print("="*50)
     
-    # Save results
+    # Save results (PoH first, then baseline)
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    save_result_csv({
-        "timestamp": timestamp,
-        "model": "BERT",
-        "accuracy": f"{bert_acc:.3f}",
-        "time_min": f"{bert_time:.2f}",
-        "delta_vs_baseline": "0.00"
-    })
     save_result_csv({
         "timestamp": timestamp,
         "model": "PoH",
         "accuracy": f"{poh_acc:.3f}",
         "time_min": f"{poh_time:.2f}",
         "delta_vs_baseline": f"{delta:.2f}"
+    })
+    save_result_csv({
+        "timestamp": timestamp,
+        "model": "BERT",
+        "accuracy": f"{bert_acc:.3f}",
+        "time_min": f"{bert_time:.2f}",
+        "delta_vs_baseline": "0.00"
     })
     
     print(f"\n✅ Results saved to: experiments/results/nli/ab_results.csv")

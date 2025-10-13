@@ -329,28 +329,17 @@ def run_benchmark(
         depth=12,
         dropout=0.1,
         max_seq_len=128,
-        max_inner_iters=3,
+        max_inner_iters=12,  # Optimal from diminishing returns analysis
         route_mode="soft",
         outer_residual=True,
         rezero_init=True,
         share_router=True,
     )
     
-    print(f"  BERT parameters: {bert.count_parameters() / 1e6:.2f}M")
     print(f"  PoH parameters: {poh.count_parameters() / 1e6:.2f}M")
+    print(f"  BERT parameters: {bert.count_parameters() / 1e6:.2f}M")
     
-    # Train BERT
-    bert_trainer = RealNLITrainer(
-        bert,
-        model_name="BERT",
-        dataset_name=dataset_name,
-        batch_size=batch_size,
-        max_steps=max_steps,
-        max_train_samples=max_train_samples,
-    )
-    bert_results = bert_trainer.train()
-    
-    # Train PoH
+    # Train PoH first (novel architecture)
     poh_trainer = RealNLITrainer(
         poh,
         model_name="PoH",
@@ -361,6 +350,17 @@ def run_benchmark(
     )
     poh_results = poh_trainer.train()
     
+    # Train BERT baseline
+    bert_trainer = RealNLITrainer(
+        bert,
+        model_name="BERT",
+        dataset_name=dataset_name,
+        batch_size=batch_size,
+        max_steps=max_steps,
+        max_train_samples=max_train_samples,
+    )
+    bert_results = bert_trainer.train()
+    
     # Summary
     print("\n" + "="*60)
     print("📊 BENCHMARK RESULTS")
@@ -369,33 +369,23 @@ def run_benchmark(
     print(f"Training steps: {max_steps:,}")
     print(f"Batch size: {batch_size}")
     print()
-    print(f"BERT:")
-    print(f"  Best accuracy: {bert_results['best_acc']:.4f}")
-    print(f"  Final accuracy: {bert_results['final_acc']:.4f}")
-    print(f"  Time: {bert_results['time_minutes']:.1f} minutes")
-    print()
-    print(f"PoH:")
+    print(f"PoH (Novel Architecture):")
     print(f"  Best accuracy: {poh_results['best_acc']:.4f}")
     print(f"  Final accuracy: {poh_results['final_acc']:.4f}")
     print(f"  Time: {poh_results['time_minutes']:.1f} minutes")
+    print()
+    print(f"BERT (Baseline):")
+    print(f"  Best accuracy: {bert_results['best_acc']:.4f}")
+    print(f"  Final accuracy: {bert_results['final_acc']:.4f}")
+    print(f"  Time: {bert_results['time_minutes']:.1f} minutes")
     print()
     
     delta = (poh_results['best_acc'] - bert_results['best_acc']) / bert_results['best_acc'] * 100
     print(f"Δ PoH improvement: {delta:+.2f}%")
     print("="*60)
     
-    # Save results
+    # Save results (PoH first, then baseline)
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    save_results_csv({
-        'timestamp': timestamp,
-        'dataset': dataset_name,
-        'model': 'BERT',
-        'best_acc': f"{bert_results['best_acc']:.4f}",
-        'final_acc': f"{bert_results['final_acc']:.4f}",
-        'time_min': f"{bert_results['time_minutes']:.2f}",
-        'delta_vs_baseline': "0.00"
-    })
     
     save_results_csv({
         'timestamp': timestamp,
@@ -405,6 +395,16 @@ def run_benchmark(
         'final_acc': f"{poh_results['final_acc']:.4f}",
         'time_min': f"{poh_results['time_minutes']:.2f}",
         'delta_vs_baseline': f"{delta:.2f}"
+    })
+    
+    save_results_csv({
+        'timestamp': timestamp,
+        'dataset': dataset_name,
+        'model': 'BERT',
+        'best_acc': f"{bert_results['best_acc']:.4f}",
+        'final_acc': f"{bert_results['final_acc']:.4f}",
+        'time_min': f"{bert_results['time_minutes']:.2f}",
+        'delta_vs_baseline': "0.00"
     })
     
     print(f"\n✅ Results saved to: experiments/results/real_nli/benchmark_results.csv")
