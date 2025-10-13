@@ -51,6 +51,107 @@ print(f"Inner iterations: {len(stats)}")  # 3
 
 ## 🏗️ Architecture
 
+### Visual Overview
+
+```mermaid
+flowchart TB
+  %% ==== Styles ====
+  classDef head fill:#ffe0c2,stroke:#333,stroke-width:2px,color:#111
+  classDef ctrlL fill:#d6f5ff,stroke:#1e88e5,stroke-width:2px,color:#111
+  classDef ctrlH fill:#ffe0e0,stroke:#e53935,stroke-width:2px,color:#111
+  classDef io fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#111
+  classDef mix fill:#fff9c4,stroke:#f9a825,stroke-width:2px,color:#111
+  classDef state fill:#f5f5f5,stroke:#666,stroke-width:1px,stroke-dasharray:5 5,color:#111
+  classDef note fill:#fafafa,stroke:#bbb,stroke-width:1px,color:#333
+  classDef skip fill:#e1f5fe,stroke:#0277bd,stroke-width:2px,stroke-dasharray:3 3,color:#111
+
+  %% ==== I/O ====
+  X[Input tokens or hidden x]:::io
+  Y[Block output]:::io
+
+  %% ==== Heads ====
+  subgraph SA["Self-Attention Heads"]
+    direction LR
+    H1[Head 1]:::head
+    H2[Head 2]:::head
+    H3[Head 3]:::head
+  end
+
+  %% ==== HRM Controller ====
+  subgraph HRM["HRM Pointer Controller"]
+    direction TB
+
+    %% High-level (slow)
+    subgraph HMOD["High-Level Module f_H (slow)"]
+      direction TB
+      zH[(z_H state)]:::state
+      FH[GRUCell f_H]:::ctrlH
+    end
+
+    %% Low-level (fast)
+    subgraph LMOD["Low-Level Module f_L (fast)"]
+      direction TB
+      zL[(z_L state)]:::state
+      FL[GRUCell f_L]:::ctrlL
+    end
+
+    %% Router head
+    RT["Router: Linear(concat(z_L, z_H)) → logits"]:::ctrlL
+    SM["Softmax / temperature"]:::ctrlL
+    TK{{Top-k optional}}:::ctrlL
+    ALPHA["Routing weights α over heads"]:::ctrlL
+
+    %% Internal wiring
+    Xp[x → controller space]:::ctrlH --> FH --> zH
+    zH --> FL
+    Xc[x → controller space]:::ctrlL --> FL
+    FL --> zL
+    zL --> RT --> SM --> TK --> ALPHA
+  end
+
+  %% ==== Mixer ====
+  MIX[Weighted head mix: Σ α_i · head_i]:::mix
+
+  %% ==== Skip Connections ====
+  SKIP1[Residual: x + dropout(attn)]:::skip
+  SKIP2[Residual: x + dropout(ffn)]:::skip
+  FFN[Feed-Forward Network]:::mix
+
+  %% ==== Timing / Notes ====
+  NOTE1[[f_H updates every T steps; f_L updates each step; optional deep supervision]]:::note
+
+  %% ==== Main flow ====
+  X --> SA
+  X --> HRM
+  ALPHA --> MIX
+  H1 --> MIX
+  H2 --> MIX
+  H3 --> MIX
+  MIX --> SKIP1
+  X --> SKIP1
+  SKIP1 --> FFN --> SKIP2
+  SKIP1 --> SKIP2
+  SKIP2 --> Y
+
+  %% ==== Recurrence across inner iterations ====
+  Y -. next inner iteration .-> X
+  zL -. carried each step .-> zL
+  zH -. updated when t mod T == 0 .-> zH
+
+  NOTE1 -.-> HRM
+
+  class H1,H2,H3 head
+  class MIX,FFN mix
+  class SKIP1,SKIP2 skip
+```
+
+**Key Components:**
+- **HRM Controller**: Two-timescale recurrent modules (f_L fast, f_H slow)
+- **Router**: Produces per-token, per-head routing weights α
+- **Weighted Mix**: Combines attention heads based on α
+- **Skip Connections**: Residual connections around attention and FFN
+- **Iterative Refinement**: Output feeds back as input for K iterations
+
 ### Hierarchy
 
 ```
@@ -58,10 +159,13 @@ IterRefiner                # K inner refinement steps + optional ACT halting
   ↓
 PoHStack                   # N transformer blocks + positional encoding
   ↓
-PoHBlock (×N)              # Head-wise routing + MHA + FFN
+PoHBlock (×N)              # Head-wise routing + MHA + FFN + residuals
   ├─ HeadRouter           # Per-token, per-head routing logits
   ├─ MultiheadAttention   # Standard PyTorch MHA
-  └─ FeedForward          # Standard FFN
+  ├─ Weighted Mixing      # α-weighted head combination
+  ├─ Residual #1          # x + dropout(attn)
+  ├─ FeedForward          # Standard FFN
+  └─ Residual #2          # x + dropout(ffn)
 ```
 
 ### Key Features
