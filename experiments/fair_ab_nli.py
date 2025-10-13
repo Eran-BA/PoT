@@ -56,13 +56,13 @@ class NLITrainer:
         
         # Training config
         train_cfg = cfg.get("train", {})
-        self.batch_size = train_cfg.get("batch_size", 32)
-        self.lr = train_cfg.get("lr", 2e-5)
-        self.weight_decay = train_cfg.get("weight_decay", 0.01)
-        self.max_steps = train_cfg.get("max_steps", 10000)
-        self.grad_clip = train_cfg.get("grad_clip", 1.0)
-        self.eval_interval = train_cfg.get("eval_interval", 500)
-        self.warmup_steps = train_cfg.get("warmup_steps", 1000)
+        self.batch_size = int(train_cfg.get("batch_size", 32))
+        self.lr = float(train_cfg.get("lr", 2e-5))
+        self.weight_decay = float(train_cfg.get("weight_decay", 0.01))
+        self.max_steps = int(train_cfg.get("max_steps", 10000))
+        self.grad_clip = float(train_cfg.get("grad_clip", 1.0))
+        self.eval_interval = int(train_cfg.get("eval_interval", 500))
+        self.warmup_steps = int(train_cfg.get("warmup_steps", 1000))
         
         # Data config
         data_cfg = cfg.get("data", {})
