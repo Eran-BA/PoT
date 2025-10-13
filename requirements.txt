@@ -1,26 +1,36 @@
-# Core dependencies
-torch>=1.13.0
-transformers>=4.25.0
-datasets>=2.8.0
+# PoH (Pointer-over-Heads) Transformer - Requirements
+# Pinned versions for reproducibility
+# Python 3.9+
+
+# Core deep learning
+torch==2.0.1
+transformers==4.30.2
+datasets==2.14.0
 
 # Configuration
-pyyaml>=6.0
+pyyaml==6.0.1
 
 # Data processing
-numpy>=1.20.0
-scipy>=1.7.0
-pandas>=1.3.0
+numpy==1.24.3
+scipy==1.10.1
+pandas==2.0.3
 
 # Visualization
-matplotlib>=3.5.0
-seaborn>=0.11.0
+matplotlib==3.7.2
+seaborn==0.12.2
 
 # Utilities
-tqdm>=4.62.0
+tqdm==4.65.0
 
-# Development (optional)
-pytest>=7.0.0
-pytest-cov>=3.0.0
-black>=22.0.0
-flake8>=4.0.0
-isort>=5.10.0
+# Development
+pytest==7.4.0
+pytest-cov==4.1.0
+black==23.7.0
+ruff==0.0.282
+
+# Optional: RoPE support (for rotary positional encoding)
+# rotary-embedding-torch==0.3.0
+
+# Optional: CUDA acceleration (if available)
+# Uncomment if using GPU:
+# torch==2.0.1+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
