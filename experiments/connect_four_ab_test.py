@@ -540,6 +540,7 @@ class BERTConnectFourModel(nn.Module):
         d_model: int = 256,
         n_heads: int = 4,
         d_ff: int = 1024,
+        num_layers: int = 4,
         dropout: float = 0.1
     ):
         super().__init__()
@@ -555,10 +556,10 @@ class BERTConnectFourModel(nn.Module):
         self.cell_embed = nn.Embedding(3, d_model)
         self.pos_embed = nn.Embedding(rows * cols, d_model)
         
-        # BERT encoder configuration
+        # BERT encoder configuration (configurable layers for parameter parity)
         bert_config = BertConfig(
             hidden_size=d_model,
-            num_hidden_layers=6,
+            num_hidden_layers=num_layers,
             num_attention_heads=n_heads,
             intermediate_size=d_ff,
             hidden_dropout_prob=dropout,
@@ -774,29 +775,75 @@ def run_ab_test(train_games=500, test_games=100, minimax_depth=3, R=4, T=4, n_he
     # Build models
     print(f"\nBuilding models...")
     
+    # Configuration for parameter parity
+    d_model = 256
+    d_ff = 1024
+    
+    # Baseline: single-pass transformer
     baseline = ConnectFourModel(
-        d_model=256,
+        d_model=d_model,
         n_heads=n_heads,
-        d_ff=1024,
+        d_ff=d_ff,
         max_inner_iters=1,
         T=1,
         use_poh=False
     ).to(device)
     
+    # Count baseline parameters
+    baseline_params = sum(p.numel() for p in baseline.parameters())
+    print(f"  Baseline parameters: {baseline_params / 1e6:.2f}M")
+    
+    # BERT baseline (if available) - adjust layers to match PoH parameters
+    bert = None
+    bert_results = None
+    if BERT_AVAILABLE:
+        try:
+            # BERT with fewer layers to match parameter count
+            # PoH has routing overhead, so BERT needs ~4-5 layers instead of 6
+            bert = BERTConnectFourModel(
+                d_model=d_model,
+                n_heads=n_heads,
+                d_ff=d_ff,
+                num_layers=4  # Reduced from 6 for parameter parity
+            ).to(device)
+            bert_params = sum(p.numel() for p in bert.parameters())
+            print(f"  BERT parameters: {bert_params / 1e6:.2f}M")
+        except Exception as e:
+            print(f"  Warning: Could not create BERT model: {e}")
+            bert = None
+    
+    # PoH with HRM controller
     poh = ConnectFourModel(
-        d_model=256,
+        d_model=d_model,
         n_heads=n_heads,
-        d_ff=1024,
+        d_ff=d_ff,
         max_inner_iters=R,
         T=T,
         use_poh=True
     ).to(device)
+    
+    poh_params = sum(p.numel() for p in poh.parameters())
+    print(f"  PoH-HRM parameters: {poh_params / 1e6:.2f}M")
+    
+    # Check parameter parity
+    if bert is not None:
+        bert_parity = abs(bert_params - poh_params) / poh_params * 100
+        print(f"  Parameter difference (BERT vs PoH): {bert_parity:.2f}%")
+        if bert_parity > 5:
+            print(f"  ⚠️  Warning: Parameter difference > 5%")
     
     # Train baseline
     baseline_results = train_and_evaluate(
         baseline, "Baseline", train_data, test_data,
         epochs=epochs, device=device
     )
+    
+    # Train BERT (if available)
+    if bert is not None:
+        bert_results = train_and_evaluate(
+            bert, "BERT", train_data, test_data,
+            epochs=epochs, device=device
+        )
     
     # Train PoH
     poh_results = train_and_evaluate(
@@ -814,6 +861,13 @@ def run_ab_test(train_games=500, test_games=100, minimax_depth=3, R=4, T=4, n_he
     print(f"  Best Accuracy: {baseline_results['best_accuracy']:.2%}")
     print(f"  Final Accuracy: {baseline_results['final_accuracy']:.2%}")
     print(f"  Training time: {baseline_results['time_min']:.2f} min")
+    
+    if bert_results is not None:
+        print(f"\n🤖 BERT Baseline")
+        print(f"  Parameters: {bert_results['params_M']:.2f}M")
+        print(f"  Best Accuracy: {bert_results['best_accuracy']:.2%}")
+        print(f"  Final Accuracy: {bert_results['final_accuracy']:.2%}")
+        print(f"  Training time: {bert_results['time_min']:.2f} min")
     
     print(f"\n🔬 PoH with HRM (R={R}, T={T}, n_heads={n_heads})")
     print(f"  Parameters: {poh_results['params_M']:.2f}M")
@@ -840,12 +894,17 @@ def run_ab_test(train_games=500, test_games=100, minimax_depth=3, R=4, T=4, n_he
         winner = "Tie"
         print(f"⚖️  TIE (difference < 5%)")
     
-    return {
+    results = {
         'baseline': baseline_results,
         'poh': poh_results,
         'delta_accuracy': delta_acc,
         'winner': winner
     }
+    
+    if bert_results is not None:
+        results['bert'] = bert_results
+    
+    return results
 
 
 def main():

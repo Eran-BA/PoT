@@ -399,6 +399,7 @@ class BERTMazeSolver(nn.Module):
         d_model: int = 256,
         n_heads: int = 4,
         d_ff: int = 1024,
+        num_layers: int = 4,
         dropout: float = 0.1
     ):
         super().__init__()
@@ -413,10 +414,10 @@ class BERTMazeSolver(nn.Module):
         self.cell_embed = nn.Embedding(4, d_model)  # 0=wall, 1=path, 2=start, 3=goal
         self.pos_embed = nn.Embedding(maze_size * maze_size, d_model)
         
-        # BERT encoder configuration
+        # BERT encoder configuration (configurable layers for parameter parity)
         bert_config = BertConfig(
             hidden_size=d_model,
-            num_hidden_layers=6,
+            num_hidden_layers=num_layers,
             num_attention_heads=n_heads,
             intermediate_size=d_ff,
             hidden_dropout_prob=dropout,
@@ -705,40 +706,65 @@ def run_ab_test(maze_size, train_samples=1000, test_samples=200, R=4, T=4, n_hea
     # Build models
     print(f"\nBuilding models...")
     
+    # Configuration for parameter parity
+    d_model = 256
+    d_ff = 1024
+    
+    # Baseline: single-pass transformer
     baseline = MazeSolver(
         maze_size=maze_size,
-        d_model=256,
+        d_model=d_model,
         n_heads=n_heads,
-        d_ff=1024,
+        d_ff=d_ff,
         max_inner_iters=1,
         T=1,
         use_poh=False
     ).to(device)
     
-    # BERT baseline (if available)
+    # Count baseline parameters
+    baseline_params = sum(p.numel() for p in baseline.parameters())
+    print(f"  Baseline parameters: {baseline_params / 1e6:.2f}M")
+    
+    # BERT baseline (if available) - adjust layers to match PoH parameters
     bert = None
     bert_results = None
     if BERT_AVAILABLE:
         try:
+            # BERT with fewer layers to match parameter count
+            # PoH has routing overhead, so BERT needs ~4-5 layers instead of 6
             bert = BERTMazeSolver(
                 maze_size=maze_size,
-                d_model=256,
+                d_model=d_model,
                 n_heads=n_heads,
-                d_ff=1024
+                d_ff=d_ff,
+                num_layers=4  # Reduced from 6 for parameter parity
             ).to(device)
+            bert_params = sum(p.numel() for p in bert.parameters())
+            print(f"  BERT parameters: {bert_params / 1e6:.2f}M")
         except Exception as e:
             print(f"  Warning: Could not create BERT model: {e}")
             bert = None
     
+    # PoH with HRM controller
     poh = MazeSolver(
         maze_size=maze_size,
-        d_model=256,
+        d_model=d_model,
         n_heads=n_heads,
-        d_ff=1024,
+        d_ff=d_ff,
         max_inner_iters=R,
         T=T,
         use_poh=True
     ).to(device)
+    
+    poh_params = sum(p.numel() for p in poh.parameters())
+    print(f"  PoH-HRM parameters: {poh_params / 1e6:.2f}M")
+    
+    # Check parameter parity
+    if bert is not None:
+        bert_parity = abs(bert_params - poh_params) / poh_params * 100
+        print(f"  Parameter difference (BERT vs PoH): {bert_parity:.2f}%")
+        if bert_parity > 5:
+            print(f"  ⚠️  Warning: Parameter difference > 5%")
     
     # Train baseline
     baseline_results = train_and_evaluate(
