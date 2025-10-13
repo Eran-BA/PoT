@@ -76,7 +76,7 @@ flowchart TB
     H2[Head 2]:::head
     H3[Head 3]:::head
   end
-
+  
   %% ==== HRM Controller ====
   subgraph HRM["HRM Pointer Controller"]
     direction TB
@@ -109,13 +109,13 @@ flowchart TB
     zL --> RT --> SM --> TK --> ALPHA
   end
 
-  %% ==== Mixer ====
+  %% ==== Mixer & FFN ====
   MIX[Weighted head mix: Σ α_i · head_i]:::mix
-
-  %% ==== Skip Connections ====
-  SKIP1[Residual: x + dropout(attn)]:::skip
-  SKIP2[Residual: x + dropout(ffn)]:::skip
   FFN[Feed-Forward Network]:::mix
+  
+  %% ==== Skip Connections ====
+  SKIP1[Residual: x + attn]:::skip
+  SKIP2[Residual: x + ffn]:::skip
 
   %% ==== Timing / Notes ====
   NOTE1[[f_H updates every T steps; f_L updates each step; optional deep supervision]]:::note
@@ -127,10 +127,16 @@ flowchart TB
   H1 --> MIX
   H2 --> MIX
   H3 --> MIX
+  
+  %% Residual path 1: attention
   MIX --> SKIP1
-  X --> SKIP1
-  SKIP1 --> FFN --> SKIP2
-  SKIP1 --> SKIP2
+  X -.-> SKIP1
+  
+  %% Residual path 2: FFN
+  SKIP1 --> FFN
+  FFN --> SKIP2
+  SKIP1 -.-> SKIP2
+  
   SKIP2 --> Y
 
   %% ==== Recurrence across inner iterations ====
