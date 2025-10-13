@@ -91,6 +91,13 @@ class PoHConfig:
     # Positional encoding
     pos_encoding: str = "absolute"    # ["none", "absolute", "rotary"]
     max_seq_len: int = 512            # Used for absolute mode
+    
+    # GPT/autoregressive mode
+    is_causal: bool = False           # Enable causal masking (GPT-style)
+    depth: int = 6                    # Number of blocks (for PoHGPT)
+    max_inner_iters: int = 1          # Refinement iterations (for PoHGPT)
+    outer_residual: bool = False      # Outer residual (for PoHGPT)
+    rezero_init: bool = False         # ReZero initialization (for PoHGPT)
 
 
 # ========== Router Head ==========
