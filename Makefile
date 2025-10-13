@@ -3,7 +3,7 @@
 # Year: 2025
 # License: Apache 2.0
 
-.PHONY: help install test test-hrm smoke-hrm hrm-ab hrm-quick format lint clean
+.PHONY: help install test test-hrm test-ud smoke-hrm smoke-ud hrm-ab hrm-quick format lint clean
 
 help:
 	@echo "PoT Development Makefile"
@@ -12,7 +12,9 @@ help:
 	@echo "  make install      - Install dependencies"
 	@echo "  make test         - Run all tests"
 	@echo "  make test-hrm     - Run HRM controller tests"
+	@echo "  make test-ud      - Run UD dependency parser tests"
 	@echo "  make smoke-hrm    - Run HRM diagnostic smoke test"
+	@echo "  make smoke-ud     - Run UD parser smoke test"
 	@echo "  make hrm-quick    - Quick HRM smoke training (3 epochs)"
 	@echo "  make hrm-ab       - Full HRM vs Baseline A/B comparison"
 	@echo "  make format       - Format code with black"
@@ -29,8 +31,14 @@ test:
 test-hrm:
 	PYTHONPATH=. pytest tests/test_hrm_pointer_controller.py -v
 
+test-ud:
+	PYTHONPATH=. pytest tests/test_ud_parser.py -v
+
 smoke-hrm:
 	PYTHONPATH=. python tools/hrm_diag_smoke.py
+
+smoke-ud:
+	PYTHONPATH=. python tools/test_ud_parser_smoke.py
 
 format:
 	black src/ tests/ examples/ scripts/
