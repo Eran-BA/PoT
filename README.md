@@ -36,14 +36,14 @@ cfg = PoHConfig(
 
 # Build model
 stack = PoHStack(cfg, depth=6)
-refiner = IterRefiner(stack, max_inner_iters=12)  # 12 = optimal
+refiner = IterRefiner(stack, max_inner_iters=12)  # 12 refinement steps (optimal)
 
 # Forward pass
 x = torch.randn(2, 10, 512)  # [batch, seq_len, d_model]
 out, stats = refiner(x, return_inner_stats=True)
 
 print(f"Output shape: {out.shape}")  # [2, 10, 512]
-print(f"Inner iterations: {len(stats)}")  # 12
+print(f"Refinement steps: {len(stats)}")  # 12
 ```
 
 **See [examples/poh_usage.py](examples/poh_usage.py) for 6 complete usage examples.**
@@ -153,25 +153,26 @@ flowchart TB
 ```
 
 **Key Components:**
-- **HRM Controller**: Two-timescale recurrent modules (f_L fast, f_H slow)
-  - f_L (inner loop): Updates every refinement step - fast, reactive
-  - f_H (outer loop): Updates every T steps - slow, strategic planning
-- **Router**: Produces per-token, per-head routing weights α
+- **HRM Controller**: Two-timescale recurrent modules (from HRM paper)
+  - **f_L (HRM inner loop)**: Updates every refinement step - fast, reactive processing
+  - **f_H (HRM outer loop)**: Updates every T steps (T=4) - slow, strategic planning
+- **Router**: Produces per-token, per-head routing weights α from f_L state
 - **Weighted Mix**: Combines attention heads based on α
 - **Skip Connections**: Residual connections around attention and FFN
-- **Iterative Refinement**: Output feeds back as input for K iterations (K=12 optimal)
+- **Iterative Refinement**: Model refines representation R times per forward pass (R=12 optimal)
 
-**⚠️ Important:** HRM's "inner/outer loops" (controller timescales) ≠ refinement "inner/outer iterations" (processing/training). See [docs/HRM_VS_REFINEMENT_LOOPS.md](docs/HRM_VS_REFINEMENT_LOOPS.md) for clarification.
+**⚠️ Terminology:** "HRM inner/outer loops" (f_L/f_H timescales) ≠ "refinement iterations" (R multi-step processing) ≠ "training steps" (gradient descent). See [docs/TERMINOLOGY_GUIDE.md](docs/TERMINOLOGY_GUIDE.md) for official terminology.
 
 ### Hierarchy
 
 ```
-IterRefiner                # 12 inner refinement steps (optimal) + optional ACT halting
+IterRefiner                # R=12 refinement steps (optimal) + optional ACT halting
   ↓
 PoHStack                   # N transformer blocks + positional encoding
   ↓
-PoHBlock (×N)              # Head-wise routing + MHA + FFN + residuals
-  ├─ HeadRouter           # Per-token, per-head routing logits
+PoHBlock (×N)              # Head-wise routing (via HRM controller) + MHA + FFN
+  ├─ HRM Controller       # f_L (inner loop) + f_H (outer loop) for routing
+  ├─ HeadRouter           # Converts f_L state → routing logits
   ├─ MultiheadAttention   # Standard PyTorch MHA
   ├─ Weighted Mixing      # α-weighted head combination
   ├─ Residual #1          # x + dropout(attn)
@@ -184,10 +185,11 @@ PoHBlock (×N)              # Head-wise routing + MHA + FFN + residuals
 1. **Head-Wise Routing**: Dynamically select or weight attention heads per token
    - **Soft routing**: Differentiable softmax over heads
    - **Top-k routing**: Sparse binary mask (select top-k heads)
+   - Controlled by **HRM inner loop (f_L)** - updates every refinement step
 
-2. **Iterative Refinement**: Apply the stack K times for multi-step reasoning
-   - **12 iterations optimal** (from empirical analysis)
-   - Optional outer residual (ReZero-style stabilization)
+2. **Iterative Refinement**: Apply the stack R times for multi-step reasoning
+   - **R=12 refinement steps optimal** (from empirical analysis)
+   - Optional residual connections across refinement steps (ReZero-style)
    - ACT halting for adaptive computation
 
 3. **Positional Encoding**: Config-switchable (none/absolute/rotary)
@@ -304,19 +306,19 @@ Explore PoH interactively in Colab or Jupyter:
 
 **Breakdown:** HeadRouter (66k params) + head_gain (48 params) = **51k params (0.27%)**
 
-### Iteration Count Analysis
+### Refinement Steps Analysis
 
 From diminishing returns analysis on dependency parsing:
 
-| Iterations | Gain | Relative Cost | Efficiency |
-|------------|------|---------------|------------|
-| 1          | baseline | 1.0x      | 100%       |
-| 3          | +1.2%    | 3.0x      | 40%        |
-| 6          | +2.1%    | 6.0x      | 35%        |
-| **12**     | **+3.5%**| **12.0x** | **29%**    |
-| 20         | +3.8%    | 20.0x     | 19%        |
+| Refinement Steps (R) | Gain | Relative Cost | Efficiency |
+|----------------------|------|---------------|------------|
+| 1                    | baseline | 1.0x      | 100%       |
+| 3                    | +1.2%    | 3.0x      | 40%        |
+| 6                    | +2.1%    | 6.0x      | 35%        |
+| **12**               | **+3.5%**| **12.0x** | **29%**    |
+| 20                   | +3.8%    | 20.0x     | 19%        |
 
-**Conclusion:** 12 iterations is optimal (used in all production benchmarks).
+**Conclusion:** R=12 refinement steps is optimal (used in all production benchmarks).
 
 **See:** [docs/POH_ITERATION_GUIDE.md](docs/POH_ITERATION_GUIDE.md)
 
@@ -364,9 +366,9 @@ cfg = PoHConfig(
     pos_encoding="absolute",    # "none", "absolute", or "rotary"
     max_seq_len=512,            # For absolute mode
     
-    # Iterative refinement
-    max_inner_iters=12,         # Optimal from empirical analysis
-    outer_residual=True,        # Skip connections across iterations
+    # Refinement
+    max_inner_iters=12,         # R=12 refinement steps (optimal from analysis)
+    outer_residual=True,        # Residual connections across refinement steps
     rezero_init=True,           # ReZero initialization
     
     # ACT halting
@@ -383,12 +385,13 @@ cfg = PoHConfig(
 **Ablation dimensions:**
 1. Routing mode (soft vs top-k)
 2. Top-k heads (1, 2, ..., n_heads)
-3. Inner iterations (K=1, 2, ..., 12, ...)
-4. Outer residual (on/off)
+3. Refinement steps (R=1, 2, ..., 12, ...)
+4. Residual across refinement steps (on/off)
 5. ReZero initialization (on/off)
 6. Positional encoding (none/absolute/rotary)
 7. ACT halting (on/off)
 8. Shared router (on/off)
+9. HRM outer loop period (T=1, 2, 4, 8, ...)
 
 ---
 
@@ -443,10 +446,10 @@ python scripts/make_readme_tables.py
 - **[examples/synthetic/](examples/synthetic/)** - Synthetic task experiments
 
 ### Key Documents
+- **[Terminology Guide](docs/TERMINOLOGY_GUIDE.md)** - **ESSENTIAL:** Official HRM-aligned terminology
 - **[Architecture Summary](docs/architecture/POH_ARCHITECTURE_SUMMARY.md)** - Comprehensive architecture guide
-- **[Iteration Guide](docs/POH_ITERATION_GUIDE.md)** - Choosing optimal iteration counts (why 12?)
-- **[HRM vs Refinement Loops](docs/HRM_VS_REFINEMENT_LOOPS.md)** - **Critical:** Disambiguating "inner/outer" terminology
-- **[Inner vs Outer Iterations](docs/INNER_VS_OUTER_ITERATIONS.md)** - Refinement iterations explained
+- **[Refinement Iteration Guide](docs/POH_ITERATION_GUIDE.md)** - Why R=12 refinement steps is optimal
+- **[HRM vs Refinement](docs/HRM_VS_REFINEMENT_LOOPS.md)** - Three nested loops explained
 - **[Quick Start](QUICK_START.md)** - Copy-paste commands for NLI benchmarks
 - **[Contributing Guide](docs/guides/CONTRIBUTING.md)** - Development guidelines
 - **[Determinism Guide](docs/guides/DETERMINISM.md)** - Reproducibility best practices

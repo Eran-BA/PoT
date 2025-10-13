@@ -95,8 +95,10 @@ class PoHConfig:
     # GPT/autoregressive mode
     is_causal: bool = False           # Enable causal masking (GPT-style)
     depth: int = 6                    # Number of blocks (for PoHGPT)
-    max_inner_iters: int = 1          # Refinement iterations (for PoHGPT)
-    outer_residual: bool = False      # Outer residual (for PoHGPT)
+    max_inner_iters: int = 1          # REFINEMENT iterations (NOT HRM inner loop!)
+                                      # HRM inner loop = f_L (fast), HRM outer loop = f_H (slow)
+                                      # This param = how many times to refine the representation
+    outer_residual: bool = False      # Residual across refinement steps (not HRM loops)
     rezero_init: bool = False         # ReZero initialization (for PoHGPT)
 
 
@@ -328,19 +330,24 @@ class PoHStack(nn.Module):
 
 class IterRefiner(nn.Module):
     """
-    Wraps a PoHStack and applies K inner refinement steps.
+    Wraps a PoHStack and applies R refinement steps.
     
-    Optionally adds outer residual (across iterations) similar to ReZero/Delta refinement.
+    TERMINOLOGY CLARIFICATION:
+    - "Refinement iterations" (this module) = apply stack R times per forward pass
+    - "HRM inner loop" (controller) = f_L updates every step (fast timescale)
+    - "HRM outer loop" (controller) = f_H updates every T steps (slow timescale)
+    
+    Optionally adds residual connections across refinement steps (ReZero-style).
     GPT-style residuals are already present within each block.
     
-    This is the top-level module for multi-iteration refinement.
+    This is the top-level module for multi-step refinement.
     """
     
     def __init__(
         self,
         stack: PoHStack,
-        max_inner_iters: int = 1,
-        outer_residual: bool = False,
+        max_inner_iters: int = 1,  # R = number of refinement steps
+        outer_residual: bool = False,  # Residual across refinement steps
         rezero_init: bool = False,
         act: bool = False,
         threshold: Optional[float] = None,
@@ -348,7 +355,7 @@ class IterRefiner(nn.Module):
     ):
         super().__init__()
         self.stack = stack
-        self.K = max_inner_iters
+        self.R = max_inner_iters  # R = refinement steps (avoiding "K" to prevent confusion)
         
         # Outer residual settings
         self.outer_residual = outer_residual
@@ -376,24 +383,24 @@ class IterRefiner(nn.Module):
         return_inner_stats: bool = False,
     ) -> Tuple[torch.Tensor, Optional[List[Dict[str, any]]]]:
         """
-        Apply inner refinement iterations.
+        Apply R refinement iterations (NOT to be confused with HRM inner/outer loops!).
         
         Args:
             x: [B, T, d_model]
             attn_mask: Optional attention mask
-            return_inner_stats: Return per-iteration statistics
+            return_inner_stats: Return per-refinement-step statistics
         
         Returns:
             out: [B, T, d_model]
-            inner_stats: List of stats dicts (one per inner iteration) if requested
+            refinement_stats: List of stats dicts (one per refinement step) if requested
         """
         B, T, D = x.size()
         inner_stats = [] if return_inner_stats else None
         
-        # --- No ACT: simple K iterations ---
+        # --- No ACT: simple R refinement steps ---
         if not self.act:
             h = x
-            for t in range(self.K):
+            for t in range(self.R):
                 h_prev = h
                 h, stats = self.stack(h, attn_mask=attn_mask)
                 
@@ -413,7 +420,7 @@ class IterRefiner(nn.Module):
         weighted_sum = torch.zeros_like(x)
         h = x
         
-        for t in range(self.K):
+        for t in range(self.R):
             h_prev = h
             h, stats = self.stack(h, attn_mask=attn_mask)
             
