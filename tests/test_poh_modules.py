@@ -30,7 +30,7 @@ class TestParameterParity:
     """Test 1: Parameter parity with baseline."""
     
     def test_poh_vs_baseline_param_count(self):
-        """PoH should have ≤1% more params than baseline TransformerEncoder."""
+        """PoH should have ≤1% more params than baseline TransformerEncoder (excluding positional encoding)."""
         d_model = 512
         n_heads = 8
         d_ff = 2048
@@ -47,7 +47,7 @@ class TestParameterParity:
         baseline = nn.TransformerEncoder(baseline_layer, num_layers=depth)
         baseline_params = sum(p.numel() for p in baseline.parameters())
         
-        # PoH: Our architecture
+        # PoH: Our architecture (with pos_encoding="none" for fair comparison)
         cfg = PoHConfig(
             d_model=d_model,
             n_heads=n_heads,
@@ -55,6 +55,7 @@ class TestParameterParity:
             dropout=0.1,
             param_match_baseline=True,
             share_router=True,
+            pos_encoding="none",  # Fair comparison: exclude positional encoding
         )
         poh_stack = PoHStack(cfg, depth=depth)
         poh_params = sum(p.numel() for p in poh_stack.parameters())
@@ -64,10 +65,28 @@ class TestParameterParity:
         delta_pct = abs(ratio - 1.0) * 100
         
         print(f"\nBaseline: {baseline_params:,} params")
-        print(f"PoH:      {poh_params:,} params")
+        print(f"PoH:      {poh_params:,} params (pos_encoding=none)")
         print(f"Ratio:    {ratio:.4f} ({delta_pct:.2f}% delta)")
         
         assert delta_pct <= 1.0, f"PoH has {delta_pct:.2f}% param delta (should be ≤1%)"
+        
+        # Also test with absolute encoding
+        cfg_abs = PoHConfig(
+            d_model=d_model,
+            n_heads=n_heads,
+            d_ff=d_ff,
+            dropout=0.1,
+            param_match_baseline=True,
+            share_router=True,
+            pos_encoding="absolute",
+            max_seq_len=512,
+        )
+        poh_stack_abs = PoHStack(cfg_abs, depth=depth)
+        poh_params_abs = sum(p.numel() for p in poh_stack_abs.parameters())
+        pos_emb_params = cfg_abs.max_seq_len * cfg_abs.d_model  # 512 × 512
+        
+        print(f"PoH:      {poh_params_abs:,} params (pos_encoding=absolute)")
+        print(f"          +{pos_emb_params:,} positional embeddings")
     
     def test_shared_router_reduces_params(self):
         """Shared router should use fewer params than per-block router."""
@@ -210,10 +229,129 @@ class TestInnerRefinement:
             assert "inner_step" in s
             assert "route_entropy_mean" in s
             assert "attn_entropy_mean" in s
+    
+    def test_outer_residual(self):
+        """Outer residual should be controllable."""
+        cfg = PoHConfig(d_model=64, n_heads=4, d_ff=128)
+        stack = PoHStack(cfg, depth=2)
+        
+        # Without outer residual
+        refiner_no_res = IterRefiner(stack, max_inner_iters=2, outer_residual=False)
+        
+        # With outer residual (plain)
+        refiner_res = IterRefiner(stack, max_inner_iters=2, outer_residual=True, rezero_init=False)
+        
+        # With ReZero initialization
+        refiner_rezero = IterRefiner(stack, max_inner_iters=2, outer_residual=True, rezero_init=True)
+        
+        x = torch.randn(2, 10, 64)
+        
+        # Check alpha parameter exists
+        assert not hasattr(refiner_no_res, 'alpha'), "No alpha without outer_residual"
+        assert hasattr(refiner_res, 'alpha'), "Alpha should exist with outer_residual"
+        assert hasattr(refiner_rezero, 'alpha'), "Alpha should exist with rezero"
+        
+        # Check initialization
+        assert refiner_res.alpha.item() == 1.0, "Plain residual should init alpha=1"
+        assert refiner_rezero.alpha.item() == 0.0, "ReZero should init alpha=0"
+        
+        # Check outputs are different
+        out_no_res, _ = refiner_no_res(x)
+        out_res, _ = refiner_res(x)
+        
+        # They should be different (residual changes the computation)
+        assert not torch.allclose(out_no_res, out_res, atol=1e-5), "Outer residual should change output"
+        
+        print(f"\n✅ Outer residual test passed")
+        print(f"   Alpha (plain): {refiner_res.alpha.item():.4f}")
+        print(f"   Alpha (rezero): {refiner_rezero.alpha.item():.4f}")
+
+
+class TestPositionalEncoding:
+    """Test 5: Positional encoding modes."""
+    
+    def test_none_encoding(self):
+        """None encoding should not modify input."""
+        from src.pot.modules import PositionalEncoding
+        
+        cfg = PoHConfig(d_model=128, n_heads=4, pos_encoding="none")
+        pos_enc = PositionalEncoding(cfg)
+        
+        x = torch.randn(2, 10, 128)
+        x_pos, _ = pos_enc(x)
+        
+        # Should be identical
+        torch.testing.assert_close(x, x_pos)
+        print("\n✅ None encoding: input unchanged")
+    
+    def test_absolute_encoding(self):
+        """Absolute encoding should add learned embeddings."""
+        from src.pot.modules import PositionalEncoding
+        
+        cfg = PoHConfig(d_model=128, n_heads=4, pos_encoding="absolute", max_seq_len=512)
+        pos_enc = PositionalEncoding(cfg)
+        
+        x = torch.randn(2, 10, 128)
+        x_pos, _ = pos_enc(x)
+        
+        # Should be different (positions added)
+        assert not torch.allclose(x, x_pos)
+        
+        # Check params exist
+        assert hasattr(pos_enc, 'pos_emb')
+        assert pos_enc.pos_emb.weight.shape == (512, 128)
+        
+        print(f"\n✅ Absolute encoding: {pos_enc.pos_emb.weight.shape} params")
+    
+    def test_absolute_encoding_max_len_check(self):
+        """Absolute encoding should error on sequences exceeding max_seq_len."""
+        from src.pot.modules import PositionalEncoding
+        
+        cfg = PoHConfig(d_model=64, n_heads=4, pos_encoding="absolute", max_seq_len=10)
+        pos_enc = PositionalEncoding(cfg)
+        
+        # Should work for T <= max_seq_len
+        x_short = torch.randn(1, 10, 64)
+        pos_enc(x_short)  # OK
+        
+        # Should fail for T > max_seq_len
+        x_long = torch.randn(1, 20, 64)
+        with pytest.raises(ValueError, match="exceeds max_seq_len"):
+            pos_enc(x_long)
+    
+    def test_rotary_not_available_warning(self):
+        """Rotary mode should warn if rotary-embedding-torch not installed."""
+        from src.pot.modules.positional import ROTARY_AVAILABLE
+        
+        if not ROTARY_AVAILABLE:
+            from src.pot.modules import PositionalEncoding
+            
+            cfg = PoHConfig(d_model=64, n_heads=4, pos_encoding="rotary")
+            
+            with pytest.raises(ImportError, match="rotary-embedding-torch"):
+                pos_enc = PositionalEncoding(cfg)
+            
+            print("\n⚠️  RoPE not available (expected, rotary-embedding-torch not installed)")
+        else:
+            print("\n✅ RoPE available")
+    
+    def test_stack_with_different_encodings(self):
+        """PoHStack should work with all encoding modes."""
+        for pos_enc_mode in ["none", "absolute"]:  # Skip rotary if not available
+            cfg = PoHConfig(d_model=64, n_heads=4, pos_encoding=pos_enc_mode, max_seq_len=100)
+            stack = PoHStack(cfg, depth=2)
+            
+            x = torch.randn(2, 10, 64)
+            out, stats = stack(x)
+            
+            assert out.shape == x.shape
+            assert len(stats) == 2
+            
+            print(f"✅ PoHStack with pos_encoding={pos_enc_mode}: OK")
 
 
 class TestDropInCompatibility:
-    """Test 5: Drop-in compatibility."""
+    """Test 6: Drop-in compatibility."""
     
     def test_forward_signature_compatibility(self):
         """PoHStack should have similar interface to TransformerEncoder."""

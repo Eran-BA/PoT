@@ -87,6 +87,10 @@ class PoHConfig:
     
     # Parameter parity
     param_match_baseline: bool = True  # Keep <1% delta vs baseline
+    
+    # Positional encoding
+    pos_encoding: str = "absolute"    # ["none", "absolute", "rotary"]
+    max_seq_len: int = 512            # Used for absolute mode
 
 
 # ========== Router Head ==========
@@ -255,11 +259,22 @@ class PoHBlock(nn.Module):
 # ========== Stack ==========
 
 class PoHStack(nn.Module):
-    """Stack of PoH blocks (like nn.TransformerEncoder)."""
+    """
+    Stack of PoHBlocks with GPT-style residual chaining.
+    
+    Each block already has internal residuals (MHA + FFN); this wrapper
+    simply feeds output → next block, preserving standard transformer skip semantics.
+    
+    Includes optional positional encoding (absolute/rotary/none).
+    """
     
     def __init__(self, cfg: PoHConfig, depth: int):
         super().__init__()
         self.cfg = cfg
+        
+        # Positional encoding
+        from .positional import PositionalEncoding
+        self.pos_encoder = PositionalEncoding(cfg)
         
         # Shared router if configured
         shared_router = (
@@ -279,7 +294,7 @@ class PoHStack(nn.Module):
         attn_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, List[Dict[str, torch.Tensor]]]:
         """
-        Forward through all blocks.
+        Forward through all blocks with GPT-style residual chaining.
         
         Args:
             x: [B, T, d_model]
@@ -289,9 +304,13 @@ class PoHStack(nn.Module):
             x: [B, T, d_model]
             stats_all: List of stats dicts (one per block)
         """
+        # Apply positional encoding before first block
+        x, _ = self.pos_encoder(x)
+        
         stats_all = []
         
         for blk in self.blocks:
+            # GPT-style: residual already handled inside each block
             x, stats = blk(x, attn_mask=attn_mask)
             stats_all.append(stats)
         
@@ -302,7 +321,10 @@ class PoHStack(nn.Module):
 
 class IterRefiner(nn.Module):
     """
-    Wraps a stack and applies K inner refinement steps with optional ACT halting.
+    Wraps a PoHStack and applies K inner refinement steps.
+    
+    Optionally adds outer residual (across iterations) similar to ReZero/Delta refinement.
+    GPT-style residuals are already present within each block.
     
     This is the top-level module for multi-iteration refinement.
     """
@@ -311,6 +333,8 @@ class IterRefiner(nn.Module):
         self,
         stack: PoHStack,
         max_inner_iters: int = 1,
+        outer_residual: bool = False,
+        rezero_init: bool = False,
         act: bool = False,
         threshold: Optional[float] = None,
         penalty: Optional[float] = None,
@@ -318,6 +342,16 @@ class IterRefiner(nn.Module):
         super().__init__()
         self.stack = stack
         self.K = max_inner_iters
+        
+        # Outer residual settings
+        self.outer_residual = outer_residual
+        self.rezero_init = rezero_init
+        
+        # ReZero-style learnable gain for outer residual
+        if self.outer_residual and rezero_init:
+            self.alpha = nn.Parameter(torch.zeros(1))  # ReZero: start as identity
+        elif self.outer_residual:
+            self.alpha = nn.Parameter(torch.ones(1))   # Plain residual scaling
         
         # ACT settings (use stack's config as default)
         self.act = act or stack.cfg.act_halting
@@ -353,7 +387,14 @@ class IterRefiner(nn.Module):
         if not self.act:
             h = x
             for t in range(self.K):
+                h_prev = h
                 h, stats = self.stack(h, attn_mask=attn_mask)
+                
+                # Optional outer residual across iterations
+                if self.outer_residual:
+                    # GPT-style within blocks, plus outer residual across iterations
+                    h = h_prev + self.alpha * (h - h_prev)  # ReZero-stabilized residual
+                
                 if return_inner_stats:
                     inner_stats.append(self._pack_stats(stats, t))
             
@@ -366,13 +407,17 @@ class IterRefiner(nn.Module):
         h = x
         
         for t in range(self.K):
+            h_prev = h
             h, stats = self.stack(h, attn_mask=attn_mask)
+            
+            # Optional outer residual across iterations
+            if self.outer_residual:
+                h = h_prev + self.alpha * (h - h_prev)
             
             # Halting probability
             p = torch.sigmoid(self.halt_proj(h)).squeeze(-1)  # [B, T]
             
             new_halt = (halting_prob + p * rema_prob >= self.threshold).float() * (rema_prob > 0)
-            still_running = (halting_prob < self.threshold).float()
             
             # Portion to add at this step
             add_prob = torch.where(

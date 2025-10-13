@@ -74,19 +74,27 @@ def example_topk_routing():
 
 
 def example_inner_refinement():
-    """Example 3: Inner refinement (multiple iterations)."""
+    """Example 3: Inner refinement (multiple iterations) with outer residual."""
     print("\n" + "="*60)
-    print("Example 3: Inner Refinement (K=3 iterations)")
+    print("Example 3: Inner Refinement (K=3 iterations + ReZero)")
     print("="*60)
     
     cfg = PoHConfig(d_model=128, n_heads=4, d_ff=256)
     stack = PoHStack(cfg, depth=2)
-    refiner = IterRefiner(stack, max_inner_iters=3)
+    
+    # ReZero-style outer residual (starts as identity, learns refinement)
+    refiner = IterRefiner(
+        stack,
+        max_inner_iters=3,
+        outer_residual=True,  # Enable outer residual
+        rezero_init=True      # Start with alpha=0 (identity)
+    )
     
     x = torch.randn(1, 8, 128)
     out, inner_stats = refiner(x, return_inner_stats=True)
     
     print(f"Num inner iterations: {len(inner_stats)}")
+    print(f"Outer residual alpha: {refiner.alpha.item():.6f} (ReZero initialized)")
     for i, s in enumerate(inner_stats):
         print(f"  Iter {i+1}: route_entropy={s.get('route_entropy_mean', 0):.4f}, "
               f"attn_entropy={s.get('attn_entropy_mean', 0):.4f}")
