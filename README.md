@@ -15,46 +15,83 @@
 
 ```mermaid
 flowchart TB
-  %% Styles
+  %% ==== Styles ====
   classDef head fill:#ffe0c2,stroke:#333,stroke-width:2px,color:#111
-  classDef ctrl fill:#cfe8ff,stroke:#333,stroke-width:2px,color:#111
-  classDef io fill:#e8f5e9,stroke:#333,stroke-width:2px,color:#111
-  classDef mix fill:#fff9c4,stroke:#333,stroke-width:2px,color:#111
-  
-  %% Nodes
-  X[Input]:::io
-  
-  PC[Pointer Controller<br/>softmax over heads]:::ctrl
-  
-  subgraph SA[Self-Attention Heads ]
+  classDef ctrlL fill:#d6f5ff,stroke:#1e88e5,stroke-width:2px,color:#111
+  classDef ctrlH fill:#ffe0e0,stroke:#e53935,stroke-width:2px,color:#111
+  classDef io fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#111
+  classDef mix fill:#fff9c4,stroke:#f9a825,stroke-width:2px,color:#111
+  classDef state fill:#f5f5f5,stroke:#666,stroke-width:1px,stroke-dasharray:5 5,color:#111
+  classDef note fill:#fafafa,stroke:#bbb,stroke-width:1px,color:#333
+
+  %% ==== I/O ====
+  X[Input tokens or hidden x]:::io
+  Y[Block output]:::io
+
+  %% ==== Heads ====
+  subgraph SA["Self-Attention Heads"]
     direction LR
     H1[Head 1]:::head
     H2[Head 2]:::head
     H3[Head 3]:::head
   end
-  
-  MIX[Weighted/Selected<br/>Head Output]:::mix
-  Y[Output]:::io
-  
-  %% Forward pass
-  X --> PC
-  PC -->|α₁| H1
-  PC -->|α₂| H2
-  PC -->|α₃| H3
-  
+
+  %% ==== HRM Controller ====
+  subgraph HRM["HRM Pointer Controller"]
+    direction TB
+
+    %% High-level (slow)
+    subgraph HMOD["High-Level Module f_H slow"]
+      direction TB
+      zH[(z_H state)]:::state
+      FH[GRUCell f_H]:::ctrlH
+    end
+
+    %% Low-level (fast)
+    subgraph LMOD["Low-Level Module f_L fast"]
+      direction TB
+      zL[(z_L state)]:::state
+      FL[GRUCell f_L]:::ctrlL
+    end
+
+    %% Router head
+    RT["Router: Linear on concat z_L and z_H to logits"]:::ctrlL
+    SM["Softmax of logits over temperature"]:::ctrlL
+    TK{{Top-k optional}}:::ctrlL
+    ALPHA["Routing weights alpha over heads"]:::ctrlL
+
+    %% Internal wiring
+    Xp[x to controller space]:::ctrlH --> FH --> zH
+    zH --> FL
+    Xc[x to controller space]:::ctrlL --> FL
+    FL --> zL
+    zL --> RT --> SM --> TK --> ALPHA
+  end
+
+  %% ==== Mixer ====
+  MIX[Weighted head mix - sum over heads]:::mix
+
+  %% ==== Timing / Notes ====
+  NOTE1[[H updates every T inner steps; L updates each step; deep supervision optional]]:::note
+
+  %% ==== Main flow ====
+  X --> SA
+  X --> HRM
+  ALPHA --> MIX
   H1 --> MIX
   H2 --> MIX
   H3 --> MIX
-  
   MIX --> Y
-  
-  %% Feedback cycles (recurrent control)
-  H1 -.feedback.-> PC
-  H2 -.feedback.-> PC
-  H3 -.feedback.-> PC
-  
-  %% Optional recurrence over time
-  Y -.next step context.-> PC
+
+  %% ==== Recurrence across inner iterations ====
+  Y -. next inner step .-> X
+  zL -. carried each step .-> zL
+  zH -. carried and updated when t mod T == 0 .-> zH
+
+  NOTE1 -.-> HRM
+
+  class H1,H2,H3 head
+  class MIX mix
 ```
 
 For the end-to-end training and loss flow (deep supervision, ACT halting, TRM steps, gradient modes), see the Training and Loss Flow diagram in `docs/architecture.md`.
