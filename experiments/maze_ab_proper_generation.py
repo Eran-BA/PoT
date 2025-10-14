@@ -122,11 +122,20 @@ def generate_dataset_proper(maze_size: int, n_samples: int, min_path_length: int
         # Get all nodes (cells) in the maze
         nodes = maze_obj.get_nodes()
         for node in nodes:
-            maze[node.row, node.col] = 0
+            # Nodes are Coord objects or numpy arrays [row, col]
+            if isinstance(node, np.ndarray):
+                maze[node[0], node[1]] = 0
+            else:
+                # It's a Coord object
+                maze[node.row, node.col] = 0
         
         # Get start and end positions from TargetedLatticeMaze
-        start = (maze_obj.start_pos.row, maze_obj.start_pos.col)
-        goal = (maze_obj.end_pos.row, maze_obj.end_pos.col)
+        if isinstance(maze_obj.start_pos, np.ndarray):
+            start = tuple(maze_obj.start_pos)
+            goal = tuple(maze_obj.end_pos)
+        else:
+            start = (maze_obj.start_pos.row, maze_obj.start_pos.col)
+            goal = (maze_obj.end_pos.row, maze_obj.end_pos.col)
         
         # Get solution path
         solution_array = solved_maze.solution
