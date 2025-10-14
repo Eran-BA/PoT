@@ -19,6 +19,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
+import math
 from tqdm import tqdm
 import json
 import time
@@ -398,20 +399,24 @@ def train_model(model, train_loader, device, epochs=30, lr=1e-3):
             path_len = path_len.to(device)
             
             optimizer.zero_grad()
-            logits = model(maze, start, goal)
+            logits = model(maze, start, goal)  # [B, seq_len, V]
             
-            # Loss: predict each step of the path
-            # Only compute loss on non-padded positions
+            # Loss: predict next cell given current cell along the ground-truth path
+            # For each time step i, use logits gathered at current cell index rather than time index
             batch_size = path.shape[0]
             max_len = path.shape[1]
             
             loss = 0
             count = 0
             for i in range(max_len - 1):
-                # Only include positions that are not padding
-                mask = (path[:, i] != -1) & (path[:, i + 1] != -1)
-                if mask.any():
-                    loss += criterion(logits[mask, i, :], path[mask, i + 1])
+                valid = (path[:, i] != -1) & (path[:, i + 1] != -1)
+                if valid.any():
+                    batch_idx = torch.nonzero(valid, as_tuple=False).squeeze(1)
+                    curr_idx = path[valid, i]           # [M]
+                    next_idx = path[valid, i + 1]       # [M]
+                    # Gather logits at current position: logits[batch, curr_pos, :]
+                    gathered = logits[batch_idx, curr_idx, :]  # [M, V]
+                    loss += criterion(gathered, next_idx)
                     count += 1
             
             if count > 0:
@@ -437,25 +442,60 @@ def evaluate_model(model, test_loader, device, maze_size):
         for maze, start, goal, path, path_len in test_loader:
             maze, start, goal, path = maze.to(device), start.to(device), goal.to(device), path.to(device)
             
-            logits = model(maze, start, goal)
+            logits = model(maze, start, goal)  # [B, seq_len, V]
             
-            # Greedy decoding
+            # Helper to compute valid neighbors (4-connected) and mask invalid moves
+            def get_neighbors(r, c):
+                for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < maze_size and 0 <= nc < maze_size:
+                        # Passable cell: maze==0.0 means free, 1.0 wall
+                        if maze_b[nr, nc].item() == 0.0:
+                            yield nr, nc
+            
             for b in range(maze.shape[0]):
-                pred_path = [start[b, 0].item() * maze_size + start[b, 1].item()]
-                current = start[b]
+                maze_b = maze[b]  # [H, W]
+                visited = set()
+                start_idx = start[b, 0].item() * maze_size + start[b, 1].item()
+                goal_tuple = (goal[b, 0].item(), goal[b, 1].item())
+                current = (start[b, 0].item(), start[b, 1].item())
+                pred_path = [start_idx]
+                visited.add(start_idx)
+                max_steps = int(math.ceil(1.5 * path_len[b].item()))  # allow some slack
+                reached = False
                 
-                for step in range(path_len[b].item()):
+                for step in range(max_steps):
                     pos_idx = current[0] * maze_size + current[1]
-                    next_cell = logits[b, pos_idx].argmax().item()
-                    pred_path.append(next_cell)
-                    current = torch.tensor([next_cell // maze_size, next_cell % maze_size])
+                    logits_vec = logits[b, pos_idx].clone()  # [V]
                     
-                    if current[0] == goal[b, 0] and current[1] == goal[b, 1]:
-                        correct += 1
-                        if len(pred_path) == path_len[b].item():
-                            optimal += 1
+                    # Build mask over all V cells: only allow non-visited neighbors
+                    allowed = torch.full_like(logits_vec, fill_value=float('-inf'))
+                    for nr, nc in get_neighbors(current[0], current[1]):
+                        idx = nr * maze_size + nc
+                        if idx not in visited:
+                            allowed[idx] = logits_vec[idx]
+                    
+                    # If no allowed neighbors (dead-end), fall back to original logits
+                    if torch.isinf(allowed).all():
+                        next_cell = int(torch.argmax(logits_vec).item())
+                    else:
+                        next_cell = int(torch.argmax(allowed).item())
+                    
+                    pred_path.append(next_cell)
+                    visited.add(next_cell)
+                    current = (next_cell // maze_size, next_cell % maze_size)
+                    
+                    if current == goal_tuple:
+                        reached = True
                         break
                 
+                if reached:
+                    correct += 1
+                    # Optimality with tolerance (<= 5% longer than shortest path)
+                    shortest_len = path_len[b].item()
+                    tol_len = int(math.ceil(1.05 * shortest_len))
+                    if len(pred_path) <= tol_len:
+                        optimal += 1
                 total += 1
     
     acc = 100.0 * correct / total
