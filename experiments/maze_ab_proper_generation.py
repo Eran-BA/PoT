@@ -109,26 +109,21 @@ def generate_dataset_proper(maze_size: int, n_samples: int, min_path_length: int
     path_lengths = []
     
     for solved_maze in dataset_filtered:
-        # The maze-dataset library stores mazes differently
-        # connection_list is an array of shape (n_edges, 2, 2) representing connections
-        # We need to build a grid representation
+        # Use the proper maze-dataset API
+        # LatticeMaze has an as_pixels() method that converts to array
+        # From the docs: https://understanding-search.github.io/maze-dataset/maze_dataset.html
         
         maze_obj = solved_maze.maze
-        grid_size = maze_obj.grid_shape[0]  # Get grid size
         
-        # Create maze array - start with all walls (1 = wall)
-        maze = np.ones((grid_size, grid_size), dtype=np.float32)
+        # Convert maze to pixel representation (0=wall, 1=path in their format)
+        # as_pixels returns array where walls and paths are represented
+        maze_pixels = maze_obj.as_pixels()
         
-        # The connection_list tells us which cells are connected (no wall between them)
-        # Each entry is [[r1, c1], [r2, c2]] meaning cells (r1,c1) and (r2,c2) are connected
-        connection_list = maze_obj.connection_list
-        
-        # Mark all cells that have connections as passable (0 = passable)
-        for connection in connection_list:
-            r1, c1 = connection[0]
-            r2, c2 = connection[1]
-            maze[r1, c1] = 0  # Cell 1 is passable
-            maze[r2, c2] = 0  # Cell 2 is passable
+        # The as_pixels format might be different, so let's invert if needed
+        # We want: 0=passable, 1=wall for our model
+        # as_pixels typically gives: 0=wall (black), 1=path (white)
+        # So we DON'T need to invert - their format matches ours!
+        maze = 1.0 - maze_pixels.astype(np.float32)  # Invert: their 1 (path) -> our 0 (passable)
         
         # Get solution path
         solution = solved_maze.solution
