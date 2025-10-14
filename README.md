@@ -111,13 +111,41 @@ flowchart TB
 
 
 
-## PoT in plain language
+## 🧠 PoT in Plain English — Thinking in the Embedding Space
 
-- What it is: a transformer that learns, on the fly, how strongly to use each attention head for each token.
-- What “routing” means: we don’t drop tokens. Every token goes through every pass; the model just reweights the heads per token.
-- Why multiple passes (R): we run the stack a few times so the model can refine its answer; after each pass it can change the head mix.
-- Two speeds of control (T): a fast controller tweaks decisions every pass; a slow controller updates every T passes to provide longer‑term guidance.
-- Why this helps: different heads are good at different things (local details, global context, positions). Remixing them per token, over a few passes, enables clearer, step‑by‑step reasoning.
+PoT (Pointer-over-Heads Transformer) is built around a simple idea:
+instead of producing its output in one forward pass, the model thinks through its representations over several refinement steps.
+
+At the start, every token has an initial embedding — a rough guess of what it means in context.
+PoT doesn’t stop there.
+It runs the same Transformer stack R times, updating those embeddings after each pass.
+At every step, the model looks at its current hidden states and asks:
+
+“Given what I know now, how should I use my attention heads to refine this understanding?”
+
+Each iteration slightly reshapes the embedding space.
+Tokens move, cluster, and separate as their meanings become sharper and more contextually grounded.
+This process is not about memorizing — it’s about progressive self-correction.
+By the final iteration, the embeddings encode a richer, more internally consistent view of the sequence.
+
+What makes PoT different is the controller that guides this process.
+For every token and refinement step, the controller decides how strongly to use each attention head.
+Some heads specialize in local structure, others in global dependencies or positional cues.
+By adjusting their mixture across iterations, the model can “compose” reasoning stages — starting with local alignment, then moving toward abstract relations or long-range coherence.
+
+The controller itself operates on two timescales:
+
+A fast component that adapts on every refinement step — reacting immediately to the evolving state of each token.
+
+A slow component that changes less frequently — maintaining a broader contextual plan that influences the fast dynamics.
+
+Together, they form a kind of hierarchical reasoning loop inside the embedding space.
+Rather than running deeper networks, PoT deepens its thinking process — continuously refining the meaning of each token until the hidden representations stabilize.
+
+In other words:
+
+PoT doesn’t just compute token embeddings — it thinks within them, iteratively reorganizing its own representation space to reach a more coherent internal understanding.
+
 
 ### Comparison to related ideas
 
