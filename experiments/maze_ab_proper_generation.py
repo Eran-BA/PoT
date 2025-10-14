@@ -244,16 +244,20 @@ class PoHMazeSolver(nn.Module):
             d_model=d_model,
             n_heads=n_heads,
             d_ff=d_ff,
-            use_poh=True,
-            use_hrm=True,
+            dropout=dropout,
+            pos_encoding="none",  # We handle positional encoding ourselves
         )
         
         self.poh_stack = PoHStack(cfg, depth=num_layers)
         
-        # Set HRM period T
+        # Replace HeadRouter with HRMPointerController in each block
         for block in self.poh_stack.blocks:
-            if hasattr(block, 'router') and hasattr(block.router, 'hrm_controller'):
-                block.router.hrm_controller.T = T
+            if hasattr(block, 'router'):
+                block.router = HRMPointerController(
+                    d_model=d_model,
+                    n_heads=n_heads,
+                    T=T
+                )
         
         # Wrap in IterRefiner for R refinement iterations
         self.refiner = IterRefiner(
