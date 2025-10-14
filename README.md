@@ -306,6 +306,16 @@ Explore PoH interactively in Colab or Jupyter (maze first):
 
 ## 📊 Results
 
+
+### Optimal Hyperparameters
+
+**Task-specific recommendations:**
+- **NLI/Language tasks**: R=12, T=4
+- **Maze solving**: R=4, T=4
+- **Sorting**: R=4, T=4
+
+**See:** [docs/POH_ITERATION_GUIDE.md](docs/POH_ITERATION_GUIDE.md) for detailed analysis.
+
 ### Parameter Counts
 
 **Configuration:** d=512, h=8, ff=2048, depth=6
@@ -318,14 +328,6 @@ Explore PoH interactively in Colab or Jupyter (maze first):
 
 **Breakdown:** HeadRouter (66k params) + head_gain (48 params) = **51k params (0.27%)**
 
-### Optimal Hyperparameters
-
-**Task-specific recommendations:**
-- **NLI/Language tasks**: R=12, T=4
-- **Maze solving**: R=4, T=4
-- **Sorting**: R=4, T=4
-
-**See:** [docs/POH_ITERATION_GUIDE.md](docs/POH_ITERATION_GUIDE.md) for detailed analysis.
 
 ---
 
