@@ -196,6 +196,50 @@ flowchart TB
   class SKIP1,SKIP2 skip
 ```
 
+## 🎯 Quick Start (recap)
+
+PoH is a modular transformer architecture that adds head‑wise routing and iterative refinement to standard transformers. Designed for tasks requiring multi‑step reasoning (dependency parsing, NLI, language modeling) with minimal parameter overhead (≈0.27%).
+
+**Latest Result:** PoH achieves 51.65% accuracy vs BERT's 33.85% on NLI (+52.58% improvement) with matched parameters. See full results →
+
+### Installation
+
+```bash
+git clone https://github.com/Eran-BA/PoT.git
+cd PoT
+source venv/bin/activate  # Activate virtual environment
+pip install pyyaml datasets  # For NLI benchmarks
+```
+
+### Basic Usage
+
+```python
+from src.pot.modules import PoHConfig, PoHStack, IterRefiner
+import torch
+
+# Configure
+cfg = PoHConfig(
+    d_model=512,
+    n_heads=8,
+    route_mode="topk",      # Sparse head selection
+    route_topk=2,           # Select top-2 heads per token
+    pos_encoding="absolute", # Learned positional embeddings
+)
+
+# Build model
+stack = PoHStack(cfg, depth=6)
+refiner = IterRefiner(stack, max_inner_iters=12)  # 12 refinement steps (optimal)
+
+# Forward pass
+x = torch.randn(2, 10, 512)  # [batch, seq_len, d_model]
+out, stats = refiner(x, return_inner_stats=True)
+
+print(f"Output shape: {out.shape}")  # [2, 10, 512]
+print(f"Refinement steps: {len(stats)}")  # 12
+```
+
+See `examples/poh_usage.py` for 6 complete usage examples.
+
 **Key Components:**
 - **HRM Controller**: Two-timescale recurrent modules (from HRM paper)
   - **f_L (HRM inner loop)**: Updates every refinement step - fast, reactive processing
