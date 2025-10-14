@@ -476,9 +476,14 @@ def run_ab_test(
     T: int = 4,
     n_heads: int = 4,
     epochs: int = 40,
-    seed: int = 42
+    seed: int = 42,
+    skip_baseline: bool = False
 ):
-    """Run A/B test with proper maze generation."""
+    """Run A/B test with proper maze generation.
+    
+    Args:
+        skip_baseline: If True, only train PoH-HRM (skip baseline). Useful for hyperparameter search.
+    """
     
     # Device setup with diagnostics
     if torch.cuda.is_available():
@@ -521,16 +526,20 @@ def run_ab_test(
     
     results = {}
     
-    # Test Baseline
-    print(f"\n{'='*60}")
-    print("Training: Baseline Transformer")
-    print(f"{'='*60}")
-    baseline = BaselineMazeSolver(maze_size).to(device)
-    print(f"Parameters: {sum(p.numel() for p in baseline.parameters())/1e6:.2f}M")
-    baseline = train_model(baseline, train_loader, device, epochs)
-    acc, opt = evaluate_model(baseline, test_loader, device, maze_size)
-    print(f"Accuracy: {acc:.2f}%, Optimality: {opt:.2f}%")
-    results['baseline'] = {'acc': acc, 'opt': opt}
+    # Test Baseline (skip if requested for hyperparameter search)
+    if not skip_baseline:
+        print(f"\n{'='*60}")
+        print("Training: Baseline Transformer")
+        print(f"{'='*60}")
+        baseline = BaselineMazeSolver(maze_size).to(device)
+        print(f"Parameters: {sum(p.numel() for p in baseline.parameters())/1e6:.2f}M")
+        baseline = train_model(baseline, train_loader, device, epochs)
+        acc, opt = evaluate_model(baseline, test_loader, device, maze_size)
+        print(f"Accuracy: {acc:.2f}%, Optimality: {opt:.2f}%")
+        results['baseline'] = {'acc': acc, 'opt': opt}
+    else:
+        print(f"\n⏩ Skipping baseline (skip_baseline=True)")
+        results['baseline'] = {'acc': 0.0, 'opt': 0.0}  # Placeholder
     
     # Test PoH-HRM
     print(f"\n{'='*60}")
@@ -547,7 +556,8 @@ def run_ab_test(
     print(f"\n{'='*80}")
     print("RESULTS SUMMARY")
     print(f"{'='*80}")
-    print(f"Baseline: Acc={results['baseline']['acc']:.2f}%, Opt={results['baseline']['opt']:.2f}%")
+    if not skip_baseline:
+        print(f"Baseline: Acc={results['baseline']['acc']:.2f}%, Opt={results['baseline']['opt']:.2f}%")
     print(f"PoH-HRM:  Acc={results['poh']['acc']:.2f}%, Opt={results['poh']['opt']:.2f}%")
     print(f"{'='*80}\n")
     

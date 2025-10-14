@@ -148,14 +148,14 @@ def hyperparameter_search(
         }
         
         try:
-            # Run A/B test with this configuration
+            # Run A/B test with this configuration (skip baseline to save time)
+            config['skip_baseline'] = True
             results = run_ab_test(**config)
             
             # Save results
             save_results(results_file, config, results)
             
             print(f"\n✓ Configuration {config_num}/{total_configs} complete")
-            print(f"  Baseline: Acc={results['baseline']['acc']:.2f}%, Opt={results['baseline']['opt']:.2f}%")
             print(f"  PoH-HRM:  Acc={results['poh']['acc']:.2f}%, Opt={results['poh']['opt']:.2f}%")
             
         except Exception as e:
@@ -167,9 +167,39 @@ def hyperparameter_search(
     print(f"Results saved to: {results_file}")
     print(f"{'='*80}\n")
     
+    # Run baseline once at the end with 100 epochs
+    print(f"\n{'='*80}")
+    print("RUNNING BASELINE TRANSFORMER (100 epochs)")
+    print(f"{'='*80}\n")
+    
+    baseline_config = {
+        'maze_size': maze_size,
+        'n_train': n_train,
+        'n_test': n_test,
+        'min_path_length': min_path_length,
+        'R': 1,  # Baseline doesn't use refinement
+        'T': 1,  # Baseline doesn't use HRM
+        'n_heads': 4,  # Standard baseline heads
+        'epochs': 100,  # Always use 100 epochs for baseline
+        'seed': seed,
+        'skip_baseline': False  # Run full test with baseline
+    }
+    
+    try:
+        baseline_results = run_ab_test(**baseline_config)
+        print(f"\n✓ Baseline complete")
+        print(f"  Baseline: Acc={baseline_results['baseline']['acc']:.2f}%, Opt={baseline_results['baseline']['opt']:.2f}%")
+        
+        # Append baseline to results file
+        save_results(results_file, baseline_config, baseline_results)
+    except Exception as e:
+        print(f"\n✗ Baseline failed: {e}")
+    
     # Print summary
-    print("\nTo analyze results, run:")
+    print(f"\n{'='*80}")
+    print("To analyze results, run:")
     print(f"  python experiments/analyze_maze_hyperparam_results.py {results_file}")
+    print(f"{'='*80}\n")
 
 
 if __name__ == '__main__':
