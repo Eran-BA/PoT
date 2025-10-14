@@ -388,7 +388,9 @@ class BERTMazeSolver(nn.Module):
         self.cell_embed = nn.Embedding(4, d_model)
         self.pos_embed = nn.Embedding(maze_size * maze_size, d_model)
         
-        # BERT encoder
+        # BERT encoder (with extended position embeddings for large mazes)
+        max_seq_len = max(1024, maze_size * maze_size + 10)  # Support large mazes
+        
         bert_config = BertConfig(
             hidden_size=d_model,
             num_hidden_layers=num_layers,
@@ -396,6 +398,7 @@ class BERTMazeSolver(nn.Module):
             intermediate_size=d_ff,
             hidden_dropout_prob=dropout,
             attention_probs_dropout_prob=dropout,
+            max_position_embeddings=max_seq_len,  # Fix for large mazes
         )
         self.bert = BertModel(bert_config)
         
@@ -668,8 +671,9 @@ def run_scaling_benchmark(
         
         # Generate data
         print(f"\nGenerating data...")
-        train_data = generate_dataset(maze_size, n_train, wall_prob=0.3, seed=seed)
-        test_data = generate_dataset(maze_size, n_test, wall_prob=0.3, seed=seed+10000)
+        # Harder mazes: increased wall probability for better differentiation
+        train_data = generate_dataset(maze_size, n_train, wall_prob=0.45, seed=seed)
+        test_data = generate_dataset(maze_size, n_test, wall_prob=0.45, seed=seed+10000)
         
         print(f"  Train: {len(train_data)} mazes")
         print(f"  Test: {len(test_data)} mazes")
@@ -708,15 +712,19 @@ def run_scaling_benchmark(
         # BERT (if available) - dynamically adjust layers for parameter parity with PoH
         bert = None
         if BERT_AVAILABLE:
-            try:
-                # Start with fewer layers for larger mazes
-                # Heuristic: larger mazes need fewer BERT layers to match PoH params
-                if maze_size <= 12:
-                    bert_layers = 3
-                elif maze_size <= 20:
-                    bert_layers = 2
-                else:
-                    bert_layers = 1
+            # Skip BERT if maze is too large (>1024 tokens is risky even with extended embeddings)
+            if maze_size * maze_size > 1024:
+                print(f"  ⚠️  Skipping BERT (maze too large: {maze_size}×{maze_size}={maze_size*maze_size} tokens > 1024)")
+            else:
+                try:
+                    # Start with fewer layers for larger mazes
+                    # Heuristic: larger mazes need fewer BERT layers to match PoH params
+                    if maze_size <= 12:
+                        bert_layers = 3
+                    elif maze_size <= 20:
+                        bert_layers = 2
+                    else:
+                        bert_layers = 1
                 
                 # Try to match PoH parameters by adjusting BERT config
                 for attempt_layers in [bert_layers, max(1, bert_layers-1), 1]:
@@ -756,9 +764,9 @@ def run_scaling_benchmark(
                     parity_pct = abs(bert_params - poh_params) / poh_params * 100
                     print(f"  BERT parameters: {bert_params / 1e6:.2f}M (layers=1, parity={parity_pct:.1f}%) [best effort]")
                     
-            except Exception as e:
-                print(f"  Warning: Could not create BERT model: {e}")
-                bert = None
+                except Exception as e:
+                    print(f"  Warning: Could not create BERT model: {e}")
+                    bert = None
         
         # Train and evaluate
         baseline_results = train_and_evaluate(
