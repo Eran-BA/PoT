@@ -196,7 +196,7 @@ flowchart TB
   class SKIP1,SKIP2 skip
 ```
 
-## 🎯 Quick Start (recap)
+<!-- Duplicate Quick Start removed: the main Quick Start above is canonical. -->
 
 PoH is a modular transformer architecture that adds head‑wise routing and iterative refinement to standard transformers. Designed for tasks requiring multi‑step reasoning (dependency parsing, NLI, language modeling) with minimal parameter overhead (≈0.27%).
 
