@@ -125,7 +125,36 @@ def hyperparameter_search(
     print("="*80)
     print("")
     
-    # Run grid search
+    # Run baseline once at the beginning with 100 epochs
+    print(f"\n{'='*80}")
+    print("RUNNING BASELINE TRANSFORMER FIRST (100 epochs)")
+    print(f"{'='*80}\n")
+    
+    baseline_config = {
+        'maze_size': maze_size,
+        'n_train': n_train,
+        'n_test': n_test,
+        'min_path_length': min_path_length,
+        'R': 1,  # Baseline doesn't use refinement
+        'T': 1,  # Baseline doesn't use HRM
+        'n_heads': 4,  # Standard baseline heads
+        'epochs': 100,  # Always use 100 epochs for baseline
+        'seed': seed,
+        'skip_baseline': False,  # Run baseline
+        'skip_poh': True         # Skip PoH for baseline-only run
+    }
+    
+    try:
+        baseline_results = run_ab_test(**baseline_config)
+        print(f"\n✓ Baseline complete")
+        print(f"  Baseline: Acc={baseline_results['baseline']['acc']:.2f}%, Opt={baseline_results['baseline']['opt']:.2f}%")
+        
+        # Append baseline to results file
+        save_results(results_file, baseline_config, baseline_results)
+    except Exception as e:
+        print(f"\n✗ Baseline failed: {e}")
+    
+    # Run grid search (PoH configs only)
     config_num = 0
     for R, T, n_heads in itertools.product(R_values, T_values, heads_values):
         config_num += 1
@@ -167,35 +196,6 @@ def hyperparameter_search(
     print("HYPERPARAMETER SEARCH COMPLETE")
     print(f"Results saved to: {results_file}")
     print(f"{'='*80}\n")
-    
-    # Run baseline once at the end with 100 epochs
-    print(f"\n{'='*80}")
-    print("RUNNING BASELINE TRANSFORMER (100 epochs)")
-    print(f"{'='*80}\n")
-    
-    baseline_config = {
-        'maze_size': maze_size,
-        'n_train': n_train,
-        'n_test': n_test,
-        'min_path_length': min_path_length,
-        'R': 1,  # Baseline doesn't use refinement
-        'T': 1,  # Baseline doesn't use HRM
-        'n_heads': 4,  # Standard baseline heads
-        'epochs': 100,  # Always use 100 epochs for baseline
-        'seed': seed,
-        'skip_baseline': False,  # Run baseline
-        'skip_poh': True         # Skip PoH for baseline-only run
-    }
-    
-    try:
-        baseline_results = run_ab_test(**baseline_config)
-        print(f"\n✓ Baseline complete")
-        print(f"  Baseline: Acc={baseline_results['baseline']['acc']:.2f}%, Opt={baseline_results['baseline']['opt']:.2f}%")
-        
-        # Append baseline to results file
-        save_results(results_file, baseline_config, baseline_results)
-    except Exception as e:
-        print(f"\n✗ Baseline failed: {e}")
     
     # Print summary
     print(f"\n{'='*80}")
