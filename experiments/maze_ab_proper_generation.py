@@ -47,7 +47,7 @@ except ImportError:
 
 # Import PoT modules
 from src.pot.modules import PoHConfig, PoHStack, IterRefiner
-from src.pot.core.hrm_controller import HRMPointerController
+from src.pot.core.hrm_controller import HRMPointerController, HRMState
 
 # Try BERT
 try:
@@ -171,6 +171,58 @@ def generate_dataset_simple(maze_size: int, n_samples: int, wall_prob: float = 0
 
 
 # ============================================================================
+# HRM Router Wrapper
+# ============================================================================
+
+class StatefulHRMRouter(nn.Module):
+    """
+    Wrapper to make HRMPointerController compatible with HeadRouter interface.
+    
+    Maintains internal state and provides a stateless forward() that returns
+    logits (inverse softmax of alphas) compatible with PoHBlock's expectations.
+    """
+    def __init__(self, d_model: int, n_heads: int, T: int = 4):
+        super().__init__()
+        self.hrm = HRMPointerController(d_model=d_model, n_heads=n_heads, T=T)
+        self.state = None
+        self.d_model = d_model
+        self.n_heads = n_heads
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass compatible with HeadRouter interface.
+        
+        Args:
+            x: [B, T, d_model]
+        
+        Returns:
+            route_logits: [B, T, n_heads] logits (NOT probabilities)
+        """
+        B, T, D = x.shape
+        
+        # Initialize state if needed
+        if self.state is None or self.state.z_L.shape[0] != B:
+            self.state = self.hrm.init_state(B, x.device)
+        
+        # Call HRM controller (returns alphas, not logits)
+        alphas, self.state, aux = self.hrm(x, state=self.state, return_aux=True)
+        
+        # alphas is [B, n_heads], but we need [B, T, n_heads]
+        # Expand to per-token routing (broadcast same routing to all tokens)
+        alphas_expanded = alphas.unsqueeze(1).expand(B, T, self.n_heads)
+        
+        # Convert alphas (probabilities) back to logits for PoHBlock's route_mask
+        # Use log to get logits (since route_mask will apply softmax)
+        route_logits = torch.log(alphas_expanded + 1e-8)
+        
+        return route_logits
+    
+    def reset_state(self):
+        """Reset internal state (useful between batches/sequences)."""
+        self.state = None
+
+
+# ============================================================================
 # Model Architectures (same as before)
 # ============================================================================
 
@@ -250,10 +302,10 @@ class PoHMazeSolver(nn.Module):
         
         self.poh_stack = PoHStack(cfg, depth=num_layers)
         
-        # Replace HeadRouter with HRMPointerController in each block
+        # Replace HeadRouter with StatefulHRMRouter in each block
         for block in self.poh_stack.blocks:
             if hasattr(block, 'router'):
-                block.router = HRMPointerController(
+                block.router = StatefulHRMRouter(
                     d_model=d_model,
                     n_heads=n_heads,
                     T=T
