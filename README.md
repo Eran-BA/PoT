@@ -246,11 +246,16 @@ python scripts/train.py --task dependency --config experiments/configs/parsing/u
 **Test challenging pathfinding with proper maze generation:**
 
 ```bash
-# Local run (20×20 mazes, min path 80)
-source venv/bin/activate
-pip install maze-dataset  # High-quality maze generation library
+# Single test (20×20 mazes, min path 80)
+pip install maze-dataset
 python experiments/maze_ab_proper_generation.py
+
+# Hyperparameter search (find optimal R, T, n_heads)
+python experiments/maze_hyperparam_search.py --quick  # Fast test on 10×10
+python experiments/analyze_maze_hyperparam_results.py results.csv
 ```
+
+**See:** [Hyperparameter Search Guide](experiments/MAZE_HYPERPARAM_SEARCH_README.md)
 
 **Features:**
 - ✅ Uses [`maze-dataset`](https://github.com/understanding-search/maze-dataset) library for robust maze generation
