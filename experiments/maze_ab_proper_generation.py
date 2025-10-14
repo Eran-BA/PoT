@@ -109,22 +109,26 @@ def generate_dataset_proper(maze_size: int, n_samples: int, min_path_length: int
     path_lengths = []
     
     for solved_maze in dataset_filtered:
-        # Get maze grid - the maze object has a `connection_list` or we can use the grid directly
-        # The maze grid is stored in solved_maze.maze.connection_list
-        # We need to convert to a 2D array where 1 = wall, 0 = path
+        # The maze-dataset library stores mazes differently
+        # connection_list is an array of shape (n_edges, 2, 2) representing connections
+        # We need to build a grid representation
         
-        # Access the maze structure
         maze_obj = solved_maze.maze
-        grid_size = maze_obj.grid_shape[0]  # Assuming square maze
+        grid_size = maze_obj.grid_shape[0]  # Get grid size
         
-        # Create maze array (1 = wall, 0 = path)
-        # In maze-dataset, the connection_list tells us which cells are connected
-        # For simplicity, we'll mark all cells as passable and walls as blocked
-        maze = np.ones((grid_size, grid_size), dtype=np.float32)  # Start with all walls
+        # Create maze array - start with all walls (1 = wall)
+        maze = np.ones((grid_size, grid_size), dtype=np.float32)
         
-        # Mark passable cells (cells that appear in the lattice)
-        for coord in maze_obj.connection_list.keys():
-            maze[coord.row, coord.col] = 0  # 0 = passable
+        # The connection_list tells us which cells are connected (no wall between them)
+        # Each entry is [[r1, c1], [r2, c2]] meaning cells (r1,c1) and (r2,c2) are connected
+        connection_list = maze_obj.connection_list
+        
+        # Mark all cells that have connections as passable (0 = passable)
+        for connection in connection_list:
+            r1, c1 = connection[0]
+            r2, c2 = connection[1]
+            maze[r1, c1] = 0  # Cell 1 is passable
+            maze[r2, c2] = 0  # Cell 2 is passable
         
         # Get solution path
         solution = solved_maze.solution
