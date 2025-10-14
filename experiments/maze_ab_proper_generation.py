@@ -416,7 +416,18 @@ def run_ab_test(
 ):
     """Run A/B test with proper maze generation."""
     
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # Device setup with diagnostics
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+        print(f"🚀 GPU detected: {torch.cuda.get_device_name(0)}")
+        print(f"   Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+    else:
+        device = torch.device('cpu')
+        print("⚠️  No GPU detected, using CPU")
+        print(f"   PyTorch version: {torch.__version__}")
+        print(f"   CUDA available: {torch.cuda.is_available()}")
+        print(f"   CUDA version: {torch.version.cuda if hasattr(torch.version, 'cuda') else 'N/A'}")
+    
     torch.manual_seed(seed)
     np.random.seed(seed)
     
