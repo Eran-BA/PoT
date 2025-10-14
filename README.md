@@ -52,6 +52,32 @@ print(f"Refinement steps: {len(stats)}")  # 12
 
 ---
 
+## PoT in plain language
+
+- Not SAEs/circuits: SAEs extract fixed, interpretable features after training. PoT does not extract features; it learns a controller that, during the forward pass, decides how much to use each attention head for each token.
+- What routes: not tokens. All tokens are processed every pass. Routing is over attention heads, producing per-token weights α[token, iteration, head].
+- Iterative refinement (R): the same stack runs multiple times; routing adapts each pass as representations update.
+- HRM two-timescale control: a fast module f_L updates every refinement step; a slow module f_H updates every T steps and guides f_L (short-term reactivity plus longer-horizon planning).
+- Why it helps: different heads specialize (local/global/positional). Dynamic per-token head mixing across several refinement steps enables staged, compositional reasoning.
+
+### Comparison to related ideas
+
+- SAEs vs PoT
+  - SAEs: post-hoc interpretability (discover fixed features/circuits).
+  - PoT: online computation (learned controller modulates head usage during inference).
+
+- MoE vs PoT
+
+| Aspect | MoE | PoT |
+|:--|:--|:--|
+| Routing target | Experts (sub-networks) | Attention heads (within block) |
+| Tokens processed | Sparse subset | All tokens |
+| Computation | Sparse/efficient | Dense/iterative |
+| Routing frequency | Once per forward | Every refinement step (R) |
+| Controller | Shallow gate | Two-timescale (f_L fast, f_H slow) |
+| Goal | Throughput/scale | Adaptive reasoning |
+
+
 ## 🏗️ Architecture
 
 ### Visual Overview
