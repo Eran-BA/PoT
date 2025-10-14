@@ -4,6 +4,12 @@
 
 cd /Users/rnbnrzy/Desktop/PoT
 
+# Activate virtual environment if it exists
+if [ -d "venv" ]; then
+    echo "🔧 Activating virtual environment..."
+    source venv/bin/activate
+fi
+
 echo "🚀 Starting Maze Scaling Investigation"
 echo "======================================"
 echo ""
