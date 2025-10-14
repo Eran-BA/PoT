@@ -46,9 +46,7 @@ except ImportError:
     print("   Falling back to simple generation...")
 
 # Import PoT modules
-from src.pot.pot_config import PoTConfig
-from src.pot.core.poh_stack import PoHStack
-from src.pot.core.iter_refiner import IterRefiner
+from src.pot.modules import PoHConfig, PoHStack, IterRefiner
 from src.pot.core.hrm_controller import HRMPointerController
 
 # Try BERT
@@ -221,7 +219,7 @@ class PoHMazeSolver(nn.Module):
         self.cell_embed = nn.Embedding(4, d_model)
         
         # PoH with HRM
-        cfg = PoTConfig(
+        cfg = PoHConfig(
             d_model=d_model,
             n_heads=n_heads,
             d_ff=d_ff,
