@@ -6,49 +6,6 @@
 
 > **PoH** is a modular transformer architecture that adds **head-wise routing** and **iterative refinement** to standard transformers. Designed for tasks requiring multi-step reasoning 
 
-
-## PoT in plain language
-
-- Not SAEs/circuits: SAEs extract fixed, interpretable features after training. PoT does not extract features; it learns a controller that, during the forward pass, decides how much to use each attention head for each token.
-- What routes: not tokens. All tokens are processed every pass. Routing is over attention heads, producing per-token weights α[token, iteration, head].
-- Iterative refinement (R): the same stack runs multiple times; routing adapts each pass as representations update.
-- HRM two-timescale control: a fast module f_L updates every refinement step; a slow module f_H updates every T steps and guides f_L (short-term reactivity plus longer-horizon planning).
-- Why it helps: different heads specialize (local/global/positional). Dynamic per-token head mixing across several refinement steps enables staged, compositional reasoning.
-
-### Comparison to related ideas
-
-- SAEs vs PoT
-  - SAEs: post-hoc interpretability (discover fixed features/circuits).
-  - PoT: online computation (learned controller modulates head usage during inference).
-
-- MoE vs PoT
-
-| Aspect | MoE | PoT |
-|:--|:--|:--|
-| Routing target | Experts (sub-networks) | Attention heads (within block) |
-| Tokens processed | Sparse subset | All tokens |
-| Computation | Sparse/efficient | Dense/iterative |
-| Routing frequency | Once per forward | Every refinement step (R) |
-| Controller | Shallow gate | Two-timescale (f_L fast, f_H slow) |
-| Goal | Throughput/scale | Adaptive reasoning |
-
-
-### Recursive Transformers (TRM) vs PoT
-
-Reference: [Tiny Recursive Models (TRM)](https://github.com/SamsungSAILMontreal/TinyRecursiveModels)
-
-| Aspect | TRM (TinyRecursiveModels) | PoT (Pointer‑over‑Heads) |
-|:--|:--|:--|
-| Motivation | Compress depth via recursive weight tying | Make attention adaptive via dynamic head routing |
-| Iteration type | Reuse the same block output as next input (recurrence) | Iterative refinement with per‑token per‑head routing |
-| Routing | None (uniform computation) | α[token, iter, head] changes every refinement step |
-| Controller | None (deterministic recurrence) | Hierarchical controller: f_L (fast), f_H (slow, period T) |
-| Granularity | Whole‑block | Attention‑head |
-| Goal | Parameter efficiency (simulate deep nets) | Adaptive reasoning / dynamic information flow |
-
-Summary: TRM repeats the same computation to act deeper; PoT refines the computation itself to act smarter. While both do multiple passes, TRM’s steps are uniform across tokens with tied weights, whereas PoT learns a two‑timescale controller to modulate each head’s contribution per token and per iteration.
-
-
 ## 🏗️ Architecture
 
 ### Visual Overview
@@ -151,9 +108,50 @@ flowchart TB
   class SKIP1,SKIP2 skip
 ```
 
-<!-- Duplicate Quick Start removed: the main Quick Start above is canonical. -->
 
-PoH is a modular transformer architecture that adds head‑wise routing and iterative refinement to standard transformers. Designed for tasks requiring multi‑step reasoning (dependency parsing, NLI, language modeling) with minimal parameter overhead (≈0.27%).
+
+
+## PoT in plain language
+
+- Not SAEs/circuits: SAEs extract fixed, interpretable features after training. PoT does not extract features; it learns a controller that, during the forward pass, decides how much to use each attention head for each token.
+- What routes: not tokens. All tokens are processed every pass. Routing is over attention heads, producing per-token weights α[token, iteration, head].
+- Iterative refinement (R): the same stack runs multiple times; routing adapts each pass as representations update.
+- HRM two-timescale control: a fast module f_L updates every refinement step; a slow module f_H updates every T steps and guides f_L (short-term reactivity plus longer-horizon planning).
+- Why it helps: different heads specialize (local/global/positional). Dynamic per-token head mixing across several refinement steps enables staged, compositional reasoning.
+
+### Comparison to related ideas
+
+- SAEs vs PoT
+  - SAEs: post-hoc interpretability (discover fixed features/circuits).
+  - PoT: online computation (learned controller modulates head usage during inference).
+
+- MoE vs PoT
+
+| Aspect | MoE | PoT |
+|:--|:--|:--|
+| Routing target | Experts (sub-networks) | Attention heads (within block) |
+| Tokens processed | Sparse subset | All tokens |
+| Computation | Sparse/efficient | Dense/iterative |
+| Routing frequency | Once per forward | Every refinement step (R) |
+| Controller | Shallow gate | Two-timescale (f_L fast, f_H slow) |
+| Goal | Throughput/scale | Adaptive reasoning |
+
+
+### Recursive Transformers (TRM) vs PoT
+
+Reference: [Tiny Recursive Models (TRM)](https://github.com/SamsungSAILMontreal/TinyRecursiveModels)
+
+| Aspect | TRM (TinyRecursiveModels) | PoT (Pointer‑over‑Heads) |
+|:--|:--|:--|
+| Motivation | Compress depth via recursive weight tying | Make attention adaptive via dynamic head routing |
+| Iteration type | Reuse the same block output as next input (recurrence) | Iterative refinement with per‑token per‑head routing |
+| Routing | None (uniform computation) | α[token, iter, head] changes every refinement step |
+| Controller | None (deterministic recurrence) | Hierarchical controller: f_L (fast), f_H (slow, period T) |
+| Granularity | Whole‑block | Attention‑head |
+| Goal | Parameter efficiency (simulate deep nets) | Adaptive reasoning / dynamic information flow |
+
+Summary: TRM repeats the same computation to act deeper; PoT refines the computation itself to act smarter. While both do multiple passes, TRM’s steps are uniform across tokens with tied weights, whereas PoT learns a two‑timescale controller to modulate each head’s contribution per token and per iteration.
+
 
 
 ### Installation
