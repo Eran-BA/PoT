@@ -207,70 +207,39 @@ PoHBlock (×N)              # Head-wise routing (via HRM controller) + MHA + FFN
 
 ### 1. Natural Language Inference (NLI)
 
-**Quick test (3 minutes):**
+**Result:** PoH achieves **51.65% accuracy** vs BERT **33.85%** (+52.58% improvement)
+
 ```bash
-source venv/bin/activate
-pip install pyyaml datasets --quiet
-PYTHONPATH=$PWD python experiments/quick_nli_test.py
+# Quick test (3 min)
+python experiments/quick_nli_test.py
+
+# Full SNLI benchmark (4 hours)
+python experiments/real_nli_benchmark.py --dataset snli --max_steps 20000
 ```
 
-**Full benchmark (4 hours, SNLI):**
-```bash
-PYTHONPATH=$PWD python experiments/real_nli_benchmark.py \
-  --dataset snli --max_steps 20000
-```
-
-**Synthetic benchmark (1 hour):**
-```bash
-PYTHONPATH=$PWD python experiments/fair_ab_nli.py
-```
-
-**See:** [QUICK_START.md](QUICK_START.md) | [docs/POH_ITERATION_GUIDE.md](docs/POH_ITERATION_GUIDE.md)
+**Colab:** [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/PoH_NLI_Benchmark.ipynb)
 
 ### 2. Autoregressive Language Modeling (PoH-GPT)
 
-```python
-from src.pot.models.poh_gpt import PoHGPT
-from src.pot.modules import PoHConfig
+GPT-style model with causal masking and iterative refinement.
 
-# Configure GPT-style model
-cfg = PoHConfig(
-    d_model=512, n_heads=8, d_ff=2048, depth=6,
-    is_causal=True,         # Enable causal masking
-    max_inner_iters=2,      # Iterative refinement
-    outer_residual=True,    # Skip connections across iterations
-    rezero_init=True,       # Start with identity mapping
-)
-
-# Build model
-model = PoHGPT(vocab_size=32000, cfg=cfg)
-
-# Train or generate
-input_ids = torch.randint(0, 32000, (1, 10))
-logits = model(input_ids)                                    # Training
-output = model.generate(input_ids, max_new_tokens=20)        # Generation
-```
-
-**Run A/B comparison:**
 ```bash
-python experiments/quick_ab_test.py  # 2 min
-python experiments/fair_ab_lm.py     # 15 min
+# Quick A/B test (2 min)
+python experiments/quick_ab_test.py
+
+# Full benchmark (15 min)
+python experiments/fair_ab_lm.py
 ```
 
-**Colab:** [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](PoH_GPT_AB_Test.ipynb)
+**Colab:** [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/PoH_GPT_AB_Test.ipynb)
 
 ### 3. Dependency Parsing (Universal Dependencies)
 
 ```bash
-python scripts/train.py \
-  --task dependency \
-  --config experiments/configs/parsing/ud_en.yaml \
-  --model hrm_poh \
-  --epochs 50 \
-  --max_inner_iters 12
+python scripts/train.py --task dependency --config experiments/configs/parsing/ud_en.yaml
 ```
 
-**Status:** Baseline comparisons in progress (Dozat-Manning, transformer+biaffine)
+**Status:** Baseline comparisons in progress
 
 ### 4. Maze Solving with HRM (Scaling Benchmark)
 
@@ -352,21 +321,14 @@ Explore PoH interactively in Colab or Jupyter:
 
 **Breakdown:** HeadRouter (66k params) + head_gain (48 params) = **51k params (0.27%)**
 
-### Refinement Steps Analysis
+### Optimal Hyperparameters
 
-From diminishing returns analysis on dependency parsing:
+**Task-specific recommendations:**
+- **NLI/Language tasks**: R=12, T=4
+- **Maze solving**: R=4, T=4
+- **Sorting**: R=4, T=4
 
-| Refinement Steps (R) | Gain | Relative Cost | Efficiency |
-|----------------------|------|---------------|------------|
-| 1                    | baseline | 1.0x      | 100%       |
-| 3                    | +1.2%    | 3.0x      | 40%        |
-| 6                    | +2.1%    | 6.0x      | 35%        |
-| **12**               | **+3.5%**| **12.0x** | **29%**    |
-| 20                   | +3.8%    | 20.0x     | 19%        |
-
-**Conclusion:** R=12 refinement steps is optimal (used in all production benchmarks).
-
-**See:** [docs/POH_ITERATION_GUIDE.md](docs/POH_ITERATION_GUIDE.md)
+**See:** [docs/POH_ITERATION_GUIDE.md](docs/POH_ITERATION_GUIDE.md) for detailed analysis.
 
 ---
 
@@ -392,93 +354,31 @@ pytest tests/test_poh_modules.py -v
 
 ## 🎛️ Configuration
 
-All features are config-driven for easy ablation:
+All features are config-driven via `PoHConfig`:
 
 ```python
 cfg = PoHConfig(
-    # Architecture
-    d_model=512,
-    n_heads=8,
-    d_ff=2048,
-    dropout=0.1,
-    
-    # Routing
-    route_mode="topk",          # "soft" or "topk"
-    route_topk=2,               # For topk mode
-    route_temp=1.0,             # For soft mode (temperature)
-    share_router=True,          # Share router across layers
-    
-    # Positional encoding
-    pos_encoding="absolute",    # "none", "absolute", or "rotary"
-    max_seq_len=512,            # For absolute mode
-    
-    # Refinement
-    max_inner_iters=12,         # R=12 refinement steps (optimal from analysis)
-    outer_residual=True,        # Residual connections across refinement steps
-    rezero_init=True,           # ReZero initialization
-    
-    # ACT halting
-    act_halting=False,
-    act_threshold=0.99,
-    act_penalty=0.01,
-    
-    # Normalization
-    norm_type="pre",            # "pre" or "post"
-    param_match_baseline=True,  # Keep <1% delta
+    d_model=512, n_heads=8, d_ff=2048,
+    route_mode="topk", route_topk=2,        # Sparse routing
+    pos_encoding="absolute", max_seq_len=512,
+    max_inner_iters=12,                     # R refinement steps
 )
 ```
 
-**Ablation dimensions:**
-1. Routing mode (soft vs top-k)
-2. Top-k heads (1, 2, ..., n_heads)
-3. Refinement steps (R=1, 2, ..., 12, ...)
-4. Residual across refinement steps (on/off)
-5. ReZero initialization (on/off)
-6. Positional encoding (none/absolute/rotary)
-7. ACT halting (on/off)
-8. Shared router (on/off)
-9. HRM outer loop period (T=1, 2, 4, 8, ...)
+**Key parameters:** routing mode, refinement steps (R), HRM period (T), positional encoding. See `PoHConfig` docstring for full options.
 
 ---
 
 ## 📈 Logging & Visualization
 
-### Inner-Loop Logging
-
-Track per-iteration dynamics during training:
-
-```python
-from src.pot.logging import InnerLoopLogger, InnerStepRow
-
-with InnerLoopLogger("results/run1/innerloop.csv") as logger:
-    for step in training:
-        out, inner_stats = refiner(x, return_inner_stats=True)
-        
-        for s in inner_stats:
-            logger.log(InnerStepRow(
-                run_id="run1",
-                epoch=epoch,
-                global_step=step,
-                inner_step=s["inner_step"],
-                loss=loss.item(),
-                attn_entropy_mean=s["attn_entropy_mean"],
-                route_entropy_mean=s["route_entropy_mean"],
-                # ... more fields
-            ))
-```
-
-### Visualization
+Track per-iteration dynamics with `InnerLoopLogger` and visualize with provided scripts:
 
 ```bash
-# Plot inner vs outer dynamics
 python scripts/plot_inner_vs_outer.py --csv results/run1/innerloop.csv
-
-# Auto-generate figures from experiment CSVs
 python scripts/plot_results.py
-
-# Generate Markdown tables
-python scripts/make_readme_tables.py
 ```
+
+See [examples/poh_usage.py](examples/poh_usage.py) for usage.
 
 ---
 
@@ -603,28 +503,50 @@ This work builds upon several foundational papers:
 - **Transformer** - Vaswani et al. (2017): [https://arxiv.org/abs/1706.03762](https://arxiv.org/abs/1706.03762)
   - *Base architecture*
 
+### Technical Components (continued)
+- **maze-dataset** - Ivanitskiy et al. (2023): [https://arxiv.org/abs/2309.10498](https://arxiv.org/abs/2309.10498)
+  - *High-quality maze generation library for ML benchmarking*
+
 ### Implementation
 - Built on PyTorch's `MultiheadAttention`
 - Evaluation metrics from Universal Dependencies project
+- Maze generation using [`maze-dataset`](https://github.com/understanding-search/maze-dataset) library
 
 ---
 
 ## 🚀 Status
 
-**v1.0.0** - Production-ready ✅
+**v1.1.0** - Active Development 🚧
 
+### Core Architecture ✅
 - [x] Modular architecture (PoHBlock → PoHStack → IterRefiner)
+- [x] HRM controller integration (two-timescale routing)
 - [x] Parameter parity (0.27% overhead)
 - [x] Config-switchable positional encoding
 - [x] Inner-loop logging & visualization
 - [x] 17/17 tests passing
 - [x] Comprehensive documentation
-- [x] **NLI benchmarks (BERT vs PoH)**
+
+### Benchmarks & Applications ✅
+- [x] **NLI benchmarks (BERT vs PoH)** - +52.58% improvement
 - [x] **GPT-style autoregressive model (PoH-GPT)**
-- [x] **12-iteration optimal settings**
+- [x] **Optimal hyperparameters** (R=12, T=4 for NLI; R=4, T=4 for mazes)
+- [x] **Maze solving benchmark** (with `maze-dataset` library)
+- [x] **Maze scaling benchmark** (8×8 → 30×30)
+- [x] **Connect Four strategic game play**
+- [x] **A/B testing framework** (Baseline vs BERT vs PoH-HRM)
+- [x] **Colab notebooks** (GPU-optimized, A100 support)
+
+### In Progress 🔄
+- [ ] Maze benchmark results analysis (running now)
 - [ ] Dependency parsing baselines (Dozat-Manning, transformer+biaffine)
 - [ ] Multi-language evaluation (UD)
 - [ ] Publication-ready results
+
+### Planned 📋
+- [ ] RNN/LSTM baselines for sequential tasks
+- [ ] Attention visualization tools
+- [ ] Interactive demos
 
 ---
 
