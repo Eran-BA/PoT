@@ -115,21 +115,34 @@ def generate_dataset_proper(maze_size: int, n_samples: int, min_path_length: int
         
         maze_obj = solved_maze.maze
         
-        # Convert maze to pixel representation (0=wall, 1=path in their format)
-        # as_pixels returns array where walls and paths are represented
+        # Convert maze to pixel representation
         maze_pixels = maze_obj.as_pixels()
+        # Invert: their 1 (path) -> our 0 (passable), their 0 (wall) -> our 1 (wall)
+        maze = 1.0 - maze_pixels.astype(np.float32)
         
-        # The as_pixels format might be different, so let's invert if needed
-        # We want: 0=passable, 1=wall for our model
-        # as_pixels typically gives: 0=wall (black), 1=path (white)
-        # So we DON'T need to invert - their format matches ours!
-        maze = 1.0 - maze_pixels.astype(np.float32)  # Invert: their 1 (path) -> our 0 (passable)
+        # Get start and end positions
+        # The maze object should be a TargetedLatticeMaze with start_pos and end_pos
+        if hasattr(maze_obj, 'start_pos'):
+            start = (maze_obj.start_pos.row, maze_obj.start_pos.col)
+            goal = (maze_obj.end_pos.row, maze_obj.end_pos.col)
+        else:
+            # Fallback: get from solution array (first and last elements)
+            solution_array = solved_maze.solution
+            if solution_array.ndim == 2:  # Array of (row, col) pairs
+                start = tuple(solution_array[0])
+                goal = tuple(solution_array[-1])
+            else:
+                # Skip this maze if we can't determine start/goal
+                print(f"  ⚠️  Skipping maze with unclear start/goal structure")
+                continue
         
         # Get solution path
-        solution = solved_maze.solution
-        start = (solution.start_pos.row, solution.start_pos.col)
-        goal = (solution.end_pos.row, solution.end_pos.col)
-        path = [(coord.row, coord.col) for coord in solution.path]
+        solution_array = solved_maze.solution
+        if solution_array.ndim == 2:  # Array of (row, col) pairs
+            path = [tuple(coord) for coord in solution_array]
+        else:
+            print(f"  ⚠️  Skipping maze with unclear solution structure")
+            continue
         
         path_lengths.append(len(path))
         
