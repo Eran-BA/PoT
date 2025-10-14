@@ -185,7 +185,7 @@ if __name__ == '__main__':
     parser.add_argument('--output-dir', type=str, default='experiments/results', help='Output directory')
     
     # Quick mode for testing
-    parser.add_argument('--quick', action='store_true', help='Quick test (10x10, 500 train, 30 epochs)')
+    parser.add_argument('--quick', action='store_true', help='Quick test (10x10, 500 train, custom epochs via --epochs)')
     
     args = parser.parse_args()
     
@@ -196,7 +196,7 @@ if __name__ == '__main__':
             n_train=500,
             n_test=50,
             min_path_length=30,
-            epochs=30,
+            epochs=args.epochs,  # Use --epochs argument instead of hardcoded 30
             seed=args.seed,
             output_dir=args.output_dir
         )
