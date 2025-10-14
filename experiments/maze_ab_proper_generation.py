@@ -303,6 +303,8 @@ class MazeDatasetWrapper(Dataset):
     def __init__(self, data, maze_size):
         self.data = data
         self.maze_size = maze_size
+        # Find maximum path length for padding
+        self.max_path_len = max(len(item['path']) for item in data)
     
     def __len__(self):
         return len(self.data)
@@ -312,36 +314,52 @@ class MazeDatasetWrapper(Dataset):
         maze = torch.FloatTensor(item['maze'])
         start = torch.LongTensor(item['start'])
         goal = torch.LongTensor(item['goal'])
+        
         # Convert path to sequence of cell indices
-        path_indices = torch.LongTensor([
-            r * self.maze_size + c for r, c in item['path']
-        ])
-        return maze, start, goal, path_indices, len(item['path'])
+        path_indices = [r * self.maze_size + c for r, c in item['path']]
+        path_len = len(path_indices)
+        
+        # Pad path to max length (use -1 as padding value)
+        path_indices_padded = path_indices + [-1] * (self.max_path_len - path_len)
+        path_indices_tensor = torch.LongTensor(path_indices_padded)
+        
+        return maze, start, goal, path_indices_tensor, path_len
 
 
 def train_model(model, train_loader, device, epochs=30, lr=1e-3):
     """Train a maze solver model."""
     model.train()
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(ignore_index=-1)  # Ignore padding
     
     for epoch in range(epochs):
         total_loss = 0
         for maze, start, goal, path, path_len in train_loader:
             maze, start, goal, path = maze.to(device), start.to(device), goal.to(device), path.to(device)
+            path_len = path_len.to(device)
             
             optimizer.zero_grad()
             logits = model(maze, start, goal)
             
             # Loss: predict each step of the path
-            loss = 0
-            for i in range(path.shape[1] - 1):
-                loss += criterion(logits[:, i, :], path[:, i + 1])
-            loss /= (path.shape[1] - 1)
+            # Only compute loss on non-padded positions
+            batch_size = path.shape[0]
+            max_len = path.shape[1]
             
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
+            loss = 0
+            count = 0
+            for i in range(max_len - 1):
+                # Only include positions that are not padding
+                mask = (path[:, i] != -1) & (path[:, i + 1] != -1)
+                if mask.any():
+                    loss += criterion(logits[mask, i, :], path[mask, i + 1])
+                    count += 1
+            
+            if count > 0:
+                loss /= count
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
         
         if (epoch + 1) % 10 == 0:
             print(f"Epoch {epoch+1}/{epochs}, Loss: {total_loss/len(train_loader):.4f}")
