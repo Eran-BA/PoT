@@ -626,7 +626,8 @@ def run_scaling_benchmark(
     T=4,
     n_heads=4,
     epochs=50,
-    seed=42
+    seed=42,
+    wall_prob=0.45
 ):
     """Run scaling benchmark across maze sizes."""
     
@@ -637,6 +638,7 @@ def run_scaling_benchmark(
     print(f"  Maze sizes: {maze_sizes}")
     print(f"  Training mazes per size: {n_train}")
     print(f"  Test mazes per size: {n_test}")
+    print(f"  Wall probability: {wall_prob} ({'easy' if wall_prob <= 0.35 else 'medium' if wall_prob <= 0.5 else 'hard' if wall_prob <= 0.65 else 'very hard'})")
     print(f"  PoH R (refinement steps): {R}")
     print(f"  PoH T (HRM outer loop period): {T}")
     print(f"  PoH n_heads: {n_heads}")
@@ -671,9 +673,9 @@ def run_scaling_benchmark(
         
         # Generate data
         print(f"\nGenerating data...")
-        # Harder mazes: increased wall probability for better differentiation
-        train_data = generate_dataset(maze_size, n_train, wall_prob=0.45, seed=seed)
-        test_data = generate_dataset(maze_size, n_test, wall_prob=0.45, seed=seed+10000)
+        # Generate mazes with configurable wall probability
+        train_data = generate_dataset(maze_size, n_train, wall_prob=wall_prob, seed=seed)
+        test_data = generate_dataset(maze_size, n_test, wall_prob=wall_prob, seed=seed+10000)
         
         print(f"  Train: {len(train_data)} mazes")
         print(f"  Test: {len(test_data)} mazes")
@@ -908,6 +910,7 @@ def main():
     parser.add_argument('--heads', type=int, default=4, help='Number of attention heads')
     parser.add_argument('--epochs', type=int, default=50, help='Training epochs per size')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
+    parser.add_argument('--wall-prob', type=float, default=0.45, help='Wall probability (0.3=easy, 0.45=medium, 0.6=hard)')
     parser.add_argument('--output', type=str, default='experiments/results/maze_scaling',
                         help='Output path (without extension)')
     
@@ -922,7 +925,8 @@ def main():
         T=args.T,
         n_heads=args.heads,
         epochs=args.epochs,
-        seed=args.seed
+        seed=args.seed,
+        wall_prob=args.wall_prob
     )
     
     # Save results
