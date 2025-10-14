@@ -129,18 +129,12 @@ def generate_dataset_proper(maze_size: int, n_samples: int, min_path_length: int
                 # It's a Coord object
                 maze[node.row, node.col] = 0
         
-        # Get start and end positions from TargetedLatticeMaze
-        if isinstance(maze_obj.start_pos, np.ndarray):
-            start = tuple(maze_obj.start_pos)
-            goal = tuple(maze_obj.end_pos)
-        else:
-            start = (maze_obj.start_pos.row, maze_obj.start_pos.col)
-            goal = (maze_obj.end_pos.row, maze_obj.end_pos.col)
-        
-        # Get solution path
+        # Get solution path - this also gives us start and goal
         solution_array = solved_maze.solution
         if solution_array.ndim == 2:  # Array of (row, col) pairs
             path = [tuple(coord) for coord in solution_array]
+            start = path[0]  # First position in solution
+            goal = path[-1]  # Last position in solution
         else:
             print(f"  ⚠️  Skipping maze with unclear solution structure")
             continue
