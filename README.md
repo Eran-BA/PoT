@@ -113,11 +113,11 @@ flowchart TB
 
 ## PoT in plain language
 
-- Not SAEs/circuits: SAEs extract fixed, interpretable features after training. PoT does not extract features; it learns a controller that, during the forward pass, decides how much to use each attention head for each token.
-- What routes: not tokens. All tokens are processed every pass. Routing is over attention heads, producing per-token weights α[token, iteration, head].
-- Iterative refinement (R): the same stack runs multiple times; routing adapts each pass as representations update.
-- HRM two-timescale control: a fast module f_L updates every refinement step; a slow module f_H updates every T steps and guides f_L (short-term reactivity plus longer-horizon planning).
-- Why it helps: different heads specialize (local/global/positional). Dynamic per-token head mixing across several refinement steps enables staged, compositional reasoning.
+- What it is: a transformer that learns, on the fly, how strongly to use each attention head for each token.
+- What “routing” means: we don’t drop tokens. Every token goes through every pass; the model just reweights the heads per token.
+- Why multiple passes (R): we run the stack a few times so the model can refine its answer; after each pass it can change the head mix.
+- Two speeds of control (T): a fast controller tweaks decisions every pass; a slow controller updates every T passes to provide longer‑term guidance.
+- Why this helps: different heads are good at different things (local details, global context, positions). Remixing them per token, over a few passes, enables clearer, step‑by‑step reasoning.
 
 ### Comparison to related ideas
 
