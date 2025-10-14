@@ -272,7 +272,50 @@ python scripts/train.py \
 
 **Status:** Baseline comparisons in progress (Dozat-Manning, transformer+biaffine)
 
-### 4. Synthetic Tasks (Partial-Observability Sorting)
+### 4. Maze Solving with HRM (Scaling Benchmark)
+
+**Test challenging pathfinding with proper maze generation:**
+
+```bash
+# Local run (20×20 mazes, min path 80)
+source venv/bin/activate
+pip install maze-dataset  # High-quality maze generation library
+python experiments/maze_ab_proper_generation.py
+```
+
+**Features:**
+- ✅ Uses [`maze-dataset`](https://github.com/understanding-search/maze-dataset) library for robust maze generation
+- ✅ Minimum path length filtering (ensures challenging mazes)
+- ✅ Proper train/test split (300 train, 50 test)
+- ✅ 3-way comparison: **Baseline Transformer vs BERT vs PoH-HRM**
+- ✅ Dynamic parameter parity for fair comparison
+- ✅ GPU-optimized (A100 recommended for fast training)
+
+**Metrics:**
+- **Accuracy**: % of correct next-step predictions
+- **Optimality**: % of paths matching optimal solution length
+
+**Colab Notebooks:**
+- **Single Size (20×20)**: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Maze_AB_Test_Colab.ipynb)
+- **Scaling Benchmark (8×8→30×30)**: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Maze_Scaling_Benchmark_Colab.ipynb)
+
+**Why this matters:** Maze solving tests hierarchical reasoning - HRM's two-timescale controller (f_L fast + f_H slow) should excel at long-horizon planning compared to single-timescale baselines.
+
+### 5. Connect Four (Strategic Game Play)
+
+**Test multi-step strategic reasoning:**
+
+```bash
+python experiments/connect_four_ab_test.py
+```
+
+- Minimax AI for optimal move generation
+- Policy + value network training
+- 3-way comparison: Baseline vs BERT vs PoH-HRM
+
+**Colab:** [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Connect_Four_AB_Test_Colab.ipynb)
+
+### 6. Synthetic Tasks (Partial-Observability Sorting)
 
 See [examples/synthetic/README.md](examples/synthetic/README.md)
 
@@ -471,6 +514,8 @@ python scripts/make_readme_tables.py
 **Optional:**
 - `rotary-embedding-torch` (for RoPE support)
 - `datasets` (for real NLI benchmarks - Hugging Face)
+- `maze-dataset` (for maze generation benchmarks)
+- `transformers` (for BERT baselines in A/B tests)
 
 ### Project Structure
 
@@ -504,7 +549,10 @@ PoT/
 │   ├── fair_ab_nli.py        # Full synthetic NLI benchmark
 │   ├── real_nli_benchmark.py # Real SNLI/MultiNLI benchmark
 │   ├── quick_ab_test.py      # GPT quick test
-│   └── fair_ab_lm.py         # Full GPT benchmark
+│   ├── fair_ab_lm.py         # Full GPT benchmark
+│   ├── maze_ab_proper_generation.py  # Maze solving A/B test (with maze-dataset)
+│   ├── maze_scaling_benchmark.py     # Maze scaling 8×8→30×30
+│   └── connect_four_ab_test.py       # Connect Four A/B test
 └── docs/
     ├── architecture/         # Architecture documentation
     ├── guides/               # User guides

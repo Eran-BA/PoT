@@ -337,8 +337,8 @@ class PoHMazeSolver(nn.Module):
         pos_ids = torch.arange(seq_len, device=maze.device).unsqueeze(0).expand(B, -1)
         h = self.cell_embed(x) + self.pos_embed(pos_ids)
         
-        # PoH with refinement
-        h = self.refiner(h)
+        # PoH with refinement (returns tuple: output, stats)
+        h, _ = self.refiner(h)
         
         # Decode
         logits = self.decoder(h)
