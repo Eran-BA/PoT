@@ -78,6 +78,22 @@ print(f"Refinement steps: {len(stats)}")  # 12
 | Goal | Throughput/scale | Adaptive reasoning |
 
 
+### Recursive Transformers (TRM) vs PoT
+
+Reference: [Tiny Recursive Models (TRM)](https://github.com/SamsungSAILMontreal/TinyRecursiveModels)
+
+| Aspect | TRM (TinyRecursiveModels) | PoT (Pointer‑over‑Heads) |
+|:--|:--|:--|
+| Motivation | Compress depth via recursive weight tying | Make attention adaptive via dynamic head routing |
+| Iteration type | Reuse the same block output as next input (recurrence) | Iterative refinement with per‑token per‑head routing |
+| Routing | None (uniform computation) | α[token, iter, head] changes every refinement step |
+| Controller | None (deterministic recurrence) | Hierarchical controller: f_L (fast), f_H (slow, period T) |
+| Granularity | Whole‑block | Attention‑head |
+| Goal | Parameter efficiency (simulate deep nets) | Adaptive reasoning / dynamic information flow |
+
+Summary: TRM repeats the same computation to act deeper; PoT refines the computation itself to act smarter. While both do multiple passes, TRM’s steps are uniform across tokens with tied weights, whereas PoT learns a two‑timescale controller to modulate each head’s contribution per token and per iteration.
+
+
 ## 🏗️ Architecture
 
 ### Visual Overview
