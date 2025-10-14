@@ -205,7 +205,15 @@ class StatefulHRMRouter(nn.Module):
             self.state = self.hrm.init_state(B, x.device)
         
         # Call HRM controller (returns alphas, not logits)
-        alphas, self.state, aux = self.hrm(x, state=self.state, return_aux=True)
+        alphas, new_state, aux = self.hrm(x, state=self.state, return_aux=True)
+        
+        # Detach state from computation graph to avoid "backward through graph a second time" error
+        # The state is used for routing decisions, but we don't want to backprop through it across batches
+        self.state = HRMState(
+            z_L=new_state.z_L.detach(),
+            z_H=new_state.z_H.detach(),
+            step=new_state.step.detach() if isinstance(new_state.step, torch.Tensor) else new_state.step
+        )
         
         # alphas is [B, n_heads], but we need [B, T, n_heads]
         # Expand to per-token routing (broadcast same routing to all tokens)
