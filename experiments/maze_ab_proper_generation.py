@@ -235,8 +235,8 @@ class StatefulHRMRouter(nn.Module):
 # ============================================================================
 
 class BaselineMazeSolver(nn.Module):
-    """Standard Transformer baseline."""
-    def __init__(self, maze_size: int, d_model: int = 256, n_heads: int = 4, d_ff: int = 1024, num_layers: int = 4, dropout: float = 0.1):
+    """Standard Transformer baseline with parameter parity to PoH."""
+    def __init__(self, maze_size: int, d_model: int = 256, n_heads: int = 4, d_ff: int = 1024, num_layers: int = 8, dropout: float = 0.1):
         super().__init__()
         self.maze_size = maze_size
         self.d_model = d_model
