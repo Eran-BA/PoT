@@ -274,16 +274,31 @@ See [examples/synthetic/README.md](examples/synthetic/README.md)
 
 ## 📓 Interactive Notebooks
 
-Explore PoH interactively in Colab or Jupyter:
+Explore PoH interactively in Colab or Jupyter (maze first):
 
-| Notebook | Task | Duration | Quick Link |
-|----------|------|----------|------------|
-| **PoT_Colab** | Dependency Parsing | 10-15 min | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/PoT_Colab.ipynb) |
-| **PoH_GPT_AB_Test** | Language Modeling | 2 min | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/PoH_GPT_AB_Test.ipynb) |
-| **PoH_NLI_Benchmark** | NLI | 3 min | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/PoH_NLI_Benchmark.ipynb) |
-| **Maze_AB_Test_Colab** 🆕 | Maze Solving (A100) | 30-60 min | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Maze_AB_Test_Colab.ipynb) |
-| **Maze_Scaling_Benchmark_Colab** 🆕 | Maze Scaling 8×8→30×30 (A100) | 60-240 min | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Maze_Scaling_Benchmark_Colab.ipynb) |
-| **Connect_Four_AB_Test_Colab** 🆕 | Connect Four (A100) | 20-40 min | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Connect_Four_AB_Test_Colab.ipynb) |
+- **Maze_Scaling_Benchmark_Colab** 🆕 — Maze Scaling 8×8→30×30 (A100) [Recommended]
+  
+  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Maze_Scaling_Benchmark_Colab.ipynb)
+
+- **Maze_AB_Test_Colab** — Single-size Maze Solving (A100)
+  
+  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Maze_AB_Test_Colab.ipynb)
+
+- **PoH_NLI_Benchmark** — NLI (3 min)
+  
+  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/PoH_NLI_Benchmark.ipynb)
+
+- **PoH_GPT_AB_Test** — Language Modeling (2 min)
+  
+  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/PoH_GPT_AB_Test.ipynb)
+
+- **PoT_Colab** — Dependency Parsing (10–15 min)
+  
+  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/PoT_Colab.ipynb)
+
+- **Connect_Four_AB_Test_Colab** — Connect Four (A100)
+  
+  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Connect_Four_AB_Test_Colab.ipynb)
 
 **See:** [notebooks/README.md](notebooks/README.md) for details
 
