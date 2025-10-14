@@ -22,6 +22,9 @@ seaborn==0.12.2
 # Utilities
 tqdm==4.65.0
 
+# Maze generation (for maze-solving benchmarks)
+maze-dataset>=1.0.0
+
 # Development
 pytest==7.4.0
 pytest-cov==4.1.0
