@@ -4,7 +4,7 @@
 
 [![Tests](https://img.shields.io/badge/tests-17%2F17%20passing-brightgreen)]() [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE) [![Results](https://img.shields.io/badge/PoH%20vs%20BERT-+52.58%25-success)]()
 
-> **PoH** is a modular transformer architecture that adds **head-wise routing** and **iterative refinement** to standard transformers. Designed for tasks requiring multi-step reasoning (dependency parsing, NLI, language modeling) with minimal parameter overhead (**0.27%**).
+> **PoH** is a modular transformer architecture that adds **head-wise routing** and **iterative refinement** to standard transformers. Designed for tasks requiring multi-step reasoning 
 
 
 ## PoT in plain language
