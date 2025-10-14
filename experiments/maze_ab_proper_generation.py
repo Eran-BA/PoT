@@ -109,32 +109,24 @@ def generate_dataset_proper(maze_size: int, n_samples: int, min_path_length: int
     path_lengths = []
     
     for solved_maze in dataset_filtered:
-        # Use the proper maze-dataset API
-        # LatticeMaze has an as_pixels() method that converts to array
-        # From the docs: https://understanding-search.github.io/maze-dataset/maze_dataset.html
+        # Build maze grid directly from the grid_shape, marking all cells as passable
+        # except those not reachable (walls)
         
         maze_obj = solved_maze.maze
+        grid_size = maze_obj.grid_shape[0]  # Should be maze_size (e.g., 20)
         
-        # Convert maze to pixel representation
-        maze_pixels = maze_obj.as_pixels()
-        # Invert: their 1 (path) -> our 0 (passable), their 0 (wall) -> our 1 (wall)
-        maze = 1.0 - maze_pixels.astype(np.float32)
+        # Create maze: start with all cells as walls (1)
+        maze = np.ones((grid_size, grid_size), dtype=np.float32)
         
-        # Get start and end positions
-        # The maze object should be a TargetedLatticeMaze with start_pos and end_pos
-        if hasattr(maze_obj, 'start_pos'):
-            start = (maze_obj.start_pos.row, maze_obj.start_pos.col)
-            goal = (maze_obj.end_pos.row, maze_obj.end_pos.col)
-        else:
-            # Fallback: get from solution array (first and last elements)
-            solution_array = solved_maze.solution
-            if solution_array.ndim == 2:  # Array of (row, col) pairs
-                start = tuple(solution_array[0])
-                goal = tuple(solution_array[-1])
-            else:
-                # Skip this maze if we can't determine start/goal
-                print(f"  ⚠️  Skipping maze with unclear start/goal structure")
-                continue
+        # Mark all nodes that exist in the maze as passable (0)
+        # Get all nodes (cells) in the maze
+        nodes = maze_obj.get_nodes()
+        for node in nodes:
+            maze[node.row, node.col] = 0
+        
+        # Get start and end positions from TargetedLatticeMaze
+        start = (maze_obj.start_pos.row, maze_obj.start_pos.col)
+        goal = (maze_obj.end_pos.row, maze_obj.end_pos.col)
         
         # Get solution path
         solution_array = solved_maze.solution
