@@ -109,14 +109,28 @@ def generate_dataset_proper(maze_size: int, n_samples: int, min_path_length: int
     path_lengths = []
     
     for solved_maze in dataset_filtered:
-        # Get maze grid (0 = path, 1 = wall)
-        maze = solved_maze.as_array()  # Returns numpy array
+        # Get maze grid - the maze object has a `connection_list` or we can use the grid directly
+        # The maze grid is stored in solved_maze.maze.connection_list
+        # We need to convert to a 2D array where 1 = wall, 0 = path
+        
+        # Access the maze structure
+        maze_obj = solved_maze.maze
+        grid_size = maze_obj.grid_shape[0]  # Assuming square maze
+        
+        # Create maze array (1 = wall, 0 = path)
+        # In maze-dataset, the connection_list tells us which cells are connected
+        # For simplicity, we'll mark all cells as passable and walls as blocked
+        maze = np.ones((grid_size, grid_size), dtype=np.float32)  # Start with all walls
+        
+        # Mark passable cells (cells that appear in the lattice)
+        for coord in maze_obj.connection_list.keys():
+            maze[coord.row, coord.col] = 0  # 0 = passable
         
         # Get solution path
         solution = solved_maze.solution
-        start = solution.start_pos
-        goal = solution.end_pos
-        path = solution.path_coords  # List of (row, col) tuples
+        start = (solution.start_pos.row, solution.start_pos.col)
+        goal = (solution.end_pos.row, solution.end_pos.col)
+        path = [(coord.row, coord.col) for coord in solution.path]
         
         path_lengths.append(len(path))
         
