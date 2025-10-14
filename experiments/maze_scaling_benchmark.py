@@ -725,45 +725,45 @@ def run_scaling_benchmark(
                         bert_layers = 2
                     else:
                         bert_layers = 1
-                
-                # Try to match PoH parameters by adjusting BERT config
-                for attempt_layers in [bert_layers, max(1, bert_layers-1), 1]:
-                    if attempt_layers < 1:
-                        break
                     
-                    bert_test = BERTMazeSolver(
-                        maze_size=maze_size,
-                        d_model=256,
-                        n_heads=n_heads,
-                        d_ff=1024,
-                        num_layers=attempt_layers
-                    ).to(device)
+                    # Try to match PoH parameters by adjusting BERT config
+                    for attempt_layers in [bert_layers, max(1, bert_layers-1), 1]:
+                        if attempt_layers < 1:
+                            break
+                        
+                        bert_test = BERTMazeSolver(
+                            maze_size=maze_size,
+                            d_model=256,
+                            n_heads=n_heads,
+                            d_ff=1024,
+                            num_layers=attempt_layers
+                        ).to(device)
+                        
+                        bert_params = sum(p.numel() for p in bert_test.parameters())
+                        parity_pct = abs(bert_params - poh_params) / poh_params * 100
+                        
+                        if parity_pct < 20:  # Accept if within 20%
+                            bert = bert_test
+                            print(f"  BERT parameters: {bert_params / 1e6:.2f}M (layers={attempt_layers}, parity={parity_pct:.1f}%)")
+                            break
+                        else:
+                            del bert_test
+                            torch.cuda.empty_cache() if torch.cuda.is_available() else None
                     
-                    bert_params = sum(p.numel() for p in bert_test.parameters())
-                    parity_pct = abs(bert_params - poh_params) / poh_params * 100
-                    
-                    if parity_pct < 20:  # Accept if within 20%
-                        bert = bert_test
-                        print(f"  BERT parameters: {bert_params / 1e6:.2f}M (layers={attempt_layers}, parity={parity_pct:.1f}%)")
-                        break
-                    else:
-                        del bert_test
-                        torch.cuda.empty_cache() if torch.cuda.is_available() else None
-                
-                if bert is None:
-                    print(f"  Warning: Could not achieve parameter parity (<20%) for BERT at maze size {maze_size}")
-                    # Use smallest BERT anyway for comparison
-                    bert = BERTMazeSolver(
-                        maze_size=maze_size,
-                        d_model=256,
-                        n_heads=n_heads,
-                        d_ff=1024,
-                        num_layers=1
-                    ).to(device)
-                    bert_params = sum(p.numel() for p in bert.parameters())
-                    parity_pct = abs(bert_params - poh_params) / poh_params * 100
-                    print(f"  BERT parameters: {bert_params / 1e6:.2f}M (layers=1, parity={parity_pct:.1f}%) [best effort]")
-                    
+                    if bert is None:
+                        print(f"  Warning: Could not achieve parameter parity (<20%) for BERT at maze size {maze_size}")
+                        # Use smallest BERT anyway for comparison
+                        bert = BERTMazeSolver(
+                            maze_size=maze_size,
+                            d_model=256,
+                            n_heads=n_heads,
+                            d_ff=1024,
+                            num_layers=1
+                        ).to(device)
+                        bert_params = sum(p.numel() for p in bert.parameters())
+                        parity_pct = abs(bert_params - poh_params) / poh_params * 100
+                        print(f"  BERT parameters: {bert_params / 1e6:.2f}M (layers=1, parity={parity_pct:.1f}%) [best effort]")
+                        
                 except Exception as e:
                     print(f"  Warning: Could not create BERT model: {e}")
                     bert = None
