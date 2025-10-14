@@ -517,12 +517,14 @@ def run_ab_test(
     n_heads: int = 4,
     epochs: int = 40,
     seed: int = 42,
-    skip_baseline: bool = False
+    skip_baseline: bool = False,
+    skip_poh: bool = False
 ):
     """Run A/B test with proper maze generation.
     
     Args:
         skip_baseline: If True, only train PoH-HRM (skip baseline). Useful for hyperparameter search.
+        skip_poh: If True, only train baseline (skip PoH-HRM). Useful for baseline-only runs.
     """
     
     # Device setup with diagnostics
@@ -581,16 +583,20 @@ def run_ab_test(
         print(f"\n⏩ Skipping baseline (skip_baseline=True)")
         results['baseline'] = {'acc': 0.0, 'opt': 0.0}  # Placeholder
     
-    # Test PoH-HRM
-    print(f"\n{'='*60}")
-    print(f"Training: PoH-HRM (R={R}, T={T})")
-    print(f"{'='*60}")
-    poh = PoHMazeSolver(maze_size, R=R, T=T, n_heads=n_heads).to(device)
-    print(f"Parameters: {sum(p.numel() for p in poh.parameters())/1e6:.2f}M")
-    poh = train_model(poh, train_loader, device, epochs)
-    acc, opt = evaluate_model(poh, test_loader, device, maze_size)
-    print(f"Accuracy: {acc:.2f}%, Optimality: {opt:.2f}%")
-    results['poh'] = {'acc': acc, 'opt': opt}
+    # Test PoH-HRM (skip if requested)
+    if not skip_poh:
+        print(f"\n{'='*60}")
+        print(f"Training: PoH-HRM (R={R}, T={T})")
+        print(f"{'='*60}")
+        poh = PoHMazeSolver(maze_size, R=R, T=T, n_heads=n_heads).to(device)
+        print(f"Parameters: {sum(p.numel() for p in poh.parameters())/1e6:.2f}M")
+        poh = train_model(poh, train_loader, device, epochs)
+        acc, opt = evaluate_model(poh, test_loader, device, maze_size)
+        print(f"Accuracy: {acc:.2f}%, Optimality: {opt:.2f}%")
+        results['poh'] = {'acc': acc, 'opt': opt}
+    else:
+        print(f"\n⏩ Skipping PoH-HRM (skip_poh=True)")
+        results['poh'] = {'acc': 0.0, 'opt': 0.0}
     
     # Summary
     print(f"\n{'='*80}")
@@ -598,7 +604,8 @@ def run_ab_test(
     print(f"{'='*80}")
     if not skip_baseline:
         print(f"Baseline: Acc={results['baseline']['acc']:.2f}%, Opt={results['baseline']['opt']:.2f}%")
-    print(f"PoH-HRM:  Acc={results['poh']['acc']:.2f}%, Opt={results['poh']['opt']:.2f}%")
+    if not skip_poh:
+        print(f"PoH-HRM:  Acc={results['poh']['acc']:.2f}%, Opt={results['poh']['opt']:.2f}%")
     print(f"{'='*80}\n")
     
     return results

@@ -150,6 +150,7 @@ def hyperparameter_search(
         try:
             # Run A/B test with this configuration (skip baseline to save time)
             config['skip_baseline'] = True
+            config['skip_poh'] = False
             results = run_ab_test(**config)
             
             # Save results
@@ -182,7 +183,8 @@ def hyperparameter_search(
         'n_heads': 4,  # Standard baseline heads
         'epochs': 100,  # Always use 100 epochs for baseline
         'seed': seed,
-        'skip_baseline': False  # Run full test with baseline
+        'skip_baseline': False,  # Run baseline
+        'skip_poh': True         # Skip PoH for baseline-only run
     }
     
     try:
