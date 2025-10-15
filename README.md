@@ -272,6 +272,18 @@ python experiments/analyze_maze_hyperparam_results.py results.csv
 - **Accuracy**: % of correct next-step predictions
 - **Optimality**: % of paths matching optimal solution length
 
+**Hyperparameter search results:**
+- CSV (10×10): `experiments/results/maze_hyperparam_search_10x10.csv`
+- CSV (12×12): `experiments/results/maze_hyperparam_search_12x12.csv`
+
+**Best configurations observed:**
+- 10×10 (balanced): R=2, T=4, heads=4 → ~92% acc, ~82% opt
+  - Highest accuracy: R=8, T=8, heads=8 → ~94% acc, ~76% opt
+- 12×12 (balanced): R=2, T=4, heads=2 → ~93% acc, ~85% opt
+  - Near-best: R=4, T=4, heads=8 → ~91% acc, ~85% opt; R=4, T=8, heads=8 → ~93% acc, ~84% opt
+
+**Recommendation for larger mazes (≥20×20):** start with R=2, T=4–8, heads=8; if needed, try R=4 with T=4–8.
+
 **Colab Notebooks:**
 - **Single Size (20×20)**: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Maze_AB_Test_Colab.ipynb)
 - **Scaling Benchmark (8×8→30×30)**: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Maze_Scaling_Benchmark_Colab.ipynb)
