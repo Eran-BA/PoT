@@ -533,8 +533,6 @@ This work builds upon several foundational papers:
   - *Two-timescale recurrent controller for routing*
 
 ### Technical Components
-- **ReZero** - Bachlechner et al. (2020): [https://arxiv.org/abs/2003.04887](https://arxiv.org/abs/2003.04887)
-  - *Residual connection initialization for deep networks*
 - **Adaptive Computation Time (ACT)** - Graves (2016): [https://arxiv.org/abs/1603.08983](https://arxiv.org/abs/1603.08983)
   - *Learned halting for variable computation*
 - **Transformer** - Vaswani et al. (2017): [https://arxiv.org/abs/1706.03762](https://arxiv.org/abs/1706.03762)
