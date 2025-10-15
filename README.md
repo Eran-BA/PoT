@@ -517,7 +517,7 @@ This work builds upon several foundational papers:
 ### Core Inspirations
 - **Pointer Networks** - Vinyals et al. (2015): [https://arxiv.org/pdf/1506.03134](https://arxiv.org/pdf/1506.03134)
   - *Foundation for attention-based pointer mechanisms*
-- **Hierarchical Reasoning Model (HRM)** - Lampinen & McClelland (2020): [https://arxiv.org/abs/2305.19472](https://arxiv.org/abs/2305.19472)
+- **Hierarchical Reasoning Model (HRM)** - Sapient Intelligence, Singapore (2025): [https://arxiv.org/abs/2305.19472](https://arxiv.org/abs/2305.19472)](https://arxiv.org/abs/2506.21734)
   - *Two-timescale recurrent controller for routing*
 
 ### Technical Components
