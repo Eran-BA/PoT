@@ -4,7 +4,17 @@
 
 [![Tests](https://img.shields.io/badge/tests-17%2F17%20passing-brightgreen)]() [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE) [![Results](https://img.shields.io/badge/PoH%20vs%20BERT-+52.58%25-success)]()
 
+## 🗞 News
+
+- Maze Scaling Benchmark (Colab, A100) — run the latest notebook:
+  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Maze_Scaling_Benchmark_Colab.ipynb)
+
+- Blog: BERT/GPT with inner thinking cycles (same parameter count)
+  https://medium.com/@eranbt92/bert-gpt-with-inner-thinking-cycles-same-parameter-dc54dbdec61e
+
+
 > **PoH** is a modular transformer architecture that adds **head-wise routing** and **iterative refinement** to standard transformers. Designed for tasks requiring multi-step reasoning, in simple words "it is a BERT/GPT architecture with inner thinking cycles while keeping number of parameters same” -
+
 
 ## 🏗️ Architecture
 
