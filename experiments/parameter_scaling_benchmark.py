@@ -154,8 +154,17 @@ def generate_dataset_proper(maze_size: int, n_samples: int, min_path_length: int
     
     for solved_maze in dataset_filtered:
         maze_obj = solved_maze.maze
-        maze_pixels = maze_obj.as_pixels()
-        maze = 1.0 - maze_pixels.astype(np.float32)
+        
+        # Build grid representation: 0 = passable, 1 = wall
+        # Use connection_list to determine passable cells
+        grid = np.ones((maze_size, maze_size), dtype=np.float32)  # Start with all walls
+        
+        # Get nodes (passable cells) from the maze
+        nodes = maze_obj.get_nodes()
+        for node in nodes:
+            grid[node.row, node.col] = 0.0  # Mark as passable
+        
+        maze = grid
         
         if hasattr(maze_obj, 'start_pos'):
             start = (maze_obj.start_pos.row, maze_obj.start_pos.col)
