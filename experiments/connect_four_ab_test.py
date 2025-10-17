@@ -831,20 +831,60 @@ def run_ab_test(train_games=500, test_games=100, minimax_depth=3, R=4, T=4, n_he
     baseline_params = sum(p.numel() for p in baseline.parameters())
     print(f"  Baseline parameters: {baseline_params / 1e6:.2f}M")
     
-    # Create PoH-HRM first to get target parameter count
-    poh = ConnectFourModel(
-        rows=rows,
-        cols=cols,
-        d_model=d_model,
-        n_heads=n_heads,
-        d_ff=d_ff,
-        max_inner_iters=R,
-        T=T,
-        use_poh=True
-    ).to(device)
+    # Create PoH-HRM with parameter parity (equal or fewer params than baseline)
+    print(f"\n  Searching for PoH configuration with parameter parity...")
+    best_poh = None
+    best_poh_params = float('inf')
+    best_config = None
     
-    poh_params = sum(p.numel() for p in poh.parameters())
-    print(f"  PoH-HRM parameters: {poh_params / 1e6:.2f}M")
+    # Try reducing width (d_model and d_ff) to achieve parameter parity
+    for scale in [1.0, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6]:
+        trial_dm = int(d_model * scale)
+        # Ensure d_model is divisible by n_heads
+        trial_dm = (trial_dm // n_heads) * n_heads
+        if trial_dm < 64:
+            continue
+        trial_ff = int(d_ff * scale)
+        
+        trial_poh = ConnectFourModel(
+            rows=rows,
+            cols=cols,
+            d_model=trial_dm,
+            n_heads=n_heads,
+            d_ff=trial_ff,
+            max_inner_iters=R,
+            T=T,
+            use_poh=True
+        )
+        trial_params = sum(p.numel() for p in trial_poh.parameters())
+        
+        # Accept if within 10% of baseline or fewer params
+        if trial_params <= baseline_params * 1.1:
+            best_poh = trial_poh
+            best_poh_params = trial_params
+            best_config = {'d_model': trial_dm, 'd_ff': trial_ff, 'n_heads': n_heads}
+            print(f"    ✓ Found: d_model={trial_dm}, d_ff={trial_ff}, params={trial_params/1e6:.2f}M ({trial_params/baseline_params*100:.1f}% of baseline)")
+            break
+        
+        # Keep searching for closer match
+        if abs(trial_params - baseline_params) < abs(best_poh_params - baseline_params):
+            best_poh = trial_poh
+            best_poh_params = trial_params
+            best_config = {'d_model': trial_dm, 'd_ff': trial_ff, 'n_heads': n_heads}
+        
+        del trial_poh
+    
+    if best_poh is None:
+        raise RuntimeError("Could not find PoH configuration with acceptable parameter parity")
+    
+    poh = best_poh.to(device)
+    poh_params = best_poh_params
+    
+    param_ratio = (poh_params / baseline_params) * 100
+    print(f"  PoH-HRM parameters: {poh_params / 1e6:.2f}M (d_model={best_config['d_model']}, d_ff={best_config['d_ff']}, {param_ratio:.1f}% of baseline)")
+    
+    if poh_params > baseline_params:
+        print(f"  ⚠️  Warning: PoH has {(poh_params/baseline_params - 1)*100:.1f}% more parameters than baseline")
     
     # BERT baseline (if available) - dynamically adjust architecture for parameter parity with PoH
     bert = None
@@ -930,7 +970,7 @@ def run_ab_test(train_games=500, test_games=100, minimax_depth=3, R=4, T=4, n_he
         print(f"  Training time: {bert_results['time_min']:.2f} min")
     
     print(f"\n🔬 PoH with HRM (R={R}, T={T}, n_heads={n_heads})")
-    print(f"  Parameters: {poh_results['params_M']:.2f}M")
+    print(f"  Parameters: {poh_results['params_M']:.2f}M (d_model={best_config['d_model']}, d_ff={best_config['d_ff']})")
     print(f"  Best Accuracy: {poh_results['best_accuracy']:.2%}")
     print(f"  Final Accuracy: {poh_results['final_accuracy']:.2%}")
     print(f"  Training time: {poh_results['time_min']:.2f} min")
