@@ -316,13 +316,13 @@ def evaluate_window(window, player: int, opponent: int) -> int:
     return score
 
 
-def generate_training_data(num_games: int, depth: int = 3, seed: int = 42):
+def generate_training_data(num_games: int, depth: int = 3, seed: int = 42, rows: int = 6, cols: int = 7):
     """Generate training data using minimax."""
     np.random.seed(seed)
     data = []
     
     for game_idx in tqdm(range(num_games), desc="Generating games"):
-        game = ConnectFour()
+        game = ConnectFour(rows=rows, cols=cols)
         game_states = []
         game_moves = []
         
@@ -779,13 +779,15 @@ def train_and_evaluate(
 # ========== Main A/B Test ==========
 
 def run_ab_test(train_games=500, test_games=100, minimax_depth=3, R=4, T=4, n_heads=4,
-                epochs=100, seed=42, lr=1e-3, label_smoothing=0.1, warmup_steps=500):
+                epochs=100, seed=42, lr=1e-3, label_smoothing=0.1, warmup_steps=500,
+                rows=6, cols=7):
     """Run A/B test for Connect Four."""
     
     print(f"\n{'='*80}")
     print(f"A/B Test: Connect Four")
     print(f"{'='*80}")
     print(f"Configuration:")
+    print(f"  Board size: {rows}×{cols}")
     print(f"  Training games: {train_games:,}")
     print(f"  Test games: {test_games:,}")
     print(f"  Minimax depth: {minimax_depth}")
@@ -800,8 +802,8 @@ def run_ab_test(train_games=500, test_games=100, minimax_depth=3, R=4, T=4, n_he
     
     # Generate data
     print(f"\nGenerating training data...")
-    train_data = generate_training_data(train_games, depth=minimax_depth, seed=seed)
-    test_data = generate_training_data(test_games, depth=minimax_depth, seed=seed+10000)
+    train_data = generate_training_data(train_games, depth=minimax_depth, seed=seed, rows=rows, cols=cols)
+    test_data = generate_training_data(test_games, depth=minimax_depth, seed=seed+10000, rows=rows, cols=cols)
     
     print(f"  Train positions: {len(train_data):,}")
     print(f"  Test positions: {len(test_data):,}")
@@ -815,6 +817,8 @@ def run_ab_test(train_games=500, test_games=100, minimax_depth=3, R=4, T=4, n_he
     
     # Baseline: single-pass transformer
     baseline = ConnectFourModel(
+        rows=rows,
+        cols=cols,
         d_model=d_model,
         n_heads=n_heads,
         d_ff=d_ff,
@@ -829,6 +833,8 @@ def run_ab_test(train_games=500, test_games=100, minimax_depth=3, R=4, T=4, n_he
     
     # Create PoH-HRM first to get target parameter count
     poh = ConnectFourModel(
+        rows=rows,
+        cols=cols,
         d_model=d_model,
         n_heads=n_heads,
         d_ff=d_ff,
@@ -856,6 +862,8 @@ def run_ab_test(train_games=500, test_games=100, minimax_depth=3, R=4, T=4, n_he
             
             for config in configs:
                 bert_test = BERTConnectFourModel(
+                    rows=rows,
+                    cols=cols,
                     d_model=config['d_model'],
                     n_heads=min(n_heads, config['d_model'] // 64),  # Ensure valid n_heads
                     d_ff=config['d_ff'],
@@ -973,6 +981,9 @@ def main():
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
     parser.add_argument('--save-dir', type=str, default='experiments/results/connect_four_ab',
                         help='Save directory')
+    # Board size options
+    parser.add_argument('--rows', type=int, default=6, help='Board height (default: 6)')
+    parser.add_argument('--cols', type=int, default=7, help='Board width (default: 7)')
     # Enhanced training options
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate (default: 1e-3)')
     parser.add_argument('--label-smoothing', type=float, default=0.1, help='Label smoothing (default: 0.1)')
@@ -1001,7 +1012,9 @@ def main():
         seed=args.seed,
         lr=args.lr,
         label_smoothing=args.label_smoothing,
-        warmup_steps=args.warmup_steps
+        warmup_steps=args.warmup_steps,
+        rows=args.rows,
+        cols=args.cols
     )
     
     # Save results
