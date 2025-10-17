@@ -292,13 +292,45 @@ def count_parameters(model) -> int:
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
-def train_one(model, loader, device, epochs=5, lr=1e-4) -> None:
+def train_one(
+    model,
+    loader,
+    device,
+    epochs: int = 5,
+    lr: float = 1e-4,
+    label_smoothing: float = 0.1,
+    warmup_steps: int = 1000,
+    total_steps: int = None,
+) -> None:
+    """Train with label smoothing and cosine LR with linear warmup (per-step)."""
     model.train()
     optim = torch.optim.AdamW(model.parameters(), lr=lr)
-    crit = nn.CrossEntropyLoss(ignore_index=-1)
+    crit = nn.CrossEntropyLoss(ignore_index=-1, label_smoothing=label_smoothing)
+
+    steps_per_epoch = len(loader)
+    if total_steps is None:
+        total_steps = max(1, epochs * steps_per_epoch)
+
+    def compute_lr(step_idx: int) -> float:
+        # Linear warmup to lr, then cosine decay to 10% of lr
+        if step_idx < warmup_steps:
+            return lr * float(step_idx) / max(1, warmup_steps)
+        rem = max(1, total_steps - warmup_steps)
+        prog = float(step_idx - warmup_steps) / rem
+        min_lr = 0.1 * lr
+        # Cosine from lr -> min_lr
+        cos_decay = 0.5 * (1.0 + math.cos(math.pi * prog))
+        return min_lr + (lr - min_lr) * cos_decay
+
+    global_step = 0
     for ep in range(epochs):
         tot, num = 0.0, 0
         for maze, start, goal, path, path_len in loader:
+            # Update LR per step
+            cur_lr = compute_lr(global_step)
+            for g in optim.param_groups:
+                g["lr"] = cur_lr
+
             maze = maze.to(device)
             start = start.to(device)
             goal = goal.to(device)
@@ -323,7 +355,8 @@ def train_one(model, loader, device, epochs=5, lr=1e-4) -> None:
                 optim.step()
                 tot += float(loss.item())
                 num += 1
-        print(f"  Epoch {ep+1}/{epochs}, Loss: {tot / max(1, num):.4f}")
+            global_step += 1
+        print(f"  Epoch {ep+1}/{epochs}, Loss: {tot / max(1, num):.4f}, LR: {cur_lr:.2e}")
 
 
 def evaluate(model, loader, device, maze_size: int) -> Tuple[float, float]:
@@ -344,7 +377,9 @@ def evaluate(model, loader, device, maze_size: int) -> Tuple[float, float]:
                 for _ in range(maze_size * maze_size):
                     if tuple(cur) == tuple(tgt):
                         break
-                    logits = model(maze[b:b+1], torch.LongTensor([cur]).to(device), goal[b:b+1])
+                    # Faster, non-slow path: avoid creating tensor from list of ndarrays
+                    cur_tensor = torch.tensor(cur, dtype=torch.long, device=device).unsqueeze(0)
+                    logits = model(maze[b:b+1], cur_tensor, goal[b:b+1])
                     idx = cur[0] * maze_size + cur[1]
                     probs = torch.softmax(logits[0, idx], dim=-1).cpu().numpy()
                     candidates = []
@@ -393,6 +428,9 @@ def run_huge_benchmark(
     n_heads: int = HUGE_CONFIG["n_heads"],
     d_ff: int = HUGE_CONFIG["d_ff"],
     depth: int = HUGE_CONFIG["depth"],
+    lr: float = 1e-4,
+    label_smoothing: float = 0.1,
+    warmup_steps: int = 2000,
 ):
     print("\n" + "=" * 80)
     print("HUGE (≈500M) BASELINE vs PoH-HRM BENCHMARK")
@@ -426,7 +464,17 @@ def run_huge_benchmark(
     baseline = BaselineMazeSolver(maze_size, d_model, n_heads, d_ff, depth).to(device)
     base_params = count_parameters(baseline)
     print(f"Parameters: {base_params/1e6:.2f}M")
-    train_one(baseline, train_loader, device, epochs=epochs)
+    total_steps = epochs * len(train_loader)
+    train_one(
+        baseline,
+        train_loader,
+        device,
+        epochs=epochs,
+        lr=lr,
+        label_smoothing=label_smoothing,
+        warmup_steps=warmup_steps,
+        total_steps=total_steps,
+    )
     base_acc, base_opt = evaluate(baseline, test_loader, device, maze_size)
     print(f"Baseline Accuracy: {base_acc:.2f}%, Optimality: {base_opt:.2f}%")
 
@@ -452,7 +500,16 @@ def run_huge_benchmark(
 
     poh = best_poh.to(device)
     print(f"Parameters: {best_params/1e6:.2f}M (depth={best_depth}, {best_params/base_params*100:.1f}% of baseline)")
-    train_one(poh, train_loader, device, epochs=epochs)
+    train_one(
+        poh,
+        train_loader,
+        device,
+        epochs=epochs,
+        lr=lr,
+        label_smoothing=label_smoothing,
+        warmup_steps=warmup_steps,
+        total_steps=total_steps,
+    )
     poh_acc, poh_opt = evaluate(poh, test_loader, device, maze_size)
     print(f"PoH-HRM Accuracy: {poh_acc:.2f}%, Optimality: {poh_opt:.2f}%")
 
@@ -509,6 +566,9 @@ def main():
     ap.add_argument("--n-heads", type=int, default=HUGE_CONFIG["n_heads"])
     ap.add_argument("--d-ff", type=int, default=HUGE_CONFIG["d_ff"])
     ap.add_argument("--depth", type=int, default=HUGE_CONFIG["depth"])
+    ap.add_argument("--lr", type=float, default=1e-4)
+    ap.add_argument("--label-smoothing", type=float, default=0.1)
+    ap.add_argument("--warmup-steps", type=int, default=2000)
     args = ap.parse_args()
 
     run_huge_benchmark(
@@ -526,6 +586,9 @@ def main():
         n_heads=args.n_heads,
         d_ff=args.d_ff,
         depth=args.depth,
+        lr=args.lr,
+        label_smoothing=args.label_smoothing,
+        warmup_steps=args.warmup_steps,
     )
 
 
