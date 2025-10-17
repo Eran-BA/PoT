@@ -162,7 +162,11 @@ def generate_dataset_proper(maze_size: int, n_samples: int, min_path_length: int
         # Get nodes (passable cells) from the maze
         nodes = maze_obj.get_nodes()
         for node in nodes:
-            grid[node.row, node.col] = 0.0  # Mark as passable
+            if isinstance(node, np.ndarray):
+                row, col = int(node[0]), int(node[1])
+            else:
+                row, col = node.row, node.col
+            grid[row, col] = 0.0  # Mark as passable
         
         maze = grid
         
@@ -295,15 +299,16 @@ class BaselineMazeSolver(nn.Module):
         return logits
 
 
-class StatefulHRMRouter:
+class StatefulHRMRouter(nn.Module):
     """Wrapper to make HRMPointerController compatible with PoHBlock's HeadRouter interface."""
     
     def __init__(self, hrm_controller: HRMPointerController, n_heads: int):
+        super().__init__()
         self.hrm = hrm_controller
         self.n_heads = n_heads
         self.state = None
     
-    def __call__(self, x_ctrl: torch.Tensor) -> torch.Tensor:
+    def forward(self, x_ctrl: torch.Tensor) -> torch.Tensor:
         """
         Args:
             x_ctrl: [B, T, d_model]
