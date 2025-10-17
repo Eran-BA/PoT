@@ -75,27 +75,7 @@ else:
 # ============================================================================
 
 MODEL_CONFIGS = {
-    'tiny': {
-        'd_model': 128,
-        'n_heads': 4,
-        'd_ff': 512,
-        'depth': 2,
-        'target_params': 1e6,
-    },
-    'small': {
-        'd_model': 256,
-        'n_heads': 4,
-        'd_ff': 1024,
-        'depth': 3,
-        'target_params': 3e6,
-    },
-    'medium': {
-        'd_model': 512,
-        'n_heads': 8,
-        'd_ff': 2048,
-        'depth': 4,
-        'target_params': 10e6,
-    },
+    # Only testing Large and XL as requested
     'large': {
         'd_model': 768,
         'n_heads': 12,
@@ -640,23 +620,50 @@ def run_scaling_benchmark(
         
         print(f"Accuracy: {baseline_acc:.2f}%, Optimality: {baseline_opt:.2f}%")
         
-        # Test PoH-HRM
+        # Test PoH-HRM with parameter parity
+        # PoH has overhead from HRM controllers, so we reduce depth to match baseline params
         print(f"\n{'-'*80}")
         print(f"Training: PoH-HRM ({size_name}, R={R}, T={T})")
         print(f"{'-'*80}")
         
-        poh = PoHMazeSolver(
-            maze_size=maze_size,
-            d_model=config['d_model'],
-            n_heads=config['n_heads'],
-            d_ff=config['d_ff'],
-            depth=config['depth'],
-            R=R,
-            T=T,
-        ).to(device)
+        # Try different depths to match baseline parameter count
+        best_poh = None
+        best_poh_params = float('inf')
+        best_depth = config['depth']
         
-        poh_params = count_parameters(poh)
-        print(f"Parameters: {poh_params/1e6:.2f}M")
+        for trial_depth in range(config['depth'], 0, -1):
+            trial_poh = PoHMazeSolver(
+                maze_size=maze_size,
+                d_model=config['d_model'],
+                n_heads=config['n_heads'],
+                d_ff=config['d_ff'],
+                depth=trial_depth,
+                R=R,
+                T=T,
+            )
+            trial_params = count_parameters(trial_poh)
+            
+            # Accept if within 10% of baseline or fewer params
+            if trial_params <= baseline_params * 1.1:
+                best_poh = trial_poh
+                best_poh_params = trial_params
+                best_depth = trial_depth
+                break
+            
+            # Keep searching for closer match
+            if abs(trial_params - baseline_params) < abs(best_poh_params - baseline_params):
+                best_poh = trial_poh
+                best_poh_params = trial_params
+                best_depth = trial_depth
+        
+        poh = best_poh.to(device)
+        poh_params = best_poh_params
+        
+        param_ratio = (poh_params / baseline_params) * 100
+        print(f"Parameters: {poh_params/1e6:.2f}M (depth={best_depth}, {param_ratio:.1f}% of baseline)")
+        
+        if poh_params > baseline_params:
+            print(f"⚠️  Warning: PoH has {(poh_params/baseline_params - 1)*100:.1f}% more parameters than baseline")
         
         poh = train_model(poh, train_loader, device, epochs=epochs)
         poh_acc, poh_opt = evaluate_model(poh, test_loader, device, maze_size)
@@ -669,13 +676,15 @@ def run_scaling_benchmark(
             'd_model': config['d_model'],
             'n_heads': config['n_heads'],
             'd_ff': config['d_ff'],
-            'depth': config['depth'],
+            'baseline_depth': config['depth'],
+            'poh_depth': best_depth,
             'baseline_params': baseline_params,
             'baseline_acc': baseline_acc,
             'baseline_opt': baseline_opt,
             'poh_params': poh_params,
             'poh_acc': poh_acc,
             'poh_opt': poh_opt,
+            'param_ratio': param_ratio,
             'poh_advantage_acc': poh_acc - baseline_acc,
             'poh_advantage_opt': poh_opt - baseline_opt,
         })
