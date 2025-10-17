@@ -245,7 +245,8 @@ def train(model, loader, device, epochs=10, lr=1e-3, label_smoothing: float = 0.
                 logits, stats = model.forward_with_stats(maze,start,goal)
             else:
                 logits = model(maze,start,goal); stats=None
-            V = logits.size(-1); max_len = path.size(1); loss=0.0; steps=0
+            V = logits.size(-1); max_len = path.size(1)
+            ce_terms = []
             K = max(1, multi_horizon)
             for i in range(max_len-1):
                 for k in range(1, K+1):
@@ -254,10 +255,10 @@ def train(model, loader, device, epochs=10, lr=1e-3, label_smoothing: float = 0.
                     if not m.any():
                         continue
                     curr, target = path[m,i], path[m,i+k]
-                    curr_logits = logits[m].gather(1, curr.unsqueeze(1).unsqueeze(2).expand(-1,1,V)).squeeze(1)
+                    raw = logits[m].gather(1, curr.unsqueeze(1).unsqueeze(2).expand(-1,1,V)).squeeze(1)
                     if validity_mask and k==1 and size is not None:
-                        # Mask invalid classes: allow only neighbors of current cell
-                        mask_logits = torch.full_like(curr_logits, fill_value=-1e9)
+                        # Numerically stable masking: set invalid to large negative, then log_softmax + NLL
+                        masked = torch.full_like(raw, fill_value=-1e4)
                         for idx_b, cur_idx in enumerate(curr):
                             r = (cur_idx // size).item(); c = (cur_idx % size).item()
                             allowed=[]
@@ -266,15 +267,15 @@ def train(model, loader, device, epochs=10, lr=1e-3, label_smoothing: float = 0.
                                 if 0<=nr<size and 0<=nc<size and maze[m][idx_b, nr, nc] < 0.5:
                                     allowed.append(nr*size+nc)
                             if not allowed:
-                                # allow all passable cells as fallback
                                 pass_cells = (maze[m][idx_b].view(-1) < 0.5).nonzero(as_tuple=False).view(-1)
-                                mask_logits[idx_b, pass_cells] = curr_logits[idx_b, pass_cells]
+                                masked[idx_b, pass_cells] = raw[idx_b, pass_cells]
                             else:
-                                mask_logits[idx_b, allowed] = curr_logits[idx_b, allowed]
-                        curr_logits_use = mask_logits
+                                masked[idx_b, allowed] = raw[idx_b, allowed]
+                        logp = torch.log_softmax(masked, dim=-1)
+                        nll = -logp.gather(1, target.unsqueeze(1)).squeeze(1)
+                        ce_terms.append(nll.mean())
                     else:
-                        curr_logits_use = curr_logits
-                    loss = loss + crit(curr_logits_use, target); steps+=1
+                        ce_terms.append(crit(raw, target))
             # Routing entropy regularization
             if stats is not None and route_ent_weight>0.0:
                 # stats is a list per refinement step; each item packs per-block stats averages
@@ -287,12 +288,13 @@ def train(model, loader, device, epochs=10, lr=1e-3, label_smoothing: float = 0.
                     w = route_ent_weight
                     if ent_anneal:
                         w = w * max(0.0, 1.0 - global_step/float(total_steps))
-                    loss = loss + w * ent
-            if steps>0:
-                loss/=steps; loss.backward(); torch.nn.utils.clip_grad_norm_(model.parameters(),1.0); opt.step()
+                    ce_terms.append(w * ent)
+            if ce_terms:
+                loss = torch.stack(ce_terms).mean()
+                loss.backward(); torch.nn.utils.clip_grad_norm_(model.parameters(),1.0); opt.step()
                 tot+=loss.item(); n+=1
             global_step += 1
-        print(f"  Epoch {ep+1}/{epochs}, Loss: {tot/max(1,n):.4f}, LR: {opt.param_groups[0]['lr']:.2e}")
+        print(f"  Epoch {ep+1}/{epochs}, Loss(mean CE per token): {tot/max(1,n):.4f}, LR: {opt.param_groups[0]['lr']:.2e}")
 
 
 @torch.no_grad()
@@ -367,15 +369,18 @@ def main():
     base_acc, base_opt = evaluate(base, test_loader, device, size)
     print(f"Baseline: Acc={base_acc:.2f}%, Opt={base_opt:.2f}%")
 
-    print("\nPoH-HRM (parity)")
-    # Reduce PoH depth for parity
-    best_poh=None; best_p=float('inf'); best_depth=depth
-    for d in range(depth, 0, -1):
-        trial = PoH(size, d_model, n_heads, d_ff, d, R=args.R, T=args.T, maze_enc=args.maze_enc)
+    print("\nPoH-HRM (parity, depth=4)")
+    # Keep depth=4, reduce width (d_model) for parity
+    best_poh=None; best_p=float('inf'); best_dm=d_model; best_heads=n_heads
+    for trial_heads in [6, 5, 4]:  # Try different head counts
+        trial_dm = trial_heads * 64  # Ensure divisibility (d_model = heads * 64)
+        if trial_dm < d_model * 0.5: continue  # Don't go too small
+        trial_ff = trial_dm * 4
+        trial = PoH(size, trial_dm, trial_heads, trial_ff, depth, R=args.R, T=args.T, maze_enc=args.maze_enc)
         p = count_params(trial)
-        if p <= base_p * 1.10: best_poh=trial; best_p=p; best_depth=d; break
-        if abs(p-base_p) < abs(best_p-base_p): best_poh=trial; best_p=p; best_depth=d
-    poh = best_poh.to(device); print(f"Parameters: {best_p/1e6:.2f}M (depth={best_depth})")
+        if p <= base_p * 1.10: best_poh=trial; best_p=p; best_dm=trial_dm; best_heads=trial_heads; break
+        if abs(p-base_p) < abs(best_p-base_p): best_poh=trial; best_p=p; best_dm=trial_dm; best_heads=trial_heads
+    poh = best_poh.to(device); print(f"Parameters: {best_p/1e6:.2f}M (d_model={best_dm}, n_heads={best_heads}, depth=4)")
     train(poh, train_loader, device, epochs=args.epochs, lr=args.lr, label_smoothing=args.label_smoothing, warmup_steps=args.warmup_steps, multi_horizon=args.multi_horizon, validity_mask=args.validity_mask, route_ent_weight=args.route_ent_weight, ent_anneal=args.ent_anneal, size=size)
     poh_acc, poh_opt = evaluate(poh, test_loader, device, size)
     print(f"PoH-HRM: Acc={poh_acc:.2f}%, Opt={poh_opt:.2f}%")
@@ -385,7 +390,7 @@ def main():
         json.dump({
             'config': {'size':size, 'train':args.train, 'test':args.test, 'epochs':args.epochs, 'R':args.R, 'T':args.T},
             'baseline': {'params': int(base_p), 'acc': base_acc, 'opt': base_opt},
-            'poh': {'params': int(best_p), 'depth': best_depth, 'acc': poh_acc, 'opt': poh_opt},
+            'poh': {'params': int(best_p), 'd_model': best_dm, 'n_heads': best_heads, 'depth': 4, 'acc': poh_acc, 'opt': poh_opt},
         }, f, indent=2)
     print(f"\n✓ Results saved to {args.output}/results.json")
 

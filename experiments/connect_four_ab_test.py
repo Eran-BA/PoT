@@ -631,15 +631,29 @@ class BERTConnectFourModel(nn.Module):
 
 def train_and_evaluate(
     model, model_name, train_data, test_data,
-    epochs=100, lr=1e-3, device='cpu'
+    epochs=100, lr=1e-3, device='cpu',
+    label_smoothing=0.0, warmup_steps=500
 ):
-    """Train and evaluate a Connect Four model."""
+    """Train and evaluate a Connect Four model with enhanced training options."""
     print(f"\nTraining {model_name}...")
     print(f"  Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
     
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    policy_criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    policy_criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
     value_criterion = nn.MSELoss()
+    
+    # Cosine LR schedule with warmup
+    steps_per_epoch = max(1, len(train_data) // 32)
+    total_steps = epochs * steps_per_epoch
+    def lr_at(step):
+        if step < warmup_steps:
+            return lr * step / max(1, warmup_steps)
+        rem = max(1, total_steps - warmup_steps)
+        prog = (step - warmup_steps) / rem
+        min_lr = 0.1 * lr
+        return min_lr + (lr - min_lr) * 0.5 * (1 + np.cos(np.pi * prog))
+    
+    global_step = 0
     
     start_time = time.time()
     best_accuracy = 0
@@ -654,6 +668,11 @@ def train_and_evaluate(
         
         # Training
         for batch_idx in range(0, len(train_data), 32):
+            # Update learning rate
+            cur_lr = lr_at(global_step)
+            for g in optimizer.param_groups:
+                g['lr'] = cur_lr
+            
             batch = train_data[batch_idx:batch_idx + 32]
             
             # Prepare batch
@@ -679,6 +698,8 @@ def train_and_evaluate(
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
+            
+            global_step += 1
             
             total_policy_loss += policy_loss.item()
             total_value_loss += value_loss.item()
@@ -758,7 +779,7 @@ def train_and_evaluate(
 # ========== Main A/B Test ==========
 
 def run_ab_test(train_games=500, test_games=100, minimax_depth=3, R=4, T=4, n_heads=4,
-                epochs=100, seed=42):
+                epochs=100, seed=42, lr=1e-3, label_smoothing=0.1, warmup_steps=500):
     """Run A/B test for Connect Four."""
     
     print(f"\n{'='*80}")
@@ -863,20 +884,23 @@ def run_ab_test(train_games=500, test_games=100, minimax_depth=3, R=4, T=4, n_he
     # Train baseline
     baseline_results = train_and_evaluate(
         baseline, "Baseline", train_data, test_data,
-        epochs=epochs, device=device
+        epochs=epochs, device=device, lr=lr,
+        label_smoothing=label_smoothing, warmup_steps=warmup_steps
     )
     
     # Train BERT (if available)
     if bert is not None:
         bert_results = train_and_evaluate(
             bert, "BERT", train_data, test_data,
-            epochs=epochs, device=device
+            epochs=epochs, device=device, lr=lr,
+            label_smoothing=label_smoothing, warmup_steps=warmup_steps
         )
     
     # Train PoH
     poh_results = train_and_evaluate(
         poh, f"PoH-HRM (R={R}, T={T})", train_data, test_data,
-        epochs=epochs, device=device
+        epochs=epochs, device=device, lr=lr,
+        label_smoothing=label_smoothing, warmup_steps=warmup_steps
     )
     
     # Results
@@ -949,6 +973,10 @@ def main():
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
     parser.add_argument('--save-dir', type=str, default='experiments/results/connect_four_ab',
                         help='Save directory')
+    # Enhanced training options
+    parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate (default: 1e-3)')
+    parser.add_argument('--label-smoothing', type=float, default=0.1, help='Label smoothing (default: 0.1)')
+    parser.add_argument('--warmup-steps', type=int, default=500, help='LR warmup steps (default: 500)')
     
     args = parser.parse_args()
     
@@ -970,7 +998,10 @@ def main():
         T=args.T,
         n_heads=args.n_heads,
         epochs=args.epochs,
-        seed=args.seed
+        seed=args.seed,
+        lr=args.lr,
+        label_smoothing=args.label_smoothing,
+        warmup_steps=args.warmup_steps
     )
     
     # Save results

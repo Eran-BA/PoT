@@ -676,9 +676,16 @@ def run_scaling_benchmark(
     R=4,
     T=4,
     seed=42,
-    output_dir='experiments/results/parameter_scaling'
+    output_dir='experiments/results/parameter_scaling',
+    lr=1e-3,
+    label_smoothing=0.1,
+    warmup_steps=2000,
+    multi_horizon=3,
+    validity_mask=False,
+    route_ent_weight=5e-4,
+    ent_anneal=False,
 ):
-    """Run parameter scaling benchmark."""
+    """Run parameter scaling benchmark with advanced training options."""
     
     if torch.cuda.is_available():
         device = torch.device('cuda')
@@ -739,29 +746,44 @@ def run_scaling_benchmark(
         baseline_params = count_parameters(baseline)
         print(f"Parameters: {baseline_params/1e6:.2f}M")
         
-        baseline = train_model(baseline, train_loader, device, epochs=epochs)
+        baseline = train_model(
+            baseline, train_loader, device, epochs=epochs, lr=lr,
+            label_smoothing=label_smoothing, warmup_steps=warmup_steps,
+            multi_horizon=multi_horizon, validity_mask=validity_mask,
+            maze_size=maze_size
+        )
         baseline_acc, baseline_opt = evaluate_model(baseline, test_loader, device, maze_size)
         
         print(f"Accuracy: {baseline_acc:.2f}%, Optimality: {baseline_opt:.2f}%")
         
         # Test PoH-HRM with parameter parity
-        # PoH has overhead from HRM controllers, so we reduce depth to match baseline params
+        # Keep depth constant, reduce width (d_model) for parameter parity
         print(f"\n{'-'*80}")
-        print(f"Training: PoH-HRM ({size_name}, R={R}, T={T})")
+        print(f"Training: PoH-HRM ({size_name}, R={R}, T={T}, depth={config['depth']})")
         print(f"{'-'*80}")
         
-        # Try different depths to match baseline parameter count
+        # Keep depth, reduce width to match baseline parameter count
         best_poh = None
         best_poh_params = float('inf')
-        best_depth = config['depth']
+        best_dm = config['d_model']
+        best_heads = config['n_heads']
         
-        for trial_depth in range(config['depth'], 0, -1):
+        # Try reducing d_model while maintaining divisibility by n_heads
+        for scale in [1.0, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7]:
+            trial_dm = int(config['d_model'] * scale)
+            # Ensure d_model is divisible by n_heads
+            trial_heads = config['n_heads']
+            trial_dm = (trial_dm // trial_heads) * trial_heads
+            if trial_dm < 64:
+                continue
+            trial_ff = int(config['d_ff'] * scale)
+            
             trial_poh = PoHMazeSolver(
                 maze_size=maze_size,
-                d_model=config['d_model'],
-                n_heads=config['n_heads'],
-                d_ff=config['d_ff'],
-                depth=trial_depth,
+                d_model=trial_dm,
+                n_heads=trial_heads,
+                d_ff=trial_ff,
+                depth=config['depth'],  # Keep original depth
                 R=R,
                 T=T,
                 use_maze_encoder=True,
@@ -772,25 +794,33 @@ def run_scaling_benchmark(
             if trial_params <= baseline_params * 1.1:
                 best_poh = trial_poh
                 best_poh_params = trial_params
-                best_depth = trial_depth
+                best_dm = trial_dm
+                best_heads = trial_heads
                 break
             
             # Keep searching for closer match
             if abs(trial_params - baseline_params) < abs(best_poh_params - baseline_params):
                 best_poh = trial_poh
                 best_poh_params = trial_params
-                best_depth = trial_depth
+                best_dm = trial_dm
+                best_heads = trial_heads
         
         poh = best_poh.to(device)
         poh_params = best_poh_params
         
         param_ratio = (poh_params / baseline_params) * 100
-        print(f"Parameters: {poh_params/1e6:.2f}M (depth={best_depth}, {param_ratio:.1f}% of baseline)")
+        print(f"Parameters: {poh_params/1e6:.2f}M (d_model={best_dm}, n_heads={best_heads}, depth={config['depth']}, {param_ratio:.1f}% of baseline)")
         
         if poh_params > baseline_params:
             print(f"⚠️  Warning: PoH has {(poh_params/baseline_params - 1)*100:.1f}% more parameters than baseline")
         
-        poh = train_model(poh, train_loader, device, epochs=epochs)
+        poh = train_model(
+            poh, train_loader, device, epochs=epochs, lr=lr,
+            label_smoothing=label_smoothing, warmup_steps=warmup_steps,
+            multi_horizon=multi_horizon, validity_mask=validity_mask,
+            route_ent_weight=route_ent_weight, ent_anneal=ent_anneal,
+            maze_size=maze_size
+        )
         poh_acc, poh_opt = evaluate_model(poh, test_loader, device, maze_size)
         
         print(f"Accuracy: {poh_acc:.2f}%, Optimality: {poh_opt:.2f}%")
@@ -798,11 +828,13 @@ def run_scaling_benchmark(
         # Store results
         results.append({
             'size': size_name,
-            'd_model': config['d_model'],
-            'n_heads': config['n_heads'],
-            'd_ff': config['d_ff'],
+            'baseline_d_model': config['d_model'],
+            'baseline_n_heads': config['n_heads'],
+            'baseline_d_ff': config['d_ff'],
             'baseline_depth': config['depth'],
-            'poh_depth': best_depth,
+            'poh_d_model': best_dm,
+            'poh_n_heads': best_heads,
+            'poh_depth': config['depth'],
             'baseline_params': baseline_params,
             'baseline_acc': baseline_acc,
             'baseline_opt': baseline_opt,
@@ -872,6 +904,14 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=42, help='Random seed (default: 42)')
     parser.add_argument('--output', type=str, default='experiments/results/parameter_scaling',
                         help='Output directory (default: experiments/results/parameter_scaling)')
+    # Advanced training options
+    parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate (default: 1e-3)')
+    parser.add_argument('--label-smoothing', type=float, default=0.1, help='Label smoothing (default: 0.1)')
+    parser.add_argument('--warmup-steps', type=int, default=2000, help='LR warmup steps (default: 2000)')
+    parser.add_argument('--multi-horizon', type=int, default=3, help='Multi-step supervision horizon (default: 3)')
+    parser.add_argument('--validity-mask', action='store_true', help='Enable validity masking')
+    parser.add_argument('--route-ent-weight', type=float, default=5e-4, help='PoH routing entropy weight (default: 5e-4)')
+    parser.add_argument('--ent-anneal', action='store_true', help='Anneal entropy weight over training')
     
     args = parser.parse_args()
     
@@ -885,5 +925,12 @@ if __name__ == '__main__':
         T=args.T,
         seed=args.seed,
         output_dir=args.output,
+        lr=args.lr,
+        label_smoothing=args.label_smoothing,
+        warmup_steps=args.warmup_steps,
+        multi_horizon=args.multi_horizon,
+        validity_mask=args.validity_mask,
+        route_ent_weight=args.route_ent_weight,
+        ent_anneal=args.ent_anneal,
     )
 
