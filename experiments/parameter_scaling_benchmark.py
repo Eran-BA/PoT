@@ -225,17 +225,27 @@ class BaselineMazeSolver(nn.Module):
         n_heads: int = 4,
         d_ff: int = 1024,
         num_layers: int = 4,
-        dropout: float = 0.1
+        dropout: float = 0.1,
+        use_maze_encoder: bool = False,
     ):
         super().__init__()
         self.maze_size = maze_size
         self.d_model = d_model
+        self.use_maze_encoder = use_maze_encoder
         
         # Embeddings
         self.cell_embed = nn.Linear(1, d_model)
         self.pos_embed = nn.Embedding(maze_size * maze_size, d_model)
         self.start_embed = nn.Embedding(2, d_model)
         self.goal_embed = nn.Embedding(2, d_model)
+        
+        if self.use_maze_encoder:
+            self.maze_cnn = nn.Sequential(
+                nn.Conv2d(1, 16, 3, padding=1), nn.ReLU(inplace=True),
+                nn.Conv2d(16, 32, 3, padding=1), nn.ReLU(inplace=True),
+                nn.AdaptiveAvgPool2d((4, 4))
+            )
+            self.maze_proj = nn.Linear(32 * 4 * 4, d_model)
         
         # Transformer layers (stacked)
         encoder_layer = nn.TransformerEncoderLayer(
@@ -262,6 +272,13 @@ class BaselineMazeSolver(nn.Module):
         
         pos = torch.arange(N, device=maze.device).unsqueeze(0).expand(B, -1)
         h = h + self.pos_embed(pos)
+        
+        if getattr(self, 'use_maze_encoder', False):
+            g = maze.unsqueeze(1)
+            g = self.maze_cnn(g)
+            g = torch.flatten(g, start_dim=1)
+            g = self.maze_proj(g)
+            h = h + g.unsqueeze(1)
         
         start_idx = start[:, 0] * self.maze_size + start[:, 1]
         goal_idx = goal[:, 0] * self.maze_size + goal[:, 1]
@@ -335,19 +352,29 @@ class PoHMazeSolver(nn.Module):
         depth: int = 4,
         R: int = 4,
         T: int = 4,
-        dropout: float = 0.1
+        dropout: float = 0.1,
+        use_maze_encoder: bool = False,
     ):
         super().__init__()
         self.maze_size = maze_size
         self.d_model = d_model
         self.R = R
         self.T = T
+        self.use_maze_encoder = use_maze_encoder
         
         # Embeddings (same as baseline)
         self.cell_embed = nn.Linear(1, d_model)
         self.pos_embed = nn.Embedding(maze_size * maze_size, d_model)
         self.start_embed = nn.Embedding(2, d_model)
         self.goal_embed = nn.Embedding(2, d_model)
+        
+        if self.use_maze_encoder:
+            self.maze_cnn = nn.Sequential(
+                nn.Conv2d(1, 16, 3, padding=1), nn.ReLU(inplace=True),
+                nn.Conv2d(16, 32, 3, padding=1), nn.ReLU(inplace=True),
+                nn.AdaptiveAvgPool2d((4, 4))
+            )
+            self.maze_proj = nn.Linear(32 * 4 * 4, d_model)
         
         # PoH Stack with HRM controller
         cfg = PoHConfig(
@@ -410,6 +437,31 @@ class PoHMazeSolver(nn.Module):
         logits = self.decoder(h)
         return logits
 
+    def forward_with_stats(self, maze, start, goal):
+        B = maze.shape[0]
+        N = self.maze_size * self.maze_size
+        maze_flat = maze.view(B, N, 1)
+        h = self.cell_embed(maze_flat)
+        pos = torch.arange(N, device=maze.device).unsqueeze(0).expand(B, -1)
+        h = h + self.pos_embed(pos)
+        if getattr(self, 'use_maze_encoder', False):
+            g = maze.unsqueeze(1)
+            g = self.maze_cnn(g)
+            g = torch.flatten(g, start_dim=1)
+            g = self.maze_proj(g)
+            h = h + g.unsqueeze(1)
+        start_idx = start[:, 0] * self.maze_size + start[:, 1]
+        goal_idx = goal[:, 0] * self.maze_size + goal[:, 1]
+        start_marker = torch.zeros(B, N, device=maze.device, dtype=torch.long)
+        start_marker.scatter_(1, start_idx.unsqueeze(1), 1)
+        h = h + self.start_embed(start_marker)
+        goal_marker = torch.zeros(B, N, device=maze.device, dtype=torch.long)
+        goal_marker.scatter_(1, goal_idx.unsqueeze(1), 1)
+        h = h + self.goal_embed(goal_marker)
+        h, stats = self.refiner(h, return_inner_stats=True)
+        logits = self.decoder(h)
+        return logits, stats
+
 # ============================================================================
 # Training and Evaluation
 # ============================================================================
@@ -419,15 +471,41 @@ def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
-def train_model(model, train_loader, device, epochs=30, lr=1e-3):
-    """Train a model on maze solving."""
+def train_model(
+    model,
+    train_loader,
+    device,
+    epochs=30,
+    lr=1e-3,
+    label_smoothing: float = 0.0,
+    warmup_steps: int = 1000,
+    multi_horizon: int = 1,
+    validity_mask: bool = False,
+    route_ent_weight: float = 0.0,
+    ent_anneal: bool = False,
+    maze_size: int = None,
+):
+    """Train a model on maze solving with advanced options."""
     model.train()
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-    criterion = nn.CrossEntropyLoss(ignore_index=-1)
+    criterion = nn.CrossEntropyLoss(ignore_index=-1, label_smoothing=label_smoothing)
+    steps_per_epoch = len(train_loader)
+    total_steps = max(1, epochs * steps_per_epoch)
+    def lr_at(step):
+        if step < warmup_steps:
+            return lr * step / max(1, warmup_steps)
+        rem = max(1, total_steps - warmup_steps)
+        prog = (step - warmup_steps) / rem
+        min_lr = 0.1 * lr
+        return min_lr + (lr - min_lr) * 0.5 * (1 + np.cos(np.pi * prog))
+    global_step = 0
     
     for epoch in range(epochs):
         total_loss = 0
         for maze, start, goal, path, path_len in train_loader:
+            cur_lr = lr_at(global_step)
+            for g in optimizer.param_groups:
+                g['lr'] = cur_lr
             maze = maze.to(device)
             start = start.to(device)
             goal = goal.to(device)
@@ -435,22 +513,58 @@ def train_model(model, train_loader, device, epochs=30, lr=1e-3):
             
             optimizer.zero_grad()
             
-            logits = model(maze, start, goal)
+            if route_ent_weight > 0.0 and hasattr(model, 'forward_with_stats'):
+                logits, stats = model.forward_with_stats(maze, start, goal)
+            else:
+                logits = model(maze, start, goal)
+                stats = None
             
-            # Compute loss over valid path positions
             B, N, V = logits.shape
             max_len = path.shape[1]
-            
-            loss = 0
+            loss = 0.0
             count = 0
+            K = max(1, multi_horizon)
             for i in range(max_len - 1):
-                mask = (path[:, i] != -1) & (path[:, i + 1] != -1)
-                if mask.any():
+                for k in range(1, K + 1):
+                    if i + k >= max_len:
+                        break
+                    mask = (path[:, i] != -1) & (path[:, i + k] != -1)
+                    if not mask.any():
+                        continue
                     curr_pos = path[mask, i]
-                    next_pos = path[mask, i + 1]
+                    target_pos = path[mask, i + k]
                     curr_logits = logits[mask].gather(1, curr_pos.unsqueeze(1).unsqueeze(2).expand(-1, 1, V)).squeeze(1)
-                    loss += criterion(curr_logits, next_pos)
+                    if validity_mask and k == 1 and maze_size is not None:
+                        masked_logits = torch.full_like(curr_logits, fill_value=-1e9)
+                        for bi, cur_idx in enumerate(curr_pos):
+                            r = (cur_idx // maze_size).item(); c = (cur_idx % maze_size).item()
+                            allowed = []
+                            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                                nr, nc = r + dr, c + dc
+                                if 0 <= nr < maze_size and 0 <= nc < maze_size and maze[mask][bi, nr, nc] < 0.5:
+                                    allowed.append(nr * maze_size + nc)
+                            if not allowed:
+                                pass_cells = (maze[mask][bi].view(-1) < 0.5).nonzero(as_tuple=False).view(-1)
+                                masked_logits[bi, pass_cells] = curr_logits[bi, pass_cells]
+                            else:
+                                masked_logits[bi, allowed] = curr_logits[bi, allowed]
+                        use_logits = masked_logits
+                    else:
+                        use_logits = curr_logits
+                    loss = loss + criterion(use_logits, target_pos)
                     count += 1
+            
+            if stats is not None and route_ent_weight > 0.0:
+                ent_vals = []
+                for s in stats:
+                    if 'route_entropy_mean' in s:
+                        ent_vals.append(float(s['route_entropy_mean']))
+                if ent_vals:
+                    ent = torch.tensor(np.mean(ent_vals), dtype=torch.float32, device=device)
+                    w = route_ent_weight
+                    if ent_anneal:
+                        w = w * max(0.0, 1.0 - global_step / float(total_steps))
+                    loss = loss + w * ent
             
             if count > 0:
                 loss = loss / count
@@ -458,9 +572,10 @@ def train_model(model, train_loader, device, epochs=30, lr=1e-3):
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 total_loss += loss.item()
+            global_step += 1
         
         if (epoch + 1) % 10 == 0:
-            print(f"Epoch {epoch+1}/{epochs}, Loss: {total_loss/len(train_loader):.4f}")
+            print(f"Epoch {epoch+1}/{epochs}, Loss: {total_loss/len(train_loader):.4f}, LR: {cur_lr:.2e}")
     
     return model
 
@@ -618,6 +733,7 @@ def run_scaling_benchmark(
             n_heads=config['n_heads'],
             d_ff=config['d_ff'],
             num_layers=config['depth'],
+            use_maze_encoder=True,
         ).to(device)
         
         baseline_params = count_parameters(baseline)
@@ -648,6 +764,7 @@ def run_scaling_benchmark(
                 depth=trial_depth,
                 R=R,
                 T=T,
+                use_maze_encoder=True,
             )
             trial_params = count_parameters(trial_poh)
             
