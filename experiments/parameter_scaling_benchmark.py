@@ -63,10 +63,13 @@ from src.pot.core.hrm_controller import HRMPointerController, HRMState
 
 print("✓ Successfully imported PoT modules")
 
-# Check GPU
+# Check GPU (CUDA → MPS → CPU)
 if torch.cuda.is_available():
-    print(f"🚀 GPU detected: {torch.cuda.get_device_name(0)}")
+    print(f"🚀 CUDA GPU detected: {torch.cuda.get_device_name(0)}")
     print(f"   Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    print("🚀 Apple Silicon GPU (MPS) detected")
+    print("   Using Metal Performance Shaders for acceleration")
 else:
     print("⚠️  No GPU detected, using CPU")
 
@@ -562,7 +565,12 @@ def run_scaling_benchmark(
 ):
     """Run parameter scaling benchmark."""
     
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = torch.device('mps')
+    else:
+        device = torch.device('cpu')
     
     print("\n" + "="*80)
     print("PARAMETER SCALING BENCHMARK")
