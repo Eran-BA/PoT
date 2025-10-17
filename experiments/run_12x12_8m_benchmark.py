@@ -41,7 +41,10 @@ from src.pot.modules import PoHConfig, PoHStack, IterRefiner
 from src.pot.core.hrm_controller import HRMPointerController, HRMState
 
 
-def device_select():
+def device_select(force_cpu: bool = False):
+    if force_cpu:
+        print("⚙️  Forcing CPU as requested")
+        return torch.device('cpu')
     if torch.cuda.is_available():
         print(f"🚀 CUDA GPU detected: {torch.cuda.get_device_name(0)}")
         return torch.device('cuda')
@@ -104,20 +107,34 @@ class MazeDS(Dataset):
 
 
 class Baseline(nn.Module):
-    def __init__(self, size, d_model, n_heads, d_ff, depth, dropout=0.1):
+    def __init__(self, size, d_model, n_heads, d_ff, depth, dropout=0.1, maze_enc: bool = False):
         super().__init__()
         self.size = size
+        self.use_maze_enc = maze_enc
         self.cell = nn.Linear(1, d_model)
         self.pos = nn.Embedding(size*size, d_model)
         self.se = nn.Embedding(2, d_model); self.ge = nn.Embedding(2, d_model)
         enc = nn.TransformerEncoderLayer(d_model, n_heads, d_ff, dropout, batch_first=True)
         self.tr = nn.TransformerEncoder(enc, num_layers=depth)
         self.out = nn.Linear(d_model, size*size)
+        if self.use_maze_enc:
+            self.cnn = nn.Sequential(
+                nn.Conv2d(1, 16, 3, padding=1), nn.ReLU(inplace=True),
+                nn.Conv2d(16, 32, 3, padding=1), nn.ReLU(inplace=True),
+                nn.AdaptiveAvgPool2d((4,4))
+            )
+            self.cnn_proj = nn.Linear(32*4*4, d_model)
     def forward(self, maze, start, goal):
         B = maze.size(0); N = self.size*self.size
         x = self.cell(maze.view(B, N, 1))
         pos = torch.arange(N, device=maze.device).unsqueeze(0).expand(B, -1)
         x = x + self.pos(pos)
+        if self.use_maze_enc:
+            g = maze.unsqueeze(1)
+            g = self.cnn(g)
+            g = torch.flatten(g, start_dim=1)
+            g = self.cnn_proj(g)  # (B, d_model)
+            x = x + g.unsqueeze(1)
         s_idx = start[:,0]*self.size + start[:,1]
         g_idx = goal[:,0]*self.size + goal[:,1]
         s_m = torch.zeros(B, N, device=maze.device, dtype=torch.long); s_m.scatter_(1, s_idx.unsqueeze(1), 1)
@@ -141,8 +158,9 @@ class StatefulHRMRouter(nn.Module):
 
 
 class PoH(nn.Module):
-    def __init__(self, size, d_model, n_heads, d_ff, depth, R, T, dropout=0.1):
+    def __init__(self, size, d_model, n_heads, d_ff, depth, R, T, dropout=0.1, maze_enc: bool = False):
         super().__init__(); self.size=size
+        self.use_maze_enc = maze_enc
         self.cell = nn.Linear(1, d_model)
         self.pos = nn.Embedding(size*size, d_model)
         self.se = nn.Embedding(2, d_model); self.ge = nn.Embedding(2, d_model)
@@ -153,11 +171,24 @@ class PoH(nn.Module):
                 blk.router = StatefulHRMRouter(HRMPointerController(d_model=d_model, n_heads=n_heads, d_ctrl=d_model//2, T=T), n_heads)
         self.ref = IterRefiner(stack, max_inner_iters=R, outer_residual=True, rezero_init=True)
         self.out = nn.Linear(d_model, size*size)
+        if self.use_maze_enc:
+            self.cnn = nn.Sequential(
+                nn.Conv2d(1, 16, 3, padding=1), nn.ReLU(inplace=True),
+                nn.Conv2d(16, 32, 3, padding=1), nn.ReLU(inplace=True),
+                nn.AdaptiveAvgPool2d((4,4))
+            )
+            self.cnn_proj = nn.Linear(32*4*4, d_model)
     def forward(self, maze, start, goal):
         B = maze.size(0); N = self.size*self.size
         x = self.cell(maze.view(B,N,1))
         pos = torch.arange(N, device=maze.device).unsqueeze(0).expand(B,-1)
         x = x + self.pos(pos)
+        if self.use_maze_enc:
+            g = maze.unsqueeze(1)
+            g = self.cnn(g)
+            g = torch.flatten(g, start_dim=1)
+            g = self.cnn_proj(g)
+            x = x + g.unsqueeze(1)
         s_idx = start[:,0]*self.size + start[:,1]
         g_idx = goal[:,0]*self.size + goal[:,1]
         s_m = torch.zeros(B, N, device=maze.device, dtype=torch.long); s_m.scatter_(1, s_idx.unsqueeze(1), 1)
@@ -165,31 +196,103 @@ class PoH(nn.Module):
         x = x + self.se(s_m) + self.ge(g_m)
         h,_ = self.ref(x)
         return self.out(h)
+    def forward_with_stats(self, maze, start, goal):
+        B = maze.size(0); N = self.size*self.size
+        x = self.cell(maze.view(B,N,1))
+        pos = torch.arange(N, device=maze.device).unsqueeze(0).expand(B,-1)
+        x = x + self.pos(pos)
+        if self.use_maze_enc:
+            g = maze.unsqueeze(1)
+            g = self.cnn(g)
+            g = torch.flatten(g, start_dim=1)
+            g = self.cnn_proj(g)
+            x = x + g.unsqueeze(1)
+        s_idx = start[:,0]*self.size + start[:,1]
+        g_idx = goal[:,0]*self.size + goal[:,1]
+        s_m = torch.zeros(B, N, device=maze.device, dtype=torch.long); s_m.scatter_(1, s_idx.unsqueeze(1), 1)
+        g_m = torch.zeros(B, N, device=maze.device, dtype=torch.long); g_m.scatter_(1, g_idx.unsqueeze(1), 1)
+        x = x + self.se(s_m) + self.ge(g_m)
+        h, stats = self.ref(x, return_inner_stats=True)
+        return self.out(h), stats
 
 
 def count_params(m):
     return sum(p.numel() for p in m.parameters() if p.requires_grad)
 
 
-def train(model, loader, device, epochs=10, lr=1e-3):
+def train(model, loader, device, epochs=10, lr=1e-3, label_smoothing: float = 0.0, warmup_steps: int = 500, multi_horizon: int = 1, validity_mask: bool = False, route_ent_weight: float = 0.0, ent_anneal: bool = False, size: int = None):
     model.train(); opt = torch.optim.AdamW(model.parameters(), lr=lr)
-    crit = nn.CrossEntropyLoss(ignore_index=-1)
+    crit = nn.CrossEntropyLoss(ignore_index=-1, label_smoothing=label_smoothing)
+    steps_per_epoch = len(loader)
+    total_steps = max(1, epochs * steps_per_epoch)
+    def lr_at(step):
+        if step < warmup_steps:
+            return lr * step / max(1, warmup_steps)
+        rem = max(1, total_steps - warmup_steps)
+        prog = (step - warmup_steps) / rem
+        min_lr = 0.1 * lr
+        return min_lr + (lr - min_lr) * 0.5 * (1 + np.cos(np.pi * prog))
+    global_step = 0
     for ep in range(epochs):
         tot = 0.0; n=0
         for maze,start,goal,path,_ in loader:
+            for g in opt.param_groups:
+                g['lr'] = lr_at(global_step)
             maze,start,goal,path = maze.to(device),start.to(device),goal.to(device),path.to(device)
-            opt.zero_grad(); logits = model(maze,start,goal)
+            opt.zero_grad()
+            # Forward (optionally with stats for PoH)
+            if route_ent_weight>0.0 and hasattr(model, 'forward_with_stats'):
+                logits, stats = model.forward_with_stats(maze,start,goal)
+            else:
+                logits = model(maze,start,goal); stats=None
             V = logits.size(-1); max_len = path.size(1); loss=0.0; steps=0
+            K = max(1, multi_horizon)
             for i in range(max_len-1):
-                m = (path[:,i]!=-1) & (path[:,i+1]!=-1)
-                if m.any():
-                    curr,nextt = path[m,i], path[m,i+1]
+                for k in range(1, K+1):
+                    if i+k >= max_len: break
+                    m = (path[:,i]!=-1) & (path[:,i+k]!=-1)
+                    if not m.any():
+                        continue
+                    curr, target = path[m,i], path[m,i+k]
                     curr_logits = logits[m].gather(1, curr.unsqueeze(1).unsqueeze(2).expand(-1,1,V)).squeeze(1)
-                    loss += crit(curr_logits, nextt); steps+=1
+                    if validity_mask and k==1 and size is not None:
+                        # Mask invalid classes: allow only neighbors of current cell
+                        mask_logits = torch.full_like(curr_logits, fill_value=-1e9)
+                        for idx_b, cur_idx in enumerate(curr):
+                            r = (cur_idx // size).item(); c = (cur_idx % size).item()
+                            allowed=[]
+                            for dr,dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                                nr, nc = r+dr, c+dc
+                                if 0<=nr<size and 0<=nc<size and maze[m][idx_b, nr, nc] < 0.5:
+                                    allowed.append(nr*size+nc)
+                            if not allowed:
+                                # allow all passable cells as fallback
+                                pass_cells = (maze[m][idx_b].view(-1) < 0.5).nonzero(as_tuple=False).view(-1)
+                                mask_logits[idx_b, pass_cells] = curr_logits[idx_b, pass_cells]
+                            else:
+                                mask_logits[idx_b, allowed] = curr_logits[idx_b, allowed]
+                        curr_logits_use = mask_logits
+                    else:
+                        curr_logits_use = curr_logits
+                    loss = loss + crit(curr_logits_use, target); steps+=1
+            # Routing entropy regularization
+            if stats is not None and route_ent_weight>0.0:
+                # stats is a list per refinement step; each item packs per-block stats averages
+                ent_vals=[]
+                for s in stats:
+                    if 'route_entropy_mean' in s:
+                        ent_vals.append(float(s['route_entropy_mean']))
+                if ent_vals:
+                    ent = torch.tensor(np.mean(ent_vals), dtype=torch.float32, device=device)
+                    w = route_ent_weight
+                    if ent_anneal:
+                        w = w * max(0.0, 1.0 - global_step/float(total_steps))
+                    loss = loss + w * ent
             if steps>0:
                 loss/=steps; loss.backward(); torch.nn.utils.clip_grad_norm_(model.parameters(),1.0); opt.step()
                 tot+=loss.item(); n+=1
-        print(f"  Epoch {ep+1}/{epochs}, Loss: {tot/max(1,n):.4f}")
+            global_step += 1
+        print(f"  Epoch {ep+1}/{epochs}, Loss: {tot/max(1,n):.4f}, LR: {opt.param_groups[0]['lr']:.2e}")
 
 
 @torch.no_grad()
@@ -234,9 +337,19 @@ def main():
     ap.add_argument('--T', type=int, default=4)
     ap.add_argument('--seed', type=int, default=42)
     ap.add_argument('--output', type=str, default='experiments/results/benchmark_12x12_8m')
+    ap.add_argument('--cpu', action='store_true', help='Force CPU device')
+    # Optimization & training flags
+    ap.add_argument('--lr', type=float, default=1e-3)
+    ap.add_argument('--label-smoothing', type=float, default=0.0)
+    ap.add_argument('--warmup-steps', type=int, default=500)
+    ap.add_argument('--multi-horizon', type=int, default=1)
+    ap.add_argument('--maze-enc', action='store_true')
+    ap.add_argument('--validity-mask', action='store_true')
+    ap.add_argument('--route-ent-weight', type=float, default=0.0)
+    ap.add_argument('--ent-anneal', action='store_true')
     args = ap.parse_args()
 
-    device = device_select()
+    device = device_select(force_cpu=args.cpu)
     size=12; min_path=int(size*size*0.35)
     print("Generating training data..."); train_data = generate_dataset(size, args.train, min_path, args.seed)
     print("Generating test data..."); test_data = generate_dataset(size, args.test, min_path, args.seed+10000)
@@ -248,9 +361,9 @@ def main():
     d_model=384; n_heads=6; d_ff=1536; depth=4
 
     print("\nBaseline (≈8M params)")
-    base = Baseline(size, d_model, n_heads, d_ff, depth).to(device)
+    base = Baseline(size, d_model, n_heads, d_ff, depth, maze_enc=args.maze_enc).to(device)
     base_p = count_params(base); print(f"Parameters: {base_p/1e6:.2f}M")
-    train(base, train_loader, device, epochs=args.epochs, lr=1e-3)
+    train(base, train_loader, device, epochs=args.epochs, lr=args.lr, label_smoothing=args.label_smoothing, warmup_steps=args.warmup_steps, multi_horizon=args.multi_horizon, validity_mask=args.validity_mask, size=size)
     base_acc, base_opt = evaluate(base, test_loader, device, size)
     print(f"Baseline: Acc={base_acc:.2f}%, Opt={base_opt:.2f}%")
 
@@ -258,12 +371,12 @@ def main():
     # Reduce PoH depth for parity
     best_poh=None; best_p=float('inf'); best_depth=depth
     for d in range(depth, 0, -1):
-        trial = PoH(size, d_model, n_heads, d_ff, d, R=args.R, T=args.T)
+        trial = PoH(size, d_model, n_heads, d_ff, d, R=args.R, T=args.T, maze_enc=args.maze_enc)
         p = count_params(trial)
         if p <= base_p * 1.10: best_poh=trial; best_p=p; best_depth=d; break
         if abs(p-base_p) < abs(best_p-base_p): best_poh=trial; best_p=p; best_depth=d
     poh = best_poh.to(device); print(f"Parameters: {best_p/1e6:.2f}M (depth={best_depth})")
-    train(poh, train_loader, device, epochs=args.epochs, lr=1e-3)
+    train(poh, train_loader, device, epochs=args.epochs, lr=args.lr, label_smoothing=args.label_smoothing, warmup_steps=args.warmup_steps, multi_horizon=args.multi_horizon, validity_mask=args.validity_mask, route_ent_weight=args.route_ent_weight, ent_anneal=args.ent_anneal, size=size)
     poh_acc, poh_opt = evaluate(poh, test_loader, device, size)
     print(f"PoH-HRM: Acc={poh_acc:.2f}%, Opt={poh_opt:.2f}%")
 
