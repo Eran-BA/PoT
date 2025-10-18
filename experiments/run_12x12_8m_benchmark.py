@@ -147,6 +147,8 @@ class Baseline(nn.Module):
 class StatefulHRMRouter(nn.Module):
     def __init__(self, hrm, n_heads):
         super().__init__(); self.hrm=hrm; self.n_heads=n_heads; self.state=None
+    def reset_state(self):
+        self.state = None
     def forward(self, x_ctrl):
         B,T,_ = x_ctrl.shape
         if self.state is None:
@@ -181,6 +183,10 @@ class PoH(nn.Module):
             self.cnn_proj = nn.Linear(32*4*4, d_model)
     def forward(self, maze, start, goal, last_iter_only=False):
         B = maze.size(0); N = self.size*self.size
+        # Reset HRM router state at the start of each forward pass (per-batch)
+        for blk in self.stack.blocks:
+            if hasattr(blk, 'router') and hasattr(blk.router, 'reset_state'):
+                blk.router.reset_state()
         x = self.cell(maze.view(B,N,1))
         pos = torch.arange(N, device=maze.device).unsqueeze(0).expand(B,-1)
         x = x + self.pos(pos)
