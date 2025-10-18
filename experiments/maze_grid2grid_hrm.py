@@ -112,28 +112,36 @@ class Grid2GridMazeSolver(nn.Module):
         if use_poh:
             # PoH with HRM controller + HRM architecture (Post-norm + SwiGLU + RMSNorm)
             self.R = R  # Refinement iterations
+            self.n_layers = n_layers
             self.hrm_controller = HRMPointerController(
                 d_model=d_model,
                 n_heads=n_heads,
                 T=T,
                 dropout=dropout
             )
-            
-            # HRM-style transformer layer with Post-norm + SwiGLU + RMSNorm
-            self.attn = nn.MultiheadAttention(
-                embed_dim=d_model,
-                num_heads=n_heads,
-                dropout=dropout,
-                batch_first=True
-            )
-            # Replace ReLU FFN with SwiGLU (HRM architecture)
-            self.ffn = SwiGLU(d_model, d_ff, dropout)
-            
-            # Replace LayerNorm with RMSNorm (HRM architecture)
-            self.norm1 = RMSNorm(d_model)
-            self.norm2 = RMSNorm(d_model)
-            self.dropout_layer = nn.Dropout(dropout)
-            
+
+            # Stack HRM-style transformer layers (Post-norm + SwiGLU + RMSNorm)
+            self.attn_layers = nn.ModuleList([
+                nn.MultiheadAttention(
+                    embed_dim=d_model,
+                    num_heads=n_heads,
+                    dropout=dropout,
+                    batch_first=True
+                ) for _ in range(n_layers)
+            ])
+            self.ffn_layers = nn.ModuleList([
+                SwiGLU(d_model, d_ff, dropout) for _ in range(n_layers)
+            ])
+            self.norm1_layers = nn.ModuleList([
+                RMSNorm(d_model) for _ in range(n_layers)
+            ])
+            self.norm2_layers = nn.ModuleList([
+                RMSNorm(d_model) for _ in range(n_layers)
+            ])
+            self.dropout_layers = nn.ModuleList([
+                nn.Dropout(dropout) for _ in range(n_layers)
+            ])
+
             # Post-norm: norm AFTER residual (HRM architecture)
             self.use_post_norm = True
         else:
@@ -161,26 +169,20 @@ class Grid2GridMazeSolver(nn.Module):
             route_weights, hrm_state, _ = self.hrm_controller(x, state=hrm_state)
             # route_weights: [B, n_heads]
             
-            # Apply multi-head attention
-            attn_out, _ = self.attn(x, x, x)  # [B, T, d_model]
-            
-            # Reshape to separate heads: [B, T, n_heads, d_head]
-            attn_out_heads = attn_out.view(B, T, self.attn.num_heads, d_head)
-            
-            # Apply HRM routing weights: [B, 1, n_heads, 1] * [B, T, n_heads, d_head]
-            route_weights_exp = route_weights.unsqueeze(1).unsqueeze(-1)  # [B, 1, n_heads, 1]
-            attn_out_routed = (attn_out_heads * route_weights_exp).view(B, T, D)
-            
-            # POST-NORM: Add THEN norm (HRM architecture)
-            x = x + self.dropout_layer(attn_out_routed)
-            x = self.norm1(x)  # RMSNorm AFTER residual
-            
-            # SwiGLU FFN (HRM architecture)
-            ffn_out = self.ffn(x)
-            
-            # POST-NORM: Add THEN norm (HRM architecture)
-            x = x + self.dropout_layer(ffn_out)
-            x = self.norm2(x)  # RMSNorm AFTER residual
+            # Apply stacked HRM-style layers
+            for attn, ffn, norm1, norm2, drop in zip(self.attn_layers, self.ffn_layers, self.norm1_layers, self.norm2_layers, self.dropout_layers):
+                # Attention
+                attn_out, _ = attn(x, x, x, need_weights=False)
+                attn_out_heads = attn_out.view(B, T, attn.num_heads, d_head)
+                route_weights_exp = route_weights.unsqueeze(1).unsqueeze(-1)
+                attn_out_routed = (attn_out_heads * route_weights_exp).view(B, T, D)
+                x = x + drop(attn_out_routed)
+                x = norm1(x)
+
+                # FFN
+                ffn_out = ffn(x)
+                x = x + drop(ffn_out)
+                x = norm2(x)
             
             return x, hrm_state
         else:
