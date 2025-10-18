@@ -93,7 +93,9 @@ print("  - Early Stopping: patience=50, max_epochs=5000")
 print()
 
 # Run PoH-HRM with full HRM features
-result = subprocess.run("""
+# Use check=False and capture output to show errors if training fails
+try:
+    subprocess.run("""
 cd /content/PoT
 python -u experiments/maze_grid2grid_hrm.py \
   --data-dir vendor/hrm/data/maze-30x30-hard-1k \
@@ -113,14 +115,15 @@ python -u experiments/maze_grid2grid_hrm.py \
   --max-halting-steps 16 \
   --output experiments/results/grid2grid_poh_full \
   --seed 42
-""", shell=True)
-
-if result.returncode == 0:
+""", shell=True, check=True)
+    
     print("\n" + "="*80)
     print("✅ PoH-HRM Training Complete!")
     print("="*80)
-else:
+except subprocess.CalledProcessError as e:
     print("\n" + "="*80)
-    print("❌ Training failed with error code:", result.returncode)
+    print("❌ Training failed with error!")
     print("="*80)
+    print(f"Error: {e}")
+    raise
 
