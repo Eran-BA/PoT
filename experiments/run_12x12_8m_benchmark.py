@@ -146,7 +146,7 @@ class Baseline(nn.Module):
 
 class StatefulHRMRouter(nn.Module):
     def __init__(self, hrm, n_heads):
-        super().__init__(); self.hrm=hrm; self.n_heads=n_heads; self.state=None; self.temperature = 1.0
+        super().__init__(); self.hrm=hrm; self.n_heads=n_heads; self.state=None; self.temperature = 1.0; self.hard=False
     def reset_state(self):
         self.state = None
     def forward(self, x_ctrl):
@@ -160,6 +160,13 @@ class StatefulHRMRouter(nn.Module):
         temp = max(1e-3, float(self.temperature))
         if abs(temp - 1.0) > 1e-6:
             logp = logp / temp
+        if self.hard:
+            # Straight-through hard routing: convert to probs, take argmax, use ST
+            probs = torch.softmax(logp, dim=-1)
+            idx = torch.argmax(probs, dim=-1)
+            y_hard = torch.nn.functional.one_hot(idx, num_classes=self.n_heads).float()
+            y = y_hard + (probs - probs.detach())  # ST estimator
+            logp = torch.log(torch.clamp(y, min=1e-8))
         return logp.unsqueeze(1).expand(B,T,self.n_heads)
 
 
@@ -249,7 +256,7 @@ def count_params(m):
     return sum(p.numel() for p in m.parameters() if p.requires_grad)
 
 
-def train(model, loader, device, epochs=10, lr=1e-3, label_smoothing: float = 0.0, warmup_steps: int = 500, multi_horizon: int = 1, validity_mask: bool = False, route_ent_weight: float = 0.0, ent_anneal: bool = False, size: int = None, supervision_interval: int = 1, last_iter_only: bool = False):
+def train(model, loader, device, epochs=10, lr=1e-3, label_smoothing: float = 0.0, warmup_steps: int = 500, multi_horizon: int = 1, validity_mask: bool = False, route_ent_weight: float = 0.0, ent_anneal: bool = False, size: int = None, supervision_interval: int = 1, last_iter_only: bool = False, ponder_weight: float = 0.0, hard_route: bool = False):
     """
     Train with configurable supervision density and gradient flow.
     
@@ -280,6 +287,8 @@ def train(model, loader, device, epochs=10, lr=1e-3, label_smoothing: float = 0.
             for blk in model.stack.blocks:
                 if hasattr(blk, 'router') and hasattr(blk.router, 'temperature'):
                     blk.router.temperature = max(1.0, 2.0 - 1.0 * (ep / max(1, epochs-1)))
+                if hasattr(blk, 'router') and hasattr(blk.router, 'hard'):
+                    blk.router.hard = bool(hard_route)
         tot = 0.0; n=0
         for maze,start,goal,path,_ in loader:
             for g in opt.param_groups:
@@ -326,7 +335,7 @@ def train(model, loader, device, epochs=10, lr=1e-3, label_smoothing: float = 0.
                         ce_terms.append(nll.mean())
                     else:
                         ce_terms.append(crit(raw, target))
-            # Routing entropy regularization
+            # Routing regularization (entropy) and optional pondering cost (approx ACT)
             if stats is not None and route_ent_weight>0.0:
                 # stats is a list per refinement step; each item packs per-block stats averages
                 ent_vals=[]
@@ -339,6 +348,20 @@ def train(model, loader, device, epochs=10, lr=1e-3, label_smoothing: float = 0.
                     if ent_anneal:
                         w = w * max(0.0, 1.0 - global_step/float(total_steps))
                     ce_terms.append(w * ent)
+            if stats is not None and ponder_weight>0.0:
+                # If stack returns per-iter stats with 'ponder_prob' or 'n_H_updates', penalize longer compute
+                # Fallback: approximate with fixed R when stats missing
+                ponder_vals=[]
+                for s in stats:
+                    if 'ponder_prob' in s:
+                        ponder_vals.append(float(s['ponder_prob']))
+                    elif 'n_H_updates' in s:
+                        ponder_vals.append(float(s['n_H_updates']))
+                if ponder_vals:
+                    ponder = torch.tensor(np.mean(ponder_vals), dtype=torch.float32, device=device)
+                else:
+                    ponder = torch.tensor(1.0 if last_iter_only else float(getattr(model,'R',4)), dtype=torch.float32, device=device)
+                ce_terms.append(ponder_weight * ponder)
             if ce_terms:
                 loss = torch.stack(ce_terms).mean()
                 loss.backward(); torch.nn.utils.clip_grad_norm_(model.parameters(),1.0); opt.step()
@@ -403,6 +426,10 @@ def main():
                     help='Supervise every N steps (1=dense, 2=sparse, 5=very sparse)')
     ap.add_argument('--last-iter-only', action='store_true',
                     help='O(1) memory: only backprop through last refinement iteration')
+    ap.add_argument('--hard-route', action='store_true',
+                    help='Enable straight-through hard routing with temperature anneal')
+    ap.add_argument('--ponder-weight', type=float, default=0.0,
+                    help='Weight for pondering/compute cost regularization (ACT-style)')
     args = ap.parse_args()
 
     device = device_select(force_cpu=args.cpu)
@@ -419,7 +446,7 @@ def main():
     print("\nBaseline (≈8M params)")
     base = Baseline(size, d_model, n_heads, d_ff, depth, maze_enc=args.maze_enc).to(device)
     base_p = count_params(base); print(f"Parameters: {base_p/1e6:.2f}M")
-    train(base, train_loader, device, epochs=args.epochs, lr=args.lr, label_smoothing=args.label_smoothing, warmup_steps=args.warmup_steps, multi_horizon=args.multi_horizon, validity_mask=args.validity_mask, size=size, supervision_interval=args.supervision_interval, last_iter_only=False)
+    train(base, train_loader, device, epochs=args.epochs, lr=args.lr, label_smoothing=args.label_smoothing, warmup_steps=args.warmup_steps, multi_horizon=args.multi_horizon, validity_mask=args.validity_mask, size=size, supervision_interval=args.supervision_interval, last_iter_only=False, hard_route=False, ponder_weight=0.0)
     base_acc, base_opt = evaluate(base, test_loader, device, size)
     print(f"Baseline: Acc={base_acc:.2f}%, Opt={base_opt:.2f}%")
 
@@ -439,7 +466,7 @@ def main():
         print(f"  Training mode: O(1) memory (last iteration only)")
     else:
         print(f"  Training mode: O(R) memory (all {args.R} iterations)")
-    train(poh, train_loader, device, epochs=args.epochs, lr=args.lr, label_smoothing=args.label_smoothing, warmup_steps=args.warmup_steps, multi_horizon=args.multi_horizon, validity_mask=args.validity_mask, route_ent_weight=args.route_ent_weight, ent_anneal=args.ent_anneal, size=size, supervision_interval=args.supervision_interval, last_iter_only=args.last_iter_only)
+    train(poh, train_loader, device, epochs=args.epochs, lr=args.lr, label_smoothing=args.label_smoothing, warmup_steps=args.warmup_steps, multi_horizon=args.multi_horizon, validity_mask=args.validity_mask, route_ent_weight=args.route_ent_weight, ent_anneal=args.ent_anneal, size=size, supervision_interval=args.supervision_interval, last_iter_only=args.last_iter_only, hard_route=args.hard_route, ponder_weight=args.ponder_weight)
     poh_acc, poh_opt = evaluate(poh, test_loader, device, size)
     print(f"PoH-HRM: Acc={poh_acc:.2f}%, Opt={poh_opt:.2f}%")
 
