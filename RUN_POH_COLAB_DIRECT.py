@@ -85,11 +85,14 @@ print("4. TRAINING POH-HRM (with Q-Halting + Puzzle Embeddings)")
 print("="*80)
 print()
 print("Configuration:")
-print("  - Puzzle Embeddings: 1000 mazes × 256-dim (zero-init)")
+print("  - Puzzle Embeddings: 1000 mazes × 256-dim (0.02 std init)")
 print("  - Q-Halting: max 16 steps, adaptive")
 print("  - Learning Rate: 1e-4 (HRM value)")
-print("  - Weight Decay: 1.0 (HRM value)")
+print("  - Weight Decay: 1.0 main model, 0.0 puzzle emb (NEW!)")
 print("  - Early Stopping: patience=50, max_epochs=5000")
+print()
+print("🚀 Starting training (this may take a while)...")
+sys.stdout.flush()  # Force output to appear immediately
 print()
 
 # Run PoH-HRM with full HRM features
