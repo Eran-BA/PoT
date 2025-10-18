@@ -20,7 +20,8 @@ This document summarizes maze-solving benchmarks across different model configur
 **Key Findings:**
 - ✅ All three models achieve perfect performance on this task
 - ✅ PoH-HRM achieves this with **25% fewer parameters** than Baseline
-- ⚠️ Task may be too easy to differentiate model capabilities at this difficulty level
+- ⚠️ **Task is fundamentally different from HRM paper** - we're doing autoregressive path generation (easier), HRM does grid-to-grid transformation (harder)
+- ⚠️ Our 100% accuracy is **not comparable** to HRM's 74% - completely different task formulation
 - 📊 PoH-HRM requires 3x longer training time due to refinement iterations (R=4)
 
 ---
@@ -58,13 +59,23 @@ This document summarizes maze-solving benchmarks across different model configur
 **Status**: ✅ Training completed (3125 iterations, ~9 minutes)
 
 **Notes:**
-- HRM paper reports **70%+ accuracy** on Maze 30x30 Hard
+- HRM paper reports **~74% accuracy** on Maze 30x30 Hard
 - Our run completed successfully with HRM-specific features:
   - FlashAttention
   - AdamATan2 optimizer
   - Sparse embeddings
   - HRM's ACT-style pondering
 - Evaluation metrics not yet extracted from HRM logs
+
+**⚠️ CRITICAL DIFFERENCE: HRM's maze task is fundamentally different from ours!**
+- **HRM Task**: Grid-to-grid transformation (input: 30×30 maze grid → output: 30×30 solution grid with path marked)
+  - Fixed-length output (900 tokens)
+  - Sequence-to-sequence with full grid labeling
+  - Much harder: must predict which cells are on the optimal path
+- **Our Task**: Autoregressive path generation (input: maze grid → output: sequence of [x,y] coordinates)
+  - Variable-length output (~30-50 tokens for 30×30 mazes)
+  - Autoregressive generation with start/goal conditioning
+  - Easier: just follow the path step-by-step
 
 ---
 
@@ -95,13 +106,15 @@ This document summarizes maze-solving benchmarks across different model configur
 
 ## Next Steps & Recommendations
 
-1. **Increase Maze Difficulty for 30x30**:
-   - Use higher `wall_prob` (0.6-0.7) or longer `min_path_length`
-   - Test on HRM's actual `maze-30x30-hard` dataset for direct comparison
+1. **⚠️ CRITICAL: Implement HRM's Grid-to-Grid Task Format**:
+   - **Current**: We generate paths autoregressively (easier, 100% accuracy)
+   - **HRM**: They predict solution grids (harder, 74% accuracy)
+   - **Action**: Reimplement maze task as sequence-to-sequence grid labeling to match HRM
+   - This is the **only way** to get comparable results
 
 2. **Extract HRM Evaluation Metrics**:
-   - Parse HRM checkpoint logs to get final accuracy/optimality
-   - Compare directly against PoT-HRM on the same test set
+   - Parse HRM checkpoint logs to get final accuracy/optimality on their task
+   - Once we implement grid-to-grid format, compare apples-to-apples
 
 3. **O(1) Memory Investigation**:
    - Current O(1) implementation shows significant performance drop
