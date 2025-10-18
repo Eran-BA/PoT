@@ -217,8 +217,7 @@ class Grid2GridMazeSolver(nn.Module):
         x = torch.cat([puzzle_emb, x], dim=1)  # [B, 900 + puzzle_emb_len, d_model]
         x = x + self.pos_embed[:, :x.size(1), :]
         
-        # HRM-style input normalization
-        x = (x - 0.5) / 0.5  # Map to [-1, 1]
+        # Apply LayerNorm (don't manually normalize - it destroys puzzle embeddings!)
         x = self.pre_norm(x)
         
         # Adaptive computation loop with Q-halting
