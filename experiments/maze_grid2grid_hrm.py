@@ -24,8 +24,9 @@ import argparse
 import json
 from tqdm import tqdm
 
-from src.pot.modules.block import PoHStack
+from src.pot.modules.block import PoHConfig, PoHStack, PoHBlock
 from src.pot.core.hrm_controller import HRMPointerController
+from src.pot.modules.router import StatefulHRMRouter
 
 
 class HRMMazeDataset(Dataset):
@@ -93,27 +94,37 @@ class Grid2GridMazeSolver(nn.Module):
         
         # Transformer encoder
         if use_poh:
-            # PoH with HRM controller
-            self.router = HRMPointerController(
+            # PoH with HRM controller - use PoHConfig
+            cfg = PoHConfig(
+                d_model=d_model,
+                n_heads=n_heads,
+                d_ff=d_ff,
+                dropout=dropout,
+                max_inner_iters=R,
+                route_mode="soft",
+                share_router=False
+            )
+            
+            # Create HRM router wrapper
+            hrm_controller = HRMPointerController(
                 d_model=d_model,
                 n_heads=n_heads,
                 T=T
             )
+            self.router = StatefulHRMRouter(hrm_controller, n_heads=n_heads)
             
-            encoder_layer = nn.TransformerEncoderLayer(
-                d_model=d_model,
-                nhead=n_heads,
-                dim_feedforward=d_ff,
-                dropout=dropout,
-                batch_first=True
-            )
+            # Build PoH blocks manually with HRM router
+            self.blocks = nn.ModuleList([
+                PoHBlock(cfg, router=self.router)
+                for _ in range(n_layers)
+            ])
             
-            self.poh_stack = PoHStack(
-                layer=encoder_layer,
-                router=self.router,
-                n_iterations=R
-            )
-            self.encoder = lambda x: self.poh_stack(x)[0]  # Extract output, discard stats
+            def encoder_fn(x):
+                for blk in self.blocks:
+                    x, _ = blk(x)
+                return x
+            
+            self.encoder = encoder_fn
         else:
             # Standard Transformer encoder
             encoder_layer = nn.TransformerEncoderLayer(
