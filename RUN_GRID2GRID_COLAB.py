@@ -12,34 +12,67 @@ subprocess.run("git clone https://github.com/Eran-BA/PoT.git /content/PoT 2>/dev
 subprocess.run("cd /content/PoT && git checkout scaling_parameter_size", shell=True)
 subprocess.run("pip install -q tqdm", shell=True)
 
-# Download HRM dataset
-print("Setting up HRM dataset...")
-subprocess.run("mkdir -p /content/PoT/vendor", shell=True, check=False)
+# Download HRM dataset using huggingface_hub directly
+print("Downloading HRM maze-30x30-hard dataset from HuggingFace...")
+subprocess.run("pip install -q huggingface_hub", shell=True)
 
-# Clone HRM repo if needed
-clone_result = subprocess.run(
-    "git clone https://github.com/sapientinc/HRM /content/PoT/vendor/hrm",
-    shell=True,
-    capture_output=True,
-    text=True
-)
-if clone_result.returncode != 0 and "already exists" not in clone_result.stderr.lower():
-    print(f"HRM clone warning: {clone_result.stderr}")
+# Create a simple dataset downloader
+dataset_script = """
+import os
+import csv
+import json
+import numpy as np
+from huggingface_hub import hf_hub_download
+from tqdm import tqdm
 
-# Install HRM requirements
-subprocess.run("cd /content/PoT/vendor/hrm && pip install -q -r requirements.txt 2>/dev/null || pip install -q argdantic pydantic omegaconf hydra-core huggingface_hub", shell=True, check=False)
+output_dir = '/content/PoT/vendor/hrm/data/maze-30x30-hard-1k'
+os.makedirs(output_dir, exist_ok=True)
 
-# Download dataset
-dataset_result = subprocess.run(
-    "cd /content/PoT/vendor/hrm && python dataset/build_maze_dataset.py --output-dir data/maze-30x30-hard-1k",
-    shell=True,
-    capture_output=True,
-    text=True
-)
-if dataset_result.returncode != 0:
-    print(f"Dataset download output: {dataset_result.stdout}")
-    print(f"Dataset download error: {dataset_result.stderr}")
-    print("Continuing anyway - dataset may already exist...")
+CHARSET = "# SGo"
+repo = "sapientinc/maze-30x30-hard-1k"
+
+for split in ['train', 'test']:
+    print(f"Downloading {split}...")
+    split_dir = os.path.join(output_dir, split)
+    os.makedirs(split_dir, exist_ok=True)
+    
+    # Download CSV
+    csv_file = hf_hub_download(repo, f"{split}.csv", repo_type="dataset")
+    
+    # Read and convert
+    inputs, labels = [], []
+    with open(csv_file, 'r') as f:
+        reader = csv.reader(f)
+        next(reader)  # Skip header
+        for source, q, a, rating in tqdm(reader):
+            grid_size = int(len(q) ** 0.5)
+            inputs.append(np.frombuffer(q.encode(), dtype=np.uint8).reshape(grid_size, grid_size))
+            labels.append(np.frombuffer(a.encode(), dtype=np.uint8).reshape(grid_size, grid_size))
+    
+    # Convert to ids
+    char2id = np.zeros(256, np.uint8)
+    char2id[np.array(list(map(ord, CHARSET)))] = np.arange(len(CHARSET)) + 1
+    
+    inputs_arr = np.vstack([char2id[inp.reshape(-1)] for inp in inputs])
+    labels_arr = np.vstack([char2id[lab.reshape(-1)] for lab in labels])
+    
+    # Save
+    np.save(os.path.join(split_dir, 'all__inputs.npy'), inputs_arr)
+    np.save(os.path.join(split_dir, 'all__labels.npy'), labels_arr)
+    
+    # Save metadata
+    with open(os.path.join(split_dir, 'dataset.json'), 'w') as f:
+        json.dump({'seq_len': 900, 'vocab_size': 6}, f)
+    
+    print(f"{split}: {len(inputs)} mazes")
+
+print("✓ Dataset downloaded!")
+"""
+
+with open('/content/hrm_download.py', 'w') as f:
+    f.write(dataset_script)
+
+subprocess.run("python /content/hrm_download.py", shell=True)
 
 print("\n" + "="*80)
 print("TRAINING BASELINE TRANSFORMER")
