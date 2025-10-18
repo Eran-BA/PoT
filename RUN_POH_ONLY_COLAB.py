@@ -72,10 +72,10 @@ with open('/content/hrm_download.py', 'w') as f:
 subprocess.run("python /content/hrm_download.py", shell=True)
 
 print("\n" + "="*80)
-print("TRAINING POH-HRM (with fixed routing)")
+print("TRAINING POH-HRM (with Q-Halting + Puzzle Embeddings)")
 print("="*80)
 
-# Run PoH-HRM
+# Run PoH-HRM with full HRM features
 subprocess.run("""
 cd /content/PoT
 python -u experiments/maze_grid2grid_hrm.py \
@@ -84,12 +84,17 @@ python -u experiments/maze_grid2grid_hrm.py \
   --d-model 256 \
   --n-heads 8 \
   --n-layers 1 \
-  --R 4 \
   --T 4 \
   --batch-size 32 \
-  --epochs 100 \
-  --lr 1e-3 \
-  --output experiments/results/grid2grid_poh_fixed \
+  --max-epochs 5000 \
+  --patience 50 \
+  --lr 1e-4 \
+  --puzzle-emb-lr 1e-4 \
+  --weight-decay 1.0 \
+  --num-puzzles 1000 \
+  --puzzle-emb-dim 256 \
+  --max-halting-steps 16 \
+  --output experiments/results/grid2grid_poh_full \
   --seed 42
 """, shell=True)
 
