@@ -146,7 +146,7 @@ class Baseline(nn.Module):
 
 class StatefulHRMRouter(nn.Module):
     def __init__(self, hrm, n_heads):
-        super().__init__(); self.hrm=hrm; self.n_heads=n_heads; self.state=None
+        super().__init__(); self.hrm=hrm; self.n_heads=n_heads; self.state=None; self.temperature = 1.0
     def reset_state(self):
         self.state = None
     def forward(self, x_ctrl):
@@ -156,7 +156,11 @@ class StatefulHRMRouter(nn.Module):
             self.state = HRMState(z_L=torch.zeros(B,self.hrm.d_ctrl,device=dev), z_H=torch.zeros(B,self.hrm.d_ctrl,device=dev), step=torch.zeros(B,dtype=torch.long,device=dev))
         a, st, _ = self.hrm(x_ctrl.mean(dim=1), self.state)
         self.state = HRMState(z_L=st.z_L.detach(), z_H=st.z_H.detach(), step=st.step.detach())
-        return torch.log(a.unsqueeze(1).expand(B,T,self.n_heads)+1e-8)
+        logp = torch.log(a + 1e-8)
+        temp = max(1e-3, float(self.temperature))
+        if abs(temp - 1.0) > 1e-6:
+            logp = logp / temp
+        return logp.unsqueeze(1).expand(B,T,self.n_heads)
 
 
 class PoH(nn.Module):
@@ -271,6 +275,11 @@ def train(model, loader, device, epochs=10, lr=1e-3, label_smoothing: float = 0.
         return min_lr + (lr - min_lr) * 0.5 * (1 + np.cos(np.pi * prog))
     global_step = 0
     for ep in range(epochs):
+        # Simple temperature anneal for router (optional): start high, decay to 1.0
+        if hasattr(model, 'stack'):
+            for blk in model.stack.blocks:
+                if hasattr(blk, 'router') and hasattr(blk.router, 'temperature'):
+                    blk.router.temperature = max(1.0, 2.0 - 1.0 * (ep / max(1, epochs-1)))
         tot = 0.0; n=0
         for maze,start,goal,path,_ in loader:
             for g in opt.param_groups:
