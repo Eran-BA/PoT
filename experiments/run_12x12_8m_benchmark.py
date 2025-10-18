@@ -114,9 +114,10 @@ class Baseline(nn.Module):
         self.cell = nn.Linear(1, d_model)
         self.pos = nn.Embedding(size*size, d_model)
         self.se = nn.Embedding(2, d_model); self.ge = nn.Embedding(2, d_model)
-        enc = nn.TransformerEncoderLayer(d_model, n_heads, d_ff, dropout, batch_first=True)
+        enc = nn.TransformerEncoderLayer(d_model, n_heads, d_ff, dropout, batch_first=True, norm_first=True)
         self.tr = nn.TransformerEncoder(enc, num_layers=depth)
         self.out = nn.Linear(d_model, size*size)
+        self.input_ln = nn.LayerNorm(d_model)
         if self.use_maze_enc:
             self.cnn = nn.Sequential(
                 nn.Conv2d(1, 16, 3, padding=1), nn.ReLU(inplace=True),
@@ -126,7 +127,9 @@ class Baseline(nn.Module):
             self.cnn_proj = nn.Linear(32*4*4, d_model)
     def forward(self, maze, start, goal):
         B = maze.size(0); N = self.size*self.size
-        x = self.cell(maze.view(B, N, 1))
+        # HRM-style input normalization to [-1, 1]
+        maze_n = maze * 2.0 - 1.0
+        x = self.cell(maze_n.view(B, N, 1))
         pos = torch.arange(N, device=maze.device).unsqueeze(0).expand(B, -1)
         x = x + self.pos(pos)
         if self.use_maze_enc:
@@ -140,6 +143,8 @@ class Baseline(nn.Module):
         s_m = torch.zeros(B, N, device=maze.device, dtype=torch.long); s_m.scatter_(1, s_idx.unsqueeze(1), 1)
         g_m = torch.zeros(B, N, device=maze.device, dtype=torch.long); g_m.scatter_(1, g_idx.unsqueeze(1), 1)
         x = x + self.se(s_m) + self.ge(g_m)
+        # Pre-norm before encoder
+        x = self.input_ln(x)
         h = self.tr(x)
         return self.out(h)
 
@@ -154,7 +159,10 @@ class StatefulHRMRouter(nn.Module):
         if self.state is None:
             dev = x_ctrl.device
             self.state = HRMState(z_L=torch.zeros(B,self.hrm.d_ctrl,device=dev), z_H=torch.zeros(B,self.hrm.d_ctrl,device=dev), step=torch.zeros(B,dtype=torch.long,device=dev))
-        a, st, _ = self.hrm(x_ctrl.mean(dim=1), self.state)
+        # Per-sample standardization of controller input
+        y = x_ctrl.mean(dim=1)
+        y = (y - y.mean(dim=-1, keepdim=True)) / (y.std(dim=-1, keepdim=True) + 1e-5)
+        a, st, _ = self.hrm(y, self.state)
         self.state = HRMState(z_L=st.z_L.detach(), z_H=st.z_H.detach(), step=st.step.detach())
         logp = torch.log(a + 1e-8)
         temp = max(1e-3, float(self.temperature))
@@ -185,6 +193,7 @@ class PoH(nn.Module):
         self.ref = IterRefiner(stack, max_inner_iters=R, outer_residual=True, rezero_init=True)
         self.stack = stack  # For O(1) mode
         self.out = nn.Linear(d_model, size*size)
+        self.input_ln = nn.LayerNorm(d_model)
         if self.use_maze_enc:
             self.cnn = nn.Sequential(
                 nn.Conv2d(1, 16, 3, padding=1), nn.ReLU(inplace=True),
@@ -198,7 +207,9 @@ class PoH(nn.Module):
         for blk in self.stack.blocks:
             if hasattr(blk, 'router') and hasattr(blk.router, 'reset_state'):
                 blk.router.reset_state()
-        x = self.cell(maze.view(B,N,1))
+        # HRM-style input normalization to [-1, 1]
+        maze_n = maze * 2.0 - 1.0
+        x = self.cell(maze_n.view(B,N,1))
         pos = torch.arange(N, device=maze.device).unsqueeze(0).expand(B,-1)
         x = x + self.pos(pos)
         if self.use_maze_enc:
@@ -212,6 +223,8 @@ class PoH(nn.Module):
         s_m = torch.zeros(B, N, device=maze.device, dtype=torch.long); s_m.scatter_(1, s_idx.unsqueeze(1), 1)
         g_m = torch.zeros(B, N, device=maze.device, dtype=torch.long); g_m.scatter_(1, g_idx.unsqueeze(1), 1)
         x = x + self.se(s_m) + self.ge(g_m)
+        # Pre-norm before refinement
+        x = self.input_ln(x)
         
         if last_iter_only:
             # O(1) memory: only backprop through last iteration
@@ -330,11 +343,11 @@ def train(model, loader, device, epochs=10, lr=1e-3, label_smoothing: float = 0.
                                 masked[idx_b, pass_cells] = raw[idx_b, pass_cells]
                             else:
                                 masked[idx_b, allowed] = raw[idx_b, allowed]
-                        logp = torch.log_softmax(masked, dim=-1)
+                        logp = torch.log_softmax(masked.clamp(min=-20, max=20), dim=-1)
                         nll = -logp.gather(1, target.unsqueeze(1)).squeeze(1)
                         ce_terms.append(nll.mean())
                     else:
-                        ce_terms.append(crit(raw, target))
+                        ce_terms.append(crit(raw.clamp(min=-20, max=20), target))
             # Routing regularization (entropy) and optional pondering cost (approx ACT)
             if stats is not None and route_ent_weight>0.0:
                 # stats is a list per refinement step; each item packs per-block stats averages
