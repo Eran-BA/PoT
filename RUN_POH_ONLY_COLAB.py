@@ -6,8 +6,9 @@ Use this if you already have baseline results.
 import subprocess
 import sys
 
-# Clone and setup
-subprocess.run("git clone https://github.com/Eran-BA/PoT.git /content/PoT 2>/dev/null || (cd /content/PoT && git pull)", shell=True)
+# Clone and setup (force fresh pull)
+subprocess.run("rm -rf /content/PoT", shell=True)
+subprocess.run("git clone https://github.com/Eran-BA/PoT.git /content/PoT", shell=True)
 subprocess.run("cd /content/PoT && git checkout scaling_parameter_size", shell=True)
 subprocess.run("pip install -q tqdm huggingface_hub", shell=True)
 
