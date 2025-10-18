@@ -458,8 +458,12 @@ def main():
     puzzle_params = list(model.puzzle_emb.parameters())
     model_params = [p for p in model.parameters() if p not in set(puzzle_params)]
     
+    # Main model: strong weight decay for generalization
     optimizer = torch.optim.AdamW(model_params, lr=args.lr, weight_decay=args.weight_decay)
-    puzzle_optimizer = torch.optim.AdamW(puzzle_params, lr=args.puzzle_emb_lr, weight_decay=args.weight_decay)
+    
+    # Puzzle embeddings: NO weight decay (they should memorize individual mazes!)
+    # Weight decay would push embeddings back to zero, preventing specialization
+    puzzle_optimizer = torch.optim.AdamW(puzzle_params, lr=args.puzzle_emb_lr, weight_decay=0.0)
     
     # Cosine annealing schedulers
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.max_epochs)
