@@ -1,0 +1,3 @@
+[submodule "vendor/hrm"]
+	path = vendor/hrm
+	url = https://github.com/sapientinc/HRM
