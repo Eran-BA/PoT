@@ -93,7 +93,8 @@ class Grid2GridMazeSolver(nn.Module):
         self.use_poh = use_poh
         
         # NEW: Puzzle embeddings (prepended to input)
-        self.puzzle_emb = PuzzleEmbedding(num_puzzles, puzzle_emb_dim, init_std=0.0)
+        # Use 0.02 std for better gradient flow (not zero!)
+        self.puzzle_emb = PuzzleEmbedding(num_puzzles, puzzle_emb_dim, init_std=0.02)
         self.puzzle_emb_len = (puzzle_emb_dim + d_model - 1) // d_model  # Ceil div
         
         # NEW: Q-halting controller
@@ -295,15 +296,19 @@ def train_epoch(model, dataloader, optimizer, puzzle_optimizer, device, epoch):
             q_halt, is_correct, reduction='mean'
         )
         
-        # Q-continue loss: bootstrap (if not at max steps)
+        # Q-continue loss: bootstrap from next step's Q-values
+        # Train q_continue to predict future reward (Q-learning)
         q_continue_loss = torch.tensor(0.0, device=device)
-        if steps < model.max_halting_steps and model.training:
-            # Compute next-step Q-values (no grad)
+        if model.training:
+            # Run one more forward pass to get next-step Q-values
+            # This teaches q_continue to predict: "if I keep going, what will happen?"
             with torch.no_grad():
                 _, next_q_halt, next_q_continue, _ = model(inp, puzzle_ids)
-                # Bootstrap target: max(q_halt, q_continue) at next step
+                # Bootstrap target: best Q-value at next step (Bellman equation)
+                # Use sigmoid to convert logits to [0,1] probabilities
                 target_q = torch.sigmoid(torch.maximum(next_q_halt, next_q_continue))
             
+            # Train q_continue to match the bootstrap target
             q_continue_loss = F.binary_cross_entropy_with_logits(
                 q_continue, target_q, reduction='mean'
             )

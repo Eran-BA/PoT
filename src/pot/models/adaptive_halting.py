@@ -102,7 +102,7 @@ class QHaltingController(nn.Module):
         - Always halt at max_steps
         
         During inference:
-        - Always run max_steps (for consistent batching, HRM approach)
+        - Use learned policy (halt when q_halt > q_continue)
         
         Args:
             q_halt: [B] Q-values for halting
@@ -120,23 +120,19 @@ class QHaltingController(nn.Module):
         if step >= self.max_steps:
             return torch.ones(batch_size, dtype=torch.bool, device=device)
         
-        # Inference: always run max_steps (HRM approach for batching)
-        if not is_training:
-            return torch.zeros(batch_size, dtype=torch.bool, device=device)
-        
-        # Training: learned halting policy
-        # Halt when q_halt > q_continue (model thinks it's done)
-        halt = (q_halt > q_continue)
-        
         # Minimum 2 steps (allow some computation)
         if step < 2:
             return torch.zeros(batch_size, dtype=torch.bool, device=device)
         
-        # Exploration: randomly force minimum steps
-        if torch.rand(1).item() < self.exploration_prob:
+        # Halt when q_halt > q_continue (learned policy)
+        halt = (q_halt > q_continue)
+        
+        # Exploration during training: randomly force early/late halting
+        if is_training and torch.rand(1).item() < self.exploration_prob:
             # Random min_steps in [2, max_steps]
             min_steps = torch.randint(2, self.max_steps + 1, (1,), device=device).item()
-            halt = halt & (step >= min_steps)
+            # Force halt if past min_steps (encourages exploration of shorter paths)
+            halt = halt | (step >= min_steps)
         
         return halt
     
