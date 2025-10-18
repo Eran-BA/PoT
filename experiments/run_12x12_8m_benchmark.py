@@ -198,12 +198,14 @@ class PoH(nn.Module):
         
         if last_iter_only:
             # O(1) memory: only backprop through last iteration
+            # Preserve outer residual across iterations to better match IterRefiner behavior
             h = x
             for i in range(self.R):
-                h_next = self.stack(h)
+                out_i = self.stack(h)
                 # Handle stack returning tuple (output, stats) or just output
-                if isinstance(h_next, tuple):
-                    h_next = h_next[0]
+                if isinstance(out_i, tuple):
+                    out_i = out_i[0]
+                h_next = h + out_i  # outer residual approximation
                 if i < self.R - 1:
                     h = h_next.detach()  # Break gradient flow for intermediate iterations
                 else:
