@@ -13,9 +13,33 @@ subprocess.run("cd /content/PoT && git checkout scaling_parameter_size", shell=T
 subprocess.run("pip install -q tqdm", shell=True)
 
 # Download HRM dataset
-subprocess.run("mkdir -p /content/PoT/vendor && git clone https://github.com/sapientinc/HRM /content/PoT/vendor/hrm 2>/dev/null || echo 'Already cloned'", shell=True)
-subprocess.run("cd /content/PoT/vendor/hrm && pip install -q -r requirements.txt", shell=True)
-subprocess.run("cd /content/PoT/vendor/hrm && python dataset/build_maze_dataset.py --output-dir data/maze-30x30-hard-1k", shell=True)
+print("Setting up HRM dataset...")
+subprocess.run("mkdir -p /content/PoT/vendor", shell=True, check=False)
+
+# Clone HRM repo if needed
+clone_result = subprocess.run(
+    "git clone https://github.com/sapientinc/HRM /content/PoT/vendor/hrm",
+    shell=True,
+    capture_output=True,
+    text=True
+)
+if clone_result.returncode != 0 and "already exists" not in clone_result.stderr.lower():
+    print(f"HRM clone warning: {clone_result.stderr}")
+
+# Install HRM requirements
+subprocess.run("cd /content/PoT/vendor/hrm && pip install -q -r requirements.txt 2>/dev/null || pip install -q argdantic pydantic omegaconf hydra-core huggingface_hub", shell=True, check=False)
+
+# Download dataset
+dataset_result = subprocess.run(
+    "cd /content/PoT/vendor/hrm && python dataset/build_maze_dataset.py --output-dir data/maze-30x30-hard-1k",
+    shell=True,
+    capture_output=True,
+    text=True
+)
+if dataset_result.returncode != 0:
+    print(f"Dataset download output: {dataset_result.stdout}")
+    print(f"Dataset download error: {dataset_result.stderr}")
+    print("Continuing anyway - dataset may already exist...")
 
 print("\n" + "="*80)
 print("TRAINING BASELINE TRANSFORMER")
