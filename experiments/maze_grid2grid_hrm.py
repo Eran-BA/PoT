@@ -155,17 +155,26 @@ class Grid2GridMazeSolver(nn.Module):
         if self.use_poh:
             # Apply R refinement iterations with HRM routing
             hrm_state = self.hrm_controller.init_state(x.size(0), x.device)
+            B, T, D = x.shape
+            d_head = D // self.attn.num_heads
             
-            for _ in range(self.R):
+            for r in range(self.R):
                 # Get routing weights from HRM
                 route_weights, hrm_state, _ = self.hrm_controller(x, state=hrm_state)
                 # route_weights: [B, n_heads]
                 
-                # Apply attention with routing (simplified: average routing over all tokens)
+                # Apply multi-head attention
                 attn_out, _ = self.attn(x, x, x)  # [B, T, d_model]
                 
+                # Reshape to separate heads: [B, T, n_heads, d_head]
+                attn_out_heads = attn_out.view(B, T, self.attn.num_heads, d_head)
+                
+                # Apply HRM routing weights: [B, 1, n_heads, 1] * [B, T, n_heads, d_head]
+                route_weights_exp = route_weights.unsqueeze(1).unsqueeze(-1)  # [B, 1, n_heads, 1]
+                attn_out_routed = (attn_out_heads * route_weights_exp).view(B, T, D)
+                
                 # Apply residual + norm
-                x = self.norm1(x + self.dropout_layer(attn_out))
+                x = self.norm1(x + self.dropout_layer(attn_out_routed))
                 
                 # FFN
                 ff_out = self.ff(x)
