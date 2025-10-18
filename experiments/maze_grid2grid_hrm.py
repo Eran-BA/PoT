@@ -97,7 +97,7 @@ class Grid2GridMazeSolver(nn.Module):
             self.router = HRMPointerController(
                 d_model=d_model,
                 n_heads=n_heads,
-                period=T
+                T=T
             )
             
             encoder_layer = nn.TransformerEncoderLayer(
