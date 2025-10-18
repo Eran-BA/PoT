@@ -48,7 +48,9 @@ class PuzzleEmbedding(nn.Module):
         # Embedding lookup table
         self.embeddings = nn.Embedding(num_puzzles, emb_dim)
         
-        # Zero init (HRM approach: let model learn puzzle-specific features)
+        # Small random init (if init_std=0, use 0.02 as default for better gradient flow)
+        if init_std == 0.0:
+            init_std = 0.02  # Small but non-zero for better learning
         nn.init.normal_(self.embeddings.weight, mean=0.0, std=init_std)
     
     def forward(self, puzzle_ids: torch.Tensor) -> torch.Tensor:
