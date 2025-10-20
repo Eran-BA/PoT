@@ -316,13 +316,13 @@ def evaluate_window(window, player: int, opponent: int) -> int:
     return score
 
 
-def generate_training_data(num_games: int, depth: int = 3, seed: int = 42):
+def generate_training_data(num_games: int, depth: int = 3, seed: int = 42, rows: int = 6, cols: int = 7):
     """Generate training data using minimax."""
     np.random.seed(seed)
     data = []
     
     for game_idx in tqdm(range(num_games), desc="Generating games"):
-        game = ConnectFour()
+        game = ConnectFour(rows=rows, cols=cols)
         game_states = []
         game_moves = []
         
@@ -631,15 +631,29 @@ class BERTConnectFourModel(nn.Module):
 
 def train_and_evaluate(
     model, model_name, train_data, test_data,
-    epochs=100, lr=1e-3, device='cpu'
+    epochs=100, lr=1e-3, device='cpu',
+    label_smoothing=0.0, warmup_steps=500
 ):
-    """Train and evaluate a Connect Four model."""
+    """Train and evaluate a Connect Four model with enhanced training options."""
     print(f"\nTraining {model_name}...")
     print(f"  Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
     
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    policy_criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    policy_criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
     value_criterion = nn.MSELoss()
+    
+    # Cosine LR schedule with warmup
+    steps_per_epoch = max(1, len(train_data) // 32)
+    total_steps = epochs * steps_per_epoch
+    def lr_at(step):
+        if step < warmup_steps:
+            return lr * step / max(1, warmup_steps)
+        rem = max(1, total_steps - warmup_steps)
+        prog = (step - warmup_steps) / rem
+        min_lr = 0.1 * lr
+        return min_lr + (lr - min_lr) * 0.5 * (1 + np.cos(np.pi * prog))
+    
+    global_step = 0
     
     start_time = time.time()
     best_accuracy = 0
@@ -654,6 +668,11 @@ def train_and_evaluate(
         
         # Training
         for batch_idx in range(0, len(train_data), 32):
+            # Update learning rate
+            cur_lr = lr_at(global_step)
+            for g in optimizer.param_groups:
+                g['lr'] = cur_lr
+            
             batch = train_data[batch_idx:batch_idx + 32]
             
             # Prepare batch
@@ -679,6 +698,8 @@ def train_and_evaluate(
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
+            
+            global_step += 1
             
             total_policy_loss += policy_loss.item()
             total_value_loss += value_loss.item()
@@ -758,13 +779,15 @@ def train_and_evaluate(
 # ========== Main A/B Test ==========
 
 def run_ab_test(train_games=500, test_games=100, minimax_depth=3, R=4, T=4, n_heads=4,
-                epochs=100, seed=42):
+                epochs=100, seed=42, lr=1e-3, label_smoothing=0.1, warmup_steps=500,
+                rows=6, cols=7):
     """Run A/B test for Connect Four."""
     
     print(f"\n{'='*80}")
     print(f"A/B Test: Connect Four")
     print(f"{'='*80}")
     print(f"Configuration:")
+    print(f"  Board size: {rows}×{cols}")
     print(f"  Training games: {train_games:,}")
     print(f"  Test games: {test_games:,}")
     print(f"  Minimax depth: {minimax_depth}")
@@ -779,8 +802,8 @@ def run_ab_test(train_games=500, test_games=100, minimax_depth=3, R=4, T=4, n_he
     
     # Generate data
     print(f"\nGenerating training data...")
-    train_data = generate_training_data(train_games, depth=minimax_depth, seed=seed)
-    test_data = generate_training_data(test_games, depth=minimax_depth, seed=seed+10000)
+    train_data = generate_training_data(train_games, depth=minimax_depth, seed=seed, rows=rows, cols=cols)
+    test_data = generate_training_data(test_games, depth=minimax_depth, seed=seed+10000, rows=rows, cols=cols)
     
     print(f"  Train positions: {len(train_data):,}")
     print(f"  Test positions: {len(test_data):,}")
@@ -794,6 +817,8 @@ def run_ab_test(train_games=500, test_games=100, minimax_depth=3, R=4, T=4, n_he
     
     # Baseline: single-pass transformer
     baseline = ConnectFourModel(
+        rows=rows,
+        cols=cols,
         d_model=d_model,
         n_heads=n_heads,
         d_ff=d_ff,
@@ -806,18 +831,60 @@ def run_ab_test(train_games=500, test_games=100, minimax_depth=3, R=4, T=4, n_he
     baseline_params = sum(p.numel() for p in baseline.parameters())
     print(f"  Baseline parameters: {baseline_params / 1e6:.2f}M")
     
-    # Create PoH-HRM first to get target parameter count
-    poh = ConnectFourModel(
-        d_model=d_model,
-        n_heads=n_heads,
-        d_ff=d_ff,
-        max_inner_iters=R,
-        T=T,
-        use_poh=True
-    ).to(device)
+    # Create PoH-HRM with parameter parity (equal or fewer params than baseline)
+    print(f"\n  Searching for PoH configuration with parameter parity...")
+    best_poh = None
+    best_poh_params = float('inf')
+    best_config = None
     
-    poh_params = sum(p.numel() for p in poh.parameters())
-    print(f"  PoH-HRM parameters: {poh_params / 1e6:.2f}M")
+    # Try reducing width (d_model and d_ff) to achieve parameter parity
+    for scale in [1.0, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6]:
+        trial_dm = int(d_model * scale)
+        # Ensure d_model is divisible by n_heads
+        trial_dm = (trial_dm // n_heads) * n_heads
+        if trial_dm < 64:
+            continue
+        trial_ff = int(d_ff * scale)
+        
+        trial_poh = ConnectFourModel(
+            rows=rows,
+            cols=cols,
+            d_model=trial_dm,
+            n_heads=n_heads,
+            d_ff=trial_ff,
+            max_inner_iters=R,
+            T=T,
+            use_poh=True
+        )
+        trial_params = sum(p.numel() for p in trial_poh.parameters())
+        
+        # Accept if within 10% of baseline or fewer params
+        if trial_params <= baseline_params * 1.1:
+            best_poh = trial_poh
+            best_poh_params = trial_params
+            best_config = {'d_model': trial_dm, 'd_ff': trial_ff, 'n_heads': n_heads}
+            print(f"    ✓ Found: d_model={trial_dm}, d_ff={trial_ff}, params={trial_params/1e6:.2f}M ({trial_params/baseline_params*100:.1f}% of baseline)")
+            break
+        
+        # Keep searching for closer match
+        if abs(trial_params - baseline_params) < abs(best_poh_params - baseline_params):
+            best_poh = trial_poh
+            best_poh_params = trial_params
+            best_config = {'d_model': trial_dm, 'd_ff': trial_ff, 'n_heads': n_heads}
+        
+        del trial_poh
+    
+    if best_poh is None:
+        raise RuntimeError("Could not find PoH configuration with acceptable parameter parity")
+    
+    poh = best_poh.to(device)
+    poh_params = best_poh_params
+    
+    param_ratio = (poh_params / baseline_params) * 100
+    print(f"  PoH-HRM parameters: {poh_params / 1e6:.2f}M (d_model={best_config['d_model']}, d_ff={best_config['d_ff']}, {param_ratio:.1f}% of baseline)")
+    
+    if poh_params > baseline_params:
+        print(f"  ⚠️  Warning: PoH has {(poh_params/baseline_params - 1)*100:.1f}% more parameters than baseline")
     
     # BERT baseline (if available) - dynamically adjust architecture for parameter parity with PoH
     bert = None
@@ -835,6 +902,8 @@ def run_ab_test(train_games=500, test_games=100, minimax_depth=3, R=4, T=4, n_he
             
             for config in configs:
                 bert_test = BERTConnectFourModel(
+                    rows=rows,
+                    cols=cols,
                     d_model=config['d_model'],
                     n_heads=min(n_heads, config['d_model'] // 64),  # Ensure valid n_heads
                     d_ff=config['d_ff'],
@@ -863,20 +932,23 @@ def run_ab_test(train_games=500, test_games=100, minimax_depth=3, R=4, T=4, n_he
     # Train baseline
     baseline_results = train_and_evaluate(
         baseline, "Baseline", train_data, test_data,
-        epochs=epochs, device=device
+        epochs=epochs, device=device, lr=lr,
+        label_smoothing=label_smoothing, warmup_steps=warmup_steps
     )
     
     # Train BERT (if available)
     if bert is not None:
         bert_results = train_and_evaluate(
             bert, "BERT", train_data, test_data,
-            epochs=epochs, device=device
+            epochs=epochs, device=device, lr=lr,
+            label_smoothing=label_smoothing, warmup_steps=warmup_steps
         )
     
     # Train PoH
     poh_results = train_and_evaluate(
         poh, f"PoH-HRM (R={R}, T={T})", train_data, test_data,
-        epochs=epochs, device=device
+        epochs=epochs, device=device, lr=lr,
+        label_smoothing=label_smoothing, warmup_steps=warmup_steps
     )
     
     # Results
@@ -898,7 +970,7 @@ def run_ab_test(train_games=500, test_games=100, minimax_depth=3, R=4, T=4, n_he
         print(f"  Training time: {bert_results['time_min']:.2f} min")
     
     print(f"\n🔬 PoH with HRM (R={R}, T={T}, n_heads={n_heads})")
-    print(f"  Parameters: {poh_results['params_M']:.2f}M")
+    print(f"  Parameters: {poh_results['params_M']:.2f}M (d_model={best_config['d_model']}, d_ff={best_config['d_ff']})")
     print(f"  Best Accuracy: {poh_results['best_accuracy']:.2%}")
     print(f"  Final Accuracy: {poh_results['final_accuracy']:.2%}")
     print(f"  Training time: {poh_results['time_min']:.2f} min")
@@ -949,6 +1021,13 @@ def main():
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
     parser.add_argument('--save-dir', type=str, default='experiments/results/connect_four_ab',
                         help='Save directory')
+    # Board size options
+    parser.add_argument('--rows', type=int, default=6, help='Board height (default: 6)')
+    parser.add_argument('--cols', type=int, default=7, help='Board width (default: 7)')
+    # Enhanced training options
+    parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate (default: 1e-3)')
+    parser.add_argument('--label-smoothing', type=float, default=0.1, help='Label smoothing (default: 0.1)')
+    parser.add_argument('--warmup-steps', type=int, default=500, help='LR warmup steps (default: 500)')
     
     args = parser.parse_args()
     
@@ -970,7 +1049,12 @@ def main():
         T=args.T,
         n_heads=args.n_heads,
         epochs=args.epochs,
-        seed=args.seed
+        seed=args.seed,
+        lr=args.lr,
+        label_smoothing=args.label_smoothing,
+        warmup_steps=args.warmup_steps,
+        rows=args.rows,
+        cols=args.cols
     )
     
     # Save results

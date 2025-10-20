@@ -12,6 +12,9 @@
 - Blog: BERT/GPT with inner thinking cycles (same parameter count)
   https://medium.com/@eranbt92/bert-gpt-with-inner-thinking-cycles-same-parameter-dc54dbdec61e
 
+- New: HRM vs PoT comparison report — alignment and differences:
+  [`experiments/HRM_VS_PoT_REPORT.md`](experiments/HRM_VS_PoT_REPORT.md)
+
 
 > **PoH** is a modular transformer architecture that adds **head-wise routing** and **iterative refinement** to standard transformers. Designed for tasks requiring multi-step reasoning, in simple words "it is a BERT/GPT architecture with inner thinking cycles while keeping number of parameters same” -
 
