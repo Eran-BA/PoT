@@ -478,8 +478,13 @@ def main():
     # Setup
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
-    device = torch.device('cuda' if torch.cuda.is_available() else 
-                          'mps' if torch.backends.mps.is_available() else 'cpu')
+    # Device selection with optional override via environment variable
+    force = os.getenv("FORCE_DEVICE")
+    if force in {"cpu", "cuda", "mps"}:
+        device = torch.device(force)
+    else:
+        device = torch.device('cuda' if torch.cuda.is_available() else 
+                              'mps' if torch.backends.mps.is_available() else 'cpu')
     print(f"Device: {device}")
     
     # Load data
