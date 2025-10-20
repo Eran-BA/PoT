@@ -84,7 +84,9 @@ class Grid2GridMazeSolver(nn.Module):
         T: int = 1,
         num_puzzles: int = 1000,  # NEW: number of unique puzzles
         puzzle_emb_dim: int = 256,  # NEW: puzzle embedding dimension
-        max_halting_steps: int = 16  # NEW: max adaptive computation steps
+        max_halting_steps: int = 16,  # NEW: max adaptive computation steps
+        latent_len: int = 16,  # NEW: number of latent tokens (TRM-style recursion)
+        latent_k: int = 3  # NEW: inner latent updates per outer step
     ):
         super().__init__()
         
@@ -97,14 +99,22 @@ class Grid2GridMazeSolver(nn.Module):
         self.puzzle_emb = PuzzleEmbedding(num_puzzles, puzzle_emb_dim, init_std=0.02)
         self.puzzle_emb_len = (puzzle_emb_dim + d_model - 1) // d_model  # Ceil div
         
+        # NEW: TRM-style latent recursion parameters
+        self.latent_len = int(latent_len)
+        self.latent_k = int(latent_k)
+        # Learnable initial latent tokens shared across batch
+        self.latent_init = nn.Parameter(torch.randn(1, self.latent_len, d_model) * 0.02)
+        
         # NEW: Q-halting controller
         self.q_halt_controller = QHaltingController(d_model, max_steps=max_halting_steps)
         self.max_halting_steps = max_halting_steps
         
         # Input embedding
         self.input_embed = nn.Embedding(vocab_size, d_model, padding_idx=0)
-        # Update positional embedding to include puzzle positions
-        self.pos_embed = nn.Parameter(torch.randn(1, 900 + self.puzzle_emb_len, d_model) * 0.02)
+        # Update positional embedding to include puzzle + latent positions
+        self.pos_embed = nn.Parameter(
+            torch.randn(1, 900 + self.puzzle_emb_len + self.latent_len, d_model) * 0.02
+        )
         self.pre_norm = nn.LayerNorm(d_model)
         
         # Transformer encoder
@@ -144,6 +154,18 @@ class Grid2GridMazeSolver(nn.Module):
 
             # Post-norm: norm AFTER residual (HRM architecture)
             self.use_post_norm = True
+            
+            # NEW: Latent updater (TRM-style): cross-attn from latent -> context (puzzle+grid)
+            self.latent_attn = nn.MultiheadAttention(
+                embed_dim=d_model,
+                num_heads=n_heads,
+                dropout=dropout,
+                batch_first=True
+            )
+            self.latent_ffn = SwiGLU(d_model, d_ff, dropout)
+            self.latent_norm1 = RMSNorm(d_model)
+            self.latent_norm2 = RMSNorm(d_model)
+            self.latent_drop = nn.Dropout(dropout)
         else:
             # Standard Transformer encoder (Pre-norm, ReLU, LayerNorm)
             encoder_layer = nn.TransformerEncoderLayer(
@@ -214,10 +236,13 @@ class Grid2GridMazeSolver(nn.Module):
         puzzle_emb = puzzle_emb.view(B, self.puzzle_emb_len, self.d_model)
         
         # Embed input tokens
-        x = self.input_embed(input_seq)  # [B, 900, d_model]
+        x_grid = self.input_embed(input_seq)  # [B, 900, d_model]
         
-        # Prepend puzzle embedding
-        x = torch.cat([puzzle_emb, x], dim=1)  # [B, 900 + puzzle_emb_len, d_model]
+        # Prepare latent tokens
+        latent = self.latent_init.expand(B, -1, -1)  # [B, latent_len, d_model]
+        
+        # Assemble full sequence: [puzzle_emb, latent, grid]
+        x = torch.cat([puzzle_emb, latent, x_grid], dim=1)  # [B, puzzle+latent+900, d_model]
         x = x + self.pos_embed[:, :x.size(1), :]
         
         # Apply LayerNorm (don't manually normalize - it destroys puzzle embeddings!)
@@ -230,6 +255,24 @@ class Grid2GridMazeSolver(nn.Module):
         if self.use_poh:
             # PoH with adaptive halting: refine R times
             for step in range(1, self.max_halting_steps + 1):
+                # TRM-style inner latent updates (K steps)
+                for _ in range(self.latent_k):
+                    # Indices
+                    pL = self.puzzle_emb_len
+                    zL = self.latent_len
+                    # Current latent slice and context (exclude latent tokens)
+                    latent_cur = x[:, pL:pL + zL, :]
+                    ctx = torch.cat([x[:, :pL, :], x[:, pL + zL:, :]], dim=1)
+                    # Cross-attn: latent queries over context
+                    lat_attn, _ = self.latent_attn(latent_cur, ctx, ctx, need_weights=False)
+                    latent_cur = latent_cur + self.latent_drop(lat_attn)
+                    latent_cur = self.latent_norm1(latent_cur)
+                    lat_ffn = self.latent_ffn(latent_cur)
+                    latent_cur = latent_cur + self.latent_drop(lat_ffn)
+                    latent_cur = self.latent_norm2(latent_cur)
+                    # Write back
+                    x = torch.cat([x[:, :pL, :], latent_cur, x[:, pL + zL:, :]], dim=1)
+                
                 x, hrm_state = self._encode_once(x, hrm_state)
                 
                 # Check if should halt
@@ -250,8 +293,8 @@ class Grid2GridMazeSolver(nn.Module):
             q_halt, q_continue = self.q_halt_controller(x)
             actual_steps = 1
         
-        # Remove puzzle positions from output
-        x = x[:, self.puzzle_emb_len:, :]  # [B, 900, d_model]
+        # Remove puzzle and latent positions from output
+        x = x[:, self.puzzle_emb_len + self.latent_len:, :]  # [B, 900, d_model]
         
         # Project to output vocab
         logits = self.output_proj(x)  # [B, 900, vocab_size]
@@ -418,6 +461,8 @@ def main():
     parser.add_argument('--num-puzzles', type=int, default=1000, help='Number of unique puzzles')
     parser.add_argument('--puzzle-emb-dim', type=int, default=256, help='Puzzle embedding dimension')
     parser.add_argument('--max-halting-steps', type=int, default=16, help='Max adaptive computation steps')
+    parser.add_argument('--latent-len', type=int, default=16, help='TRM latent tokens length')
+    parser.add_argument('--latent-k', type=int, default=3, help='Inner latent updates per outer step')
     parser.add_argument('--output', type=str, default='experiments/results/maze_grid2grid')
     parser.add_argument('--seed', type=int, default=42)
     args = parser.parse_args()
@@ -448,13 +493,16 @@ def main():
         T=args.T,
         num_puzzles=args.num_puzzles,
         puzzle_emb_dim=args.puzzle_emb_dim,
-        max_halting_steps=args.max_halting_steps
+        max_halting_steps=args.max_halting_steps,
+        latent_len=args.latent_len,
+        latent_k=args.latent_k
     ).to(device)
     
     param_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
     puzzle_param_count = sum(p.numel() for p in model.puzzle_emb.parameters() if p.requires_grad)
     print(f"\nModel: {args.model}")
     print(f"Parameters: {param_count:,} (puzzle emb: {puzzle_param_count:,})")
+    print(f"Config: T={args.T}, max_halting_steps={args.max_halting_steps}, latent_len={args.latent_len}, latent_k={args.latent_k}")
     
     # Dual optimizers (HRM approach: separate puzzle embedding optimizer)
     puzzle_params = list(model.puzzle_emb.parameters())
