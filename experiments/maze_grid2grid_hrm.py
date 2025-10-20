@@ -241,16 +241,15 @@ class Grid2GridMazeSolver(nn.Module):
         # Prepare latent tokens
         latent = self.latent_init.expand(B, -1, -1)  # [B, latent_len, d_model]
         
-        # Assemble full sequence: [puzzle_emb, latent, grid]
-        x = torch.cat([puzzle_emb, latent, x_grid], dim=1)  # [B, puzzle+latent+900, d_model]
-        x = x + self.pos_embed[:, :x.size(1), :]
-        
-        # Apply LayerNorm (don't manually normalize - it destroys puzzle embeddings!)
-        x = self.pre_norm(x)
+        # Keep original input embeddings as constant reference (TRM-style)
+        x_grid_ref = x_grid  # [B, 900, d_model]
+        latent_cur = latent  # current latent tokens
         
         # Adaptive computation loop with Q-halting
-        hrm_state = self.hrm_controller.init_state(B, x.device) if self.use_poh else None
+        device = x_grid_ref.device
+        hrm_state = self.hrm_controller.init_state(B, device) if self.use_poh else None
         actual_steps = self.max_halting_steps
+        x_out = None
         
         if self.use_poh:
             # PoH with adaptive halting: refine R times
@@ -260,9 +259,8 @@ class Grid2GridMazeSolver(nn.Module):
                     # Indices
                     pL = self.puzzle_emb_len
                     zL = self.latent_len
-                    # Current latent slice and context (exclude latent tokens)
-                    latent_cur = x[:, pL:pL + zL, :]
-                    ctx = torch.cat([x[:, :pL, :], x[:, pL + zL:, :]], dim=1)
+                    # Context is constant reference: puzzle_emb + original grid embeddings
+                    ctx = torch.cat([puzzle_emb, x_grid_ref], dim=1)  # [B, pL+900, d_model]
                     # Cross-attn: latent queries over context
                     lat_attn, _ = self.latent_attn(latent_cur, ctx, ctx, need_weights=False)
                     latent_cur = latent_cur + self.latent_drop(lat_attn)
@@ -270,13 +268,16 @@ class Grid2GridMazeSolver(nn.Module):
                     lat_ffn = self.latent_ffn(latent_cur)
                     latent_cur = latent_cur + self.latent_drop(lat_ffn)
                     latent_cur = self.latent_norm2(latent_cur)
-                    # Write back
-                    x = torch.cat([x[:, :pL, :], latent_cur, x[:, pL + zL:, :]], dim=1)
                 
-                x, hrm_state = self._encode_once(x, hrm_state)
+                # Reconstruct sequence with constant inputs + updated latent
+                x_step = torch.cat([puzzle_emb, latent_cur, x_grid_ref], dim=1)  # [B, pL+zL+900, d]
+                x_step = x_step + self.pos_embed[:, :x_step.size(1), :]
+                x_step = self.pre_norm(x_step)
+                
+                x_out, hrm_state = self._encode_once(x_step, hrm_state)
                 
                 # Check if should halt
-                q_halt, q_continue = self.q_halt_controller(x)
+                q_halt, q_continue = self.q_halt_controller(x_out)
                 
                 # Decide whether to stop (batch-wise decision)
                 should_halt = self.q_halt_controller.should_halt(
@@ -289,12 +290,19 @@ class Grid2GridMazeSolver(nn.Module):
                     break
         else:
             # Standard transformer (no adaptive halting)
-            x, _ = self._encode_once(x, None)
-            q_halt, q_continue = self.q_halt_controller(x)
+            # Build once with constant inputs
+            x_step = torch.cat([puzzle_emb, latent_cur, x_grid_ref], dim=1)
+            x_step = x_step + self.pos_embed[:, :x_step.size(1), :]
+            x_step = self.pre_norm(x_step)
+            x_out, _ = self._encode_once(x_step, None)
+            q_halt, q_continue = self.q_halt_controller(x_out)
             actual_steps = 1
         
         # Remove puzzle and latent positions from output
-        x = x[:, self.puzzle_emb_len + self.latent_len:, :]  # [B, 900, d_model]
+        if x_out is None:
+            # Fallback to using last constructed x_step if needed
+            x_out = x_step
+        x = x_out[:, self.puzzle_emb_len + self.latent_len:, :]  # [B, 900, d_model]
         
         # Project to output vocab
         logits = self.output_proj(x)  # [B, 900, vocab_size]
