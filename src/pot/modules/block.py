@@ -416,6 +416,11 @@ class IterRefiner(nn.Module):
                 
                 if return_inner_stats:
                     inner_stats.append(self._pack_stats(stats, t))
+                
+                # O(1) gradient memory across refinement steps: keep only last iterate
+                # Detach graph before next iteration to avoid backprop through earlier steps
+                if t < self.R - 1:
+                    h = h.detach()
             
             return (h, inner_stats) if return_inner_stats else (h, None)
         

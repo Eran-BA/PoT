@@ -422,6 +422,10 @@ class PointerMoHTransformerBlock(nn.Module):
                     if p_halt.item() > 0.5:  # Threshold (can be tuned)
                         break
 
+            # O(1) gradient memory: detach between iterations unless we are at the last iterate
+            if it < max_iters - 1 and self.grad_mode == "last":
+                token_ctx = token_ctx.detach()
+
         # Save final latent BEFORE residual/FFN (for TRM outer supervision)
         z_final = token_ctx
 
