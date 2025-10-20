@@ -439,6 +439,8 @@ def main():
                     help='Supervise every N steps (1=dense, 2=sparse, 5=very sparse)')
     ap.add_argument('--last-iter-only', action='store_true',
                     help='O(1) memory: only backprop through last refinement iteration')
+    ap.add_argument('--poh-only', action='store_true',
+                    help='Skip baseline and run only PoH-HRM phase')
     ap.add_argument('--hard-route', action='store_true',
                     help='Enable straight-through hard routing with temperature anneal')
     ap.add_argument('--ponder-weight', type=float, default=0.0,
@@ -456,12 +458,16 @@ def main():
     # ~8M baseline config
     d_model=384; n_heads=6; d_ff=1536; depth=4
 
-    print("\nBaseline (≈8M params)")
-    base = Baseline(size, d_model, n_heads, d_ff, depth, maze_enc=args.maze_enc).to(device)
-    base_p = count_params(base); print(f"Parameters: {base_p/1e6:.2f}M")
-    train(base, train_loader, device, epochs=args.epochs, lr=args.lr, label_smoothing=args.label_smoothing, warmup_steps=args.warmup_steps, multi_horizon=args.multi_horizon, validity_mask=args.validity_mask, size=size, supervision_interval=args.supervision_interval, last_iter_only=False, hard_route=False, ponder_weight=0.0)
-    base_acc, base_opt = evaluate(base, test_loader, device, size)
-    print(f"Baseline: Acc={base_acc:.2f}%, Opt={base_opt:.2f}%")
+    if not args.poh_only:
+        print("\nBaseline (≈8M params)")
+        base = Baseline(size, d_model, n_heads, d_ff, depth, maze_enc=args.maze_enc).to(device)
+        base_p = count_params(base); print(f"Parameters: {base_p/1e6:.2f}M")
+        train(base, train_loader, device, epochs=args.epochs, lr=args.lr, label_smoothing=args.label_smoothing, warmup_steps=args.warmup_steps, multi_horizon=args.multi_horizon, validity_mask=args.validity_mask, size=size, supervision_interval=args.supervision_interval, last_iter_only=False, hard_route=False, ponder_weight=0.0)
+        base_acc, base_opt = evaluate(base, test_loader, device, size)
+        print(f"Baseline: Acc={base_acc:.2f}%, Opt={base_opt:.2f}%")
+    else:
+        base_p = 0
+        base_acc = base_opt = 0.0
 
     print("\nPoH-HRM (parity, depth=4)")
     # Keep depth=4, reduce width (d_model) for parity
