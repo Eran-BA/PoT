@@ -397,12 +397,17 @@ class IterRefiner(nn.Module):
         B, T, D = x.size()
         inner_stats = [] if return_inner_stats else None
         
+        # TRM-style constant-input injection: keep a reference to the original input
+        x_ref = x
+
         # --- No ACT: simple R refinement steps ---
         if not self.act:
             h = x
             for t in range(self.R):
                 h_prev = h
-                h, stats = self.stack(h, attn_mask=attn_mask)
+                # Inject original input each iteration as reference (TRM-style)
+                h_in = h + x_ref
+                h, stats = self.stack(h_in, attn_mask=attn_mask)
                 
                 # Optional outer residual across iterations
                 if self.outer_residual:
@@ -422,7 +427,9 @@ class IterRefiner(nn.Module):
         
         for t in range(self.R):
             h_prev = h
-            h, stats = self.stack(h, attn_mask=attn_mask)
+            # Inject original input each iteration as reference (TRM-style)
+            h_in = h + x_ref
+            h, stats = self.stack(h_in, attn_mask=attn_mask)
             
             # Optional outer residual across iterations
             if self.outer_residual:
