@@ -83,7 +83,7 @@ class PoHConfig:
     act_penalty: float = 0.01
     
     # Normalization
-    norm_type: str = "pre"            # ["pre", "post"]
+    norm_type: str = "post"           # ["pre", "post"]
     
     # Parameter parity
     param_match_baseline: bool = True  # Keep <1% delta vs baseline

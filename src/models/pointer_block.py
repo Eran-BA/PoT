@@ -173,7 +173,7 @@ class PointerMoHTransformerBlock(nn.Module):
         # Attention & FFN
         attn_dropout: float = 0.0,
         ff_dropout: float = 0.0,
-        use_pre_norm: bool = True,
+        use_pre_norm: bool = False,
         # Routing
         routing_tau: float = 0.7,
         routing_topk: int = 0,  # 0 = soft; >0 = hard top-k
@@ -425,8 +425,8 @@ class PointerMoHTransformerBlock(nn.Module):
         # Save final latent BEFORE residual/FFN (for TRM outer supervision)
         z_final = token_ctx
 
-        # Apply residual connection for attention
-        attn_out = token_ctx + (x if self.use_pre_norm else 0.0)
+        # Apply residual connection for attention (always add skip x)
+        attn_out = x + token_ctx
         if not self.use_pre_norm:
             attn_out = self.ln1(attn_out)
 
