@@ -288,6 +288,18 @@ class Grid2GridMazeSolver(nn.Module):
                 if should_halt.all():
                     actual_steps = step
                     break
+                
+                # O(1) grads across outer steps: detach state and latents before next iteration
+                latent_cur = latent_cur.detach()
+                x_out = x_out.detach()
+                if hrm_state is not None:
+                    # Detach common tensor fields if present
+                    if hasattr(hrm_state, "z_L") and torch.is_tensor(hrm_state.z_L):
+                        hrm_state.z_L = hrm_state.z_L.detach()
+                    if hasattr(hrm_state, "z_H") and torch.is_tensor(hrm_state.z_H):
+                        hrm_state.z_H = hrm_state.z_H.detach()
+                    if hasattr(hrm_state, "step") and torch.is_tensor(hrm_state.step):
+                        hrm_state.step = hrm_state.step.detach()
         else:
             # Standard transformer (no adaptive halting)
             # Build once with constant inputs
