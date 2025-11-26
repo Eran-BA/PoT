@@ -246,9 +246,16 @@ class BaselineMazeSolver(nn.Module):
         self.pos_embed = nn.Embedding(maze_size * maze_size, d_model)
         self.cell_embed = nn.Embedding(4, d_model)  # wall, empty, start, goal
         
-        # Transformer encoder
-        encoder_layer = nn.TransformerEncoderLayer(d_model, n_heads, d_ff, dropout, batch_first=True)
+        # Transformer encoder with pre-norm for better training stability
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model, n_heads, d_ff, dropout, 
+            batch_first=True,
+            norm_first=True  # Pre-LN for better gradient flow
+        )
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers)
+        
+        # Layer norm before decoder
+        self.final_norm = nn.LayerNorm(d_model)
         
         # Decoder for path prediction
         self.decoder = nn.Linear(d_model, maze_size * maze_size)
@@ -270,6 +277,9 @@ class BaselineMazeSolver(nn.Module):
         
         # Encode
         h = self.encoder(h)
+        
+        # Apply final norm (helps with gradient flow)
+        h = self.final_norm(h)
         
         # Decode path (predict next cell at each step)
         logits = self.decoder(h)
@@ -386,14 +396,29 @@ class MazeDatasetWrapper(Dataset):
         return maze, start, goal, path_indices_tensor, path_len
 
 
-def train_model(model, train_loader, device, epochs=30, lr=1e-3):
-    """Train a maze solver model."""
+def train_model(model, train_loader, device, epochs=30, lr=1e-3, warmup_epochs=5, model_name="Model"):
+    """Train a maze solver model with proper LR scheduling."""
     model.train()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     criterion = nn.CrossEntropyLoss(ignore_index=-1)  # Ignore padding
     
+    # Cosine annealing with warmup
+    def lr_lambda(epoch):
+        if epoch < warmup_epochs:
+            return (epoch + 1) / warmup_epochs
+        else:
+            progress = (epoch - warmup_epochs) / max(1, epochs - warmup_epochs)
+            return 0.5 * (1 + math.cos(math.pi * progress))
+    
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    
+    best_loss = float('inf')
+    
     for epoch in range(epochs):
+        model.train()
         total_loss = 0
+        n_batches = 0
+        
         for maze, start, goal, path, path_len in train_loader:
             maze, start, goal, path = maze.to(device), start.to(device), goal.to(device), path.to(device)
             path_len = path_len.to(device)
@@ -402,7 +427,6 @@ def train_model(model, train_loader, device, epochs=30, lr=1e-3):
             logits = model(maze, start, goal)  # [B, seq_len, V]
             
             # Loss: predict next cell given current cell along the ground-truth path
-            # For each time step i, use logits gathered at current cell index rather than time index
             batch_size = path.shape[0]
             max_len = path.shape[1]
             
@@ -412,21 +436,29 @@ def train_model(model, train_loader, device, epochs=30, lr=1e-3):
                 valid = (path[:, i] != -1) & (path[:, i + 1] != -1)
                 if valid.any():
                     batch_idx = torch.nonzero(valid, as_tuple=False).squeeze(1)
-                    curr_idx = path[valid, i]           # [M]
-                    next_idx = path[valid, i + 1]       # [M]
-                    # Gather logits at current position: logits[batch, curr_pos, :]
-                    gathered = logits[batch_idx, curr_idx, :]  # [M, V]
+                    curr_idx = path[valid, i]
+                    next_idx = path[valid, i + 1]
+                    gathered = logits[batch_idx, curr_idx, :]
                     loss += criterion(gathered, next_idx)
                     count += 1
             
             if count > 0:
                 loss /= count
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 total_loss += loss.item()
+                n_batches += 1
+        
+        scheduler.step()
+        avg_loss = total_loss / max(1, n_batches)
+        
+        if avg_loss < best_loss:
+            best_loss = avg_loss
         
         if (epoch + 1) % 10 == 0:
-            print(f"Epoch {epoch+1}/{epochs}, Loss: {total_loss/len(train_loader):.4f}")
+            current_lr = scheduler.get_last_lr()[0]
+            print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.4f}, LR: {current_lr:.2e}")
     
     return model
 
@@ -518,13 +550,17 @@ def run_ab_test(
     epochs: int = 40,
     seed: int = 42,
     skip_baseline: bool = False,
-    skip_poh: bool = False
+    skip_poh: bool = False,
+    baseline_lr: float = 3e-4,
+    poh_lr: float = 1e-3
 ):
     """Run A/B test with proper maze generation.
     
     Args:
         skip_baseline: If True, only train PoH-HRM (skip baseline). Useful for hyperparameter search.
         skip_poh: If True, only train baseline (skip PoH-HRM). Useful for baseline-only runs.
+        baseline_lr: Learning rate for baseline model.
+        poh_lr: Learning rate for PoH model.
     """
     
     # Device setup with diagnostics
@@ -573,9 +609,11 @@ def run_ab_test(
         print(f"\n{'='*60}")
         print("Training: Baseline Transformer")
         print(f"{'='*60}")
-        baseline = BaselineMazeSolver(maze_size).to(device)
+        baseline = BaselineMazeSolver(maze_size, n_heads=n_heads).to(device)
         print(f"Parameters: {sum(p.numel() for p in baseline.parameters())/1e6:.2f}M")
-        baseline = train_model(baseline, train_loader, device, epochs)
+        print(f"Using LR: {baseline_lr} with warmup + cosine schedule")
+        baseline = train_model(baseline, train_loader, device, epochs, lr=baseline_lr, 
+                               warmup_epochs=max(5, epochs//10), model_name="Baseline")
         acc, opt = evaluate_model(baseline, test_loader, device, maze_size)
         print(f"Accuracy: {acc:.2f}%, Optimality: {opt:.2f}%")
         results['baseline'] = {'acc': acc, 'opt': opt}
@@ -590,7 +628,9 @@ def run_ab_test(
         print(f"{'='*60}")
         poh = PoHMazeSolver(maze_size, R=R, T=T, n_heads=n_heads).to(device)
         print(f"Parameters: {sum(p.numel() for p in poh.parameters())/1e6:.2f}M")
-        poh = train_model(poh, train_loader, device, epochs)
+        print(f"Using LR: {poh_lr} with warmup + cosine schedule")
+        poh = train_model(poh, train_loader, device, epochs, lr=poh_lr,
+                         warmup_epochs=max(5, epochs//10), model_name="PoH-HRM")
         acc, opt = evaluate_model(poh, test_loader, device, maze_size)
         print(f"Accuracy: {acc:.2f}%, Optimality: {opt:.2f}%")
         results['poh'] = {'acc': acc, 'opt': opt}
@@ -624,6 +664,8 @@ if __name__ == '__main__':
     parser.add_argument('--heads', type=int, default=4, help='Number of attention heads')
     parser.add_argument('--epochs', type=int, default=40, help='Training epochs')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
+    parser.add_argument('--baseline-lr', type=float, default=3e-4, help='Learning rate for baseline')
+    parser.add_argument('--poh-lr', type=float, default=1e-3, help='Learning rate for PoH')
     
     args = parser.parse_args()
     
@@ -636,6 +678,8 @@ if __name__ == '__main__':
         T=args.T,
         n_heads=args.heads,
         epochs=args.epochs,
-        seed=args.seed
+        seed=args.seed,
+        baseline_lr=args.baseline_lr,
+        poh_lr=args.poh_lr
     )
 
