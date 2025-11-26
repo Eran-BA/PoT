@@ -9,6 +9,7 @@ Year: 2025
 License: Apache 2.0
 """
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, Tuple
 
@@ -36,6 +37,11 @@ class HRMPointerController(nn.Module):
     
     Output: Routing weights (alphas) over n_heads
 
+    Note on routing granularity:
+        This controller produces per-SEQUENCE routing weights [B, n_heads] that are
+        broadcast to all tokens. For true per-TOKEN routing [B, T, H], use
+        PointerOverHeadsController from src.models.layers instead.
+
     Args:
         d_model: Model dimension
         n_heads: Number of attention heads to route over
@@ -47,6 +53,9 @@ class HRMPointerController(nn.Module):
         entropy_reg: Entropy regularization coefficient (default: 1e-3)
         use_layernorm: Apply LayerNorm to states (default: True)
         dropout: Dropout probability (default: 0.0)
+        detach_H_update: If True, block gradients through slow-timescale H updates
+                        for memory efficiency. If False (default), H-module is fully
+                        differentiable as in the original HRM paper.
     """
 
     def __init__(
@@ -61,7 +70,8 @@ class HRMPointerController(nn.Module):
         temperature_min: float = 0.7,
         entropy_reg: float = 1e-3,
         use_layernorm: bool = True,
-        dropout: float = 0.0
+        dropout: float = 0.0,
+        detach_H_update: bool = False,
     ):
         super().__init__()
         self.n_heads = n_heads
@@ -72,6 +82,7 @@ class HRMPointerController(nn.Module):
         self.temperature_init = temperature_init
         self.temperature_min = temperature_min
         self.entropy_reg = entropy_reg
+        self.detach_H_update = detach_H_update
 
         # Input projection: map task representation to controller space
         self.inp_proj = nn.Linear(d_model, self.d_ctrl)
@@ -113,13 +124,18 @@ class HRMPointerController(nn.Module):
         step = torch.zeros(batch_size, dtype=torch.long, device=device)
         return HRMState(z_L=z0, z_H=z0, step=step)
 
-    @torch.no_grad()
     def _maybe_update_H(self, x_ctrl: torch.Tensor, state: HRMState) -> HRMState:
-        """Update H-module only when (step % T) == 0."""
+        """Update H-module only when (step % T) == 0.
+
+        If detach_H_update=True, gradients are blocked through this update for memory efficiency.
+        If detach_H_update=False (default), the H-module is fully differentiable.
+        """
         needs = (state.step % self.T) == 0
         if needs.any():
-            z_H_new = self.f_H(x_ctrl, state.z_H)
-            state = HRMState(z_L=state.z_L, z_H=self.ln_H(z_H_new), step=state.step)
+            ctx = torch.no_grad() if self.detach_H_update else nullcontext()
+            with ctx:
+                z_H_new = self.f_H(x_ctrl, state.z_H)
+                state = HRMState(z_L=state.z_L, z_H=self.ln_H(z_H_new), step=state.step)
         return state
 
     def forward(

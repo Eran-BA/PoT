@@ -28,19 +28,9 @@ License: Apache 2.0
 """
 
 import math
-from typing import Optional, Tuple
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
-
-# src/models/layers.py  (new class)
-# HRM-style Pointer Controller for PoT
-# Copyright: Apache-2.0 (aligns with repo)
-# --------------------------------------------------------------
+from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Tuple, Dict, Any
 
 import torch
 import torch.nn as nn
@@ -63,7 +53,27 @@ class HRMPointerController(nn.Module):
     - High-level module f_H: updates every T steps (multi-timescale), conditions f_L via context.
     - Produces head logits -> softmax (temperature) -> optional top-k -> alphas.
 
+    Note on routing granularity:
+        This controller produces per-SEQUENCE routing weights [B, n_heads] that are
+        broadcast to all tokens. For true per-TOKEN routing [B, T, H], use
+        PointerOverHeadsController instead.
+
     Intended as a drop-in replacement for your existing Pointer Controller in PoT.
+
+    Args:
+        d_model: Model dimension
+        n_heads: Number of attention heads to route over
+        d_ctrl: Controller hidden dimension (default: d_model)
+        T: Period for H-module updates (slow timescale, default: 4)
+        topk: Optional sparsification (route to top-k heads only)
+        temperature_init: Initial softmax temperature (default: 2.0)
+        temperature_min: Minimum temperature (default: 0.7)
+        entropy_reg: Entropy regularization coefficient (default: 1e-3)
+        use_layernorm: Apply LayerNorm to states (default: True)
+        dropout: Dropout probability (default: 0.0)
+        detach_H_update: If True, block gradients through slow-timescale H updates
+                        for memory efficiency. If False (default), H-module is fully
+                        differentiable as in the original HRM paper.
     """
 
     def __init__(
@@ -78,7 +88,8 @@ class HRMPointerController(nn.Module):
         temperature_min: float = 0.7,
         entropy_reg: float = 1e-3,       # small entropy reg; decay in trainer if desired
         use_layernorm: bool = True,
-        dropout: float = 0.0
+        dropout: float = 0.0,
+        detach_H_update: bool = False,   # If True, block gradients through H updates
     ):
         super().__init__()
         self.n_heads = n_heads
@@ -89,6 +100,7 @@ class HRMPointerController(nn.Module):
         self.temperature_init = temperature_init
         self.temperature_min = temperature_min
         self.entropy_reg = entropy_reg
+        self.detach_H_update = detach_H_update
 
         # Input adapters: summarize token/context into controller space
         self.inp_proj = nn.Linear(d_model, self.d_ctrl)
@@ -130,15 +142,21 @@ class HRMPointerController(nn.Module):
         return HRMState(z_L=z0, z_H=z0, step=step)
 
     # -------------- Forward --------------
-    @torch.no_grad()
     def _maybe_update_H(self, x_ctrl: torch.Tensor, state: HRMState) -> HRMState:
-        # update H only when (step % T) == 0 (per-example)
-        # simplest variant: if any in batch needs H-update, we compute for all (keeps it batched)
+        """Update H-module only when (step % T) == 0 (per-example).
+
+        Simplest variant: if any in batch needs H-update, we compute for all (keeps it batched).
+
+        If detach_H_update=True, gradients are blocked through this update for memory efficiency.
+        If detach_H_update=False (default), the H-module is fully differentiable.
+        """
         needs = (state.step % self.T) == 0
         if needs.any():
-            # standard GRUCell expects [B, in_dim]
-            z_H_new = self.f_H(x_ctrl, state.z_H)
-            state = HRMState(z_L=state.z_L, z_H=self.ln_H(z_H_new), step=state.step)
+            ctx = torch.no_grad() if self.detach_H_update else nullcontext()
+            with ctx:
+                # standard GRUCell expects [B, in_dim]
+                z_H_new = self.f_H(x_ctrl, state.z_H)
+                state = HRMState(z_L=state.z_L, z_H=self.ln_H(z_H_new), step=state.step)
         return state
 
     def forward(

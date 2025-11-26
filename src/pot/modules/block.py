@@ -21,6 +21,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from src.models.layers import MultiHeadSelfAttention
+
 
 # ========== Routing Primitives ==========
 
@@ -140,20 +142,23 @@ class PoHBlock(nn.Module):
     """
     A Transformer-style block with head-wise routing.
     
-    Routing scales/filters per-head attention outputs before residual.
-    Drop-in replacement for nn.TransformerEncoderLayer.
+    Routing scales/filters per-head attention outputs BEFORE projection,
+    enabling true per-head routing. Drop-in replacement for nn.TransformerEncoderLayer.
+    
+    Note:
+        Uses custom MultiHeadSelfAttention that returns per-head outputs [B, T, H, Dh]
+        before the output projection, allowing proper head-wise routing.
     """
     
     def __init__(self, cfg: PoHConfig, router: Optional[HeadRouter] = None):
         super().__init__()
         self.cfg = cfg
         
-        # Standard components
-        self.self_attn = nn.MultiheadAttention(
-            embed_dim=cfg.d_model,
-            num_heads=cfg.n_heads,
-            dropout=cfg.dropout,
-            batch_first=True
+        # Custom MHA that returns per-head outputs [B, T, H, Dh] BEFORE projection
+        self.self_attn = MultiHeadSelfAttention(
+            d_model=cfg.d_model,
+            n_heads=cfg.n_heads,
+            attn_dropout=cfg.dropout,
         )
         
         self.ff = nn.Sequential(
@@ -195,7 +200,7 @@ class PoHBlock(nn.Module):
         
         Args:
             x: [B, T, d_model]
-            attn_mask: Optional attention mask
+            attn_mask: Optional attention mask [B, H, T, T] (additive, use -inf for masked)
         
         Returns:
             out: [B, T, d_model]
@@ -209,12 +214,12 @@ class PoHBlock(nn.Module):
             y = self.norm1(y)
         
         # --- Attention ---
-        attn_out, attn_weights = self.self_attn(
-            y, y, y,
-            attn_mask=attn_mask,
-            need_weights=True,
-            average_attn_weights=False  # Get per-head weights [B, H, T, T]
-        )
+        # MultiHeadSelfAttention returns per-head outputs [B, T, H, Dh] BEFORE projection
+        heads_out, attn_weights = self.self_attn(y, attn_mask=attn_mask)
+        # heads_out: [B, T, H, Dh] - true per-head outputs
+        # attn_weights: [B, H, T, T]
+        
+        B, T, H, Dh = heads_out.shape
         
         # Routing: compute per-token per-head weights
         route_logits = self.router(y)  # [B, T, H]
@@ -223,16 +228,14 @@ class PoHBlock(nn.Module):
         stats["route_logits"] = route_logits
         stats["route"] = route
         
-        # Reshape attn_out to heads to apply head-wise gain * route
-        B, T, D = attn_out.shape
-        H = self.cfg.n_heads
-        d_head = D // H
-        attn_out_h = attn_out.view(B, T, H, d_head)  # [B, T, H, d_head]
-        
         # Scale each head by (learned gain) * (route weight per token, head)
+        # This is applied BEFORE the output projection, so we're routing actual head outputs
         gain = self.head_gain.view(1, 1, H, 1)  # [1, 1, H, 1]
-        routed = attn_out_h * gain * route.unsqueeze(-1)  # Broadcast over d_head
-        attn_out = routed.view(B, T, D)
+        routed = heads_out * gain * route.unsqueeze(-1)  # [B, T, H, Dh]
+        
+        # Concatenate and project (apply output projection after routing)
+        routed_concat = routed.reshape(B, T, H * Dh)  # [B, T, D]
+        attn_out = self.self_attn.out(routed_concat)  # [B, T, D]
         
         # Residual
         x2 = x + self.dropout(attn_out)
@@ -301,6 +304,7 @@ class PoHStack(nn.Module):
         self,
         x: torch.Tensor,
         attn_mask: Optional[torch.Tensor] = None,
+        skip_pos_encoding: bool = False,
     ) -> Tuple[torch.Tensor, List[Dict[str, torch.Tensor]]]:
         """
         Forward through all blocks with GPT-style residual chaining.
@@ -308,13 +312,16 @@ class PoHStack(nn.Module):
         Args:
             x: [B, T, d_model]
             attn_mask: Optional attention mask
+            skip_pos_encoding: If True, skip positional encoding (useful for
+                              refinement iterations where PE was already applied)
         
         Returns:
             x: [B, T, d_model]
             stats_all: List of stats dicts (one per block)
         """
-        # Apply positional encoding before first block
-        x, _ = self.pos_encoder(x)
+        # Apply positional encoding before first block (unless skipped)
+        if not skip_pos_encoding:
+            x, _ = self.pos_encoder(x)
         
         stats_all = []
         
@@ -341,6 +348,24 @@ class IterRefiner(nn.Module):
     GPT-style residuals are already present within each block.
     
     This is the top-level module for multi-step refinement.
+    
+    Gradient Modes:
+        - "full": Full BPTT through all iterations. Enables deep supervision but
+                 uses O(R) memory. Use this when you need gradients through all
+                 intermediate states.
+        - "last": Only backpropagate through the last iteration. Uses O(1) memory
+                 but gradients don't flow through earlier steps. This is the
+                 memory-efficient mode, but is INCOMPATIBLE with deep supervision.
+    
+    Args:
+        stack: PoHStack to wrap
+        max_inner_iters: Number of refinement iterations (R)
+        outer_residual: Whether to add residual across refinement steps
+        rezero_init: Whether to use ReZero-style initialization for outer residual
+        act: Whether to use ACT-style adaptive halting
+        threshold: ACT halting threshold
+        penalty: ACT ponder cost penalty
+        grad_mode: Gradient mode ("full" or "last"). Default "last" for memory efficiency.
     """
     
     def __init__(
@@ -352,10 +377,14 @@ class IterRefiner(nn.Module):
         act: bool = False,
         threshold: Optional[float] = None,
         penalty: Optional[float] = None,
+        grad_mode: str = "last",  # "full" = full BPTT | "last" = memory-efficient
     ):
         super().__init__()
+        assert grad_mode in ("full", "last"), f"grad_mode must be 'full' or 'last', got {grad_mode}"
+        
         self.stack = stack
         self.R = max_inner_iters  # R = refinement steps (avoiding "K" to prevent confusion)
+        self.grad_mode = grad_mode
         
         # Outer residual settings
         self.outer_residual = outer_residual
@@ -407,7 +436,8 @@ class IterRefiner(nn.Module):
                 h_prev = h
                 # Inject original input each iteration as reference (TRM-style)
                 h_in = h + x_ref
-                h, stats = self.stack(h_in, attn_mask=attn_mask)
+                # Only apply positional encoding on the first iteration
+                h, stats = self.stack(h_in, attn_mask=attn_mask, skip_pos_encoding=(t > 0))
                 
                 # Optional outer residual across iterations
                 if self.outer_residual:
@@ -417,9 +447,9 @@ class IterRefiner(nn.Module):
                 if return_inner_stats:
                     inner_stats.append(self._pack_stats(stats, t))
                 
-                # O(1) gradient memory across refinement steps: keep only last iterate
-                # Detach graph before next iteration to avoid backprop through earlier steps
-                if t < self.R - 1:
+                # Gradient mode: "last" = O(1) memory (detach), "full" = full BPTT
+                # Note: "last" mode is INCOMPATIBLE with deep supervision
+                if self.grad_mode == "last" and t < self.R - 1:
                     h = h.detach()
             
             return (h, inner_stats) if return_inner_stats else (h, None)
@@ -434,7 +464,8 @@ class IterRefiner(nn.Module):
             h_prev = h
             # Inject original input each iteration as reference (TRM-style)
             h_in = h + x_ref
-            h, stats = self.stack(h_in, attn_mask=attn_mask)
+            # Only apply positional encoding on the first iteration
+            h, stats = self.stack(h_in, attn_mask=attn_mask, skip_pos_encoding=(t > 0))
             
             # Optional outer residual across iterations
             if self.outer_residual:

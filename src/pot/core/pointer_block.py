@@ -3,10 +3,16 @@ Generic Pointer-over-Heads block (task-agnostic).
 
 Combines multi-head attention with dynamic routing via HRM controller.
 
+.. deprecated::
+    This module is deprecated. Use :class:`src.models.pointer_block.PointerMoHTransformerBlock`
+    instead, which correctly applies routing to per-head outputs before projection.
+
 Author: Eran Ben Artzy
 Year: 2025
 License: Apache 2.0
 """
+
+import warnings
 
 import torch
 import torch.nn as nn
@@ -14,10 +20,24 @@ from typing import Optional, Dict, Any, Tuple
 
 from .hrm_controller import HRMPointerController, HRMState
 
+# Emit deprecation warning on import
+warnings.warn(
+    "src.pot.core.pointer_block is deprecated. "
+    "Use src.models.pointer_block.PointerMoHTransformerBlock instead, "
+    "which correctly applies routing to per-head outputs before projection.",
+    DeprecationWarning,
+    stacklevel=2
+)
+
 
 class PointerBlock(nn.Module):
     """
     Task-agnostic Pointer-over-Heads block.
+
+    .. deprecated::
+        This class is deprecated because it does not correctly apply routing weights
+        to attention outputs. The routing alphas are computed but never used.
+        Use :class:`src.models.pointer_block.PointerMoHTransformerBlock` instead.
 
     Architecture:
     1. Multi-head self-attention (produces n_heads outputs)
