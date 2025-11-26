@@ -248,14 +248,14 @@ class StatefulHRMRouter(nn.Module):
 # ============================================================================
 
 class BaselineARCSolver(nn.Module):
-    """Standard Transformer for ARC tasks."""
+    """Standard Transformer for ARC tasks with Pre-LN for better training."""
     
     def __init__(
         self,
         d_model: int = 256,
         n_heads: int = 8,
         d_ff: int = 1024,
-        num_layers: int = 6,
+        num_layers: int = 8,  # Increased from 6 to better match PoH params
         dropout: float = 0.1
     ):
         super().__init__()
@@ -267,11 +267,16 @@ class BaselineARCSolver(nn.Module):
         # 2D positional embedding
         self.pos_embed = nn.Parameter(torch.randn(1, ARC_SEQ_LEN, d_model) * 0.02)
         
-        # Transformer encoder
+        # Transformer encoder with Pre-LN for better gradient flow
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model, n_heads, d_ff, dropout, batch_first=True
+            d_model, n_heads, d_ff, dropout, 
+            batch_first=True,
+            norm_first=True  # Pre-LN for better training stability
         )
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers)
+        
+        # Final LayerNorm before output projection (helps with gradient flow)
+        self.final_norm = nn.LayerNorm(d_model)
         
         # Output projection
         self.output = nn.Linear(d_model, ARC_VOCAB_SIZE)
@@ -295,6 +300,9 @@ class BaselineARCSolver(nn.Module):
         # Encode
         h = self.encoder(h)
         
+        # Apply final norm
+        h = self.final_norm(h)
+        
         # Project to vocab
         logits = self.output(h)  # [B, seq_len, vocab_size]
         
@@ -305,14 +313,14 @@ class BaselineARCSolver(nn.Module):
 
 
 class PoHARCSolver(nn.Module):
-    """PoH-HRM for ARC tasks."""
+    """PoH-HRM for ARC tasks with parameter parity to baseline."""
     
     def __init__(
         self,
         d_model: int = 256,
         n_heads: int = 8,
         d_ff: int = 1024,
-        num_layers: int = 4,
+        num_layers: int = 4,  # Fewer layers, but with R iterations = effective depth
         R: int = 4,
         T: int = 4,
         dropout: float = 0.1
@@ -328,18 +336,19 @@ class PoHARCSolver(nn.Module):
         # 2D positional embedding
         self.pos_embed = nn.Parameter(torch.randn(1, ARC_SEQ_LEN, d_model) * 0.02)
         
-        # PoH stack
+        # PoH stack with smaller d_ff for parameter parity
+        # HRM controller adds significant params, so we reduce d_ff to compensate
         cfg = PoHConfig(
             d_model=d_model,
             n_heads=n_heads,
-            d_ff=d_ff,
+            d_ff=d_ff // 2,  # Reduced for parameter parity
             dropout=dropout,
             pos_encoding="none",
         )
         
         self.poh_stack = PoHStack(cfg, depth=num_layers)
         
-        # Replace router with HRM
+        # Replace router with HRM (uses smaller d_ctrl for param parity)
         for block in self.poh_stack.blocks:
             if hasattr(block, 'router'):
                 block.router = StatefulHRMRouter(d_model, n_heads, T)
@@ -351,6 +360,9 @@ class PoHARCSolver(nn.Module):
             outer_residual=True,
             rezero_init=True
         )
+        
+        # Final LayerNorm for consistency with baseline
+        self.final_norm = nn.LayerNorm(d_model)
         
         # Output projection
         self.output = nn.Linear(d_model, ARC_VOCAB_SIZE)
@@ -365,6 +377,9 @@ class PoHARCSolver(nn.Module):
         # PoH with refinement
         h, _ = self.refiner(h)
         
+        # Apply final norm
+        h = self.final_norm(h)
+        
         # Project to vocab
         logits = self.output(h)
         logits = logits.view(B, ARC_GRID_SIZE, ARC_GRID_SIZE, ARC_VOCAB_SIZE)
@@ -376,15 +391,29 @@ class PoHARCSolver(nn.Module):
 # Training & Evaluation
 # ============================================================================
 
-def train_model(model, train_loader, device, epochs=50, lr=1e-3):
-    """Train an ARC solver."""
+def train_model(model, train_loader, device, epochs=50, lr=1e-3, warmup_epochs=5, model_name="Model"):
+    """Train an ARC solver with warmup + cosine annealing LR schedule."""
+    import math
+    
     model.train()
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs)
     criterion = nn.CrossEntropyLoss(ignore_index=0)  # Ignore PAD
     
+    # Warmup + cosine annealing schedule
+    def lr_lambda(epoch):
+        if epoch < warmup_epochs:
+            return (epoch + 1) / warmup_epochs
+        else:
+            progress = (epoch - warmup_epochs) / max(1, epochs - warmup_epochs)
+            return 0.5 * (1 + math.cos(math.pi * progress))
+    
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    
     for epoch in range(epochs):
+        model.train()
         total_loss = 0
+        n_batches = 0
+        
         for input_grid, output_grid, is_test in train_loader:
             input_grid = input_grid.to(device)
             output_grid = output_grid.to(device)
@@ -405,12 +434,14 @@ def train_model(model, train_loader, device, epochs=50, lr=1e-3):
             optimizer.step()
             
             total_loss += loss.item()
+            n_batches += 1
         
         scheduler.step()
         
         if (epoch + 1) % 10 == 0:
-            avg_loss = total_loss / len(train_loader)
-            print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.4f}")
+            avg_loss = total_loss / max(1, n_batches)
+            current_lr = scheduler.get_last_lr()[0]
+            print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.4f}, LR: {current_lr:.2e}")
     
     return model
 
@@ -464,7 +495,9 @@ def run_arc_benchmark(
     n_heads: int = 8,
     d_model: int = 256,
     batch_size: int = 16,
-    seed: int = 42
+    seed: int = 42,
+    baseline_lr: float = 3e-4,
+    poh_lr: float = 1e-3
 ):
     """Run ARC A/B test."""
     
@@ -483,6 +516,7 @@ def run_arc_benchmark(
     print(f"Max tasks: {max_tasks}")
     print(f"Epochs: {epochs}")
     print(f"PoH config: R={R}, T={T}, heads={n_heads}")
+    print(f"Baseline LR: {baseline_lr}, PoH LR: {poh_lr}")
     print(f"{'='*80}\n")
     
     # Download and load data
@@ -507,8 +541,10 @@ def run_arc_benchmark(
     baseline = BaselineARCSolver(d_model=d_model, n_heads=n_heads).to(device)
     n_params = sum(p.numel() for p in baseline.parameters())
     print(f"Parameters: {n_params/1e6:.2f}M")
+    print(f"Using LR: {baseline_lr} with warmup + cosine schedule")
     
-    baseline = train_model(baseline, train_loader, device, epochs)
+    baseline = train_model(baseline, train_loader, device, epochs, lr=baseline_lr,
+                          warmup_epochs=max(5, epochs//10), model_name="Baseline")
     pixel_acc, grid_acc = evaluate_model(baseline, eval_loader, device)
     print(f"Pixel Accuracy: {pixel_acc:.2f}%, Grid Accuracy: {grid_acc:.2f}%")
     results['baseline'] = {'pixel_acc': pixel_acc, 'grid_acc': grid_acc}
@@ -521,8 +557,10 @@ def run_arc_benchmark(
     poh = PoHARCSolver(d_model=d_model, n_heads=n_heads, R=R, T=T).to(device)
     n_params = sum(p.numel() for p in poh.parameters())
     print(f"Parameters: {n_params/1e6:.2f}M")
+    print(f"Using LR: {poh_lr} with warmup + cosine schedule")
     
-    poh = train_model(poh, train_loader, device, epochs)
+    poh = train_model(poh, train_loader, device, epochs, lr=poh_lr,
+                     warmup_epochs=max(5, epochs//10), model_name="PoH-HRM")
     pixel_acc, grid_acc = evaluate_model(poh, eval_loader, device)
     print(f"Pixel Accuracy: {pixel_acc:.2f}%, Grid Accuracy: {grid_acc:.2f}%")
     results['poh'] = {'pixel_acc': pixel_acc, 'grid_acc': grid_acc}
@@ -550,6 +588,8 @@ if __name__ == '__main__':
     parser.add_argument('--d-model', type=int, default=256, help='Model dimension')
     parser.add_argument('--batch-size', type=int, default=16, help='Batch size')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
+    parser.add_argument('--baseline-lr', type=float, default=3e-4, help='Learning rate for baseline')
+    parser.add_argument('--poh-lr', type=float, default=1e-3, help='Learning rate for PoH')
     
     args = parser.parse_args()
     
@@ -561,6 +601,8 @@ if __name__ == '__main__':
         n_heads=args.heads,
         d_model=args.d_model,
         batch_size=args.batch_size,
-        seed=args.seed
+        seed=args.seed,
+        baseline_lr=args.baseline_lr,
+        poh_lr=args.poh_lr
     )
 
