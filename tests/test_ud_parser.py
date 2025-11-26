@@ -26,14 +26,19 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ud_pointer_parser import (
-    mean_pool_subwords,
-    pad_block_diagonal,
-    make_pointer_targets,
-    BiaffinePointer,
-    UDPointerParser,
-    collate_batch,
-)
+# ud_pointer_parser was moved to archive/
+try:
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "archive"))
+    from ud_pointer_parser import (
+        mean_pool_subwords,
+        pad_block_diagonal,
+        make_pointer_targets,
+        BiaffinePointer,
+        UDPointerParser,
+        collate_batch,
+    )
+except ImportError:
+    pytest.skip("ud_pointer_parser module moved to archive", allow_module_level=True)
 
 
 # ========================================

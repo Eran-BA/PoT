@@ -370,10 +370,12 @@ class TestDropInCompatibility:
         assert out.shape == x.shape
     
     def test_gradient_flow(self):
-        """Gradients should flow through the entire stack."""
+        """Gradients should flow through the entire stack when grad_mode='full'."""
         cfg = PoHConfig(d_model=64, n_heads=4, d_ff=128)
         stack = PoHStack(cfg, depth=2)
-        refiner = IterRefiner(stack, max_inner_iters=2)
+        # Use grad_mode="full" to ensure gradients flow through all iterations including PE
+        # (grad_mode="last" detaches early iterations, so PE wouldn't receive gradients)
+        refiner = IterRefiner(stack, max_inner_iters=2, grad_mode="full")
         
         x = torch.randn(2, 10, 64, requires_grad=True)
         out, _ = refiner(x)
