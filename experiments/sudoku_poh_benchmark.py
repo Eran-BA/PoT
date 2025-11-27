@@ -590,6 +590,10 @@ def main():
     parser.add_argument('--output', type=str, default='experiments/results/sudoku_poh')
     parser.add_argument('--seed', type=int, default=42)
     
+    # Evaluation mode
+    parser.add_argument('--eval-only', action='store_true', help='Only evaluate, skip training')
+    parser.add_argument('--checkpoint', type=str, default=None, help='Path to checkpoint for evaluation')
+    
     args = parser.parse_args()
     
     # Setup
@@ -638,6 +642,29 @@ def main():
     param_count = sum(p.numel() for p in model.parameters())
     print(f"\nModel: {args.model.upper()}")
     print(f"Parameters: {param_count:,} ({param_count/1e6:.2f}M)")
+    
+    # Load checkpoint if specified
+    if args.checkpoint:
+        print(f"\nLoading checkpoint: {args.checkpoint}")
+        checkpoint = torch.load(args.checkpoint, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        print(f"  Loaded from epoch {checkpoint.get('epoch', '?')}")
+        print(f"  Previous accuracy: {checkpoint.get('test_grid_acc', '?')}%")
+    
+    # Eval-only mode
+    if args.eval_only:
+        print(f"\n{'='*60}")
+        print("EVALUATION MODE")
+        print(f"{'='*60}")
+        
+        test_metrics = evaluate(model, test_loader, device, use_poh=use_poh)
+        
+        print(f"\nTest Results:")
+        print(f"  Loss: {test_metrics['loss']:.4f}")
+        print(f"  Cell Accuracy: {test_metrics['cell_acc']:.2f}%")
+        print(f"  Grid Accuracy: {test_metrics['grid_acc']:.2f}%")
+        print(f"\n{'='*60}")
+        return
     
     # Optimizers (HRM style: separate for puzzle embeddings)
     if use_poh:
