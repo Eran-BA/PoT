@@ -15,10 +15,9 @@ Year: 2025
 License: Apache 2.0
 """
 
-from src.models.base import ParserBase
-from src.models.baseline import BaselineParser, VanillaBlock
-from src.models.poh import PoHParser
-from src.models.pointer_block import PointerMoHTransformerBlock
+# Only import layers that don't require transformers at module load time
+# This allows src.pot.modules to import MultiHeadSelfAttention without
+# triggering the transformers dependency
 from src.models.layers import (
     BiaffinePointer,
     BiaffineLabeler,
@@ -29,8 +28,6 @@ from src.models.layers import (
     entropy_from_logits,
     gumbel_softmax_topk,
 )
-# Note: PoHGPT and BaselineGPT are imported lazily to avoid circular imports
-# with src.pot.modules. Access them via src.models.PoHGPT or src.models.BaselineGPT
 
 __all__ = [
     "ParserBase",
@@ -51,7 +48,22 @@ __all__ = [
 ]
 
 def __getattr__(name):
-    """Lazy import GPT models to avoid circular imports with src.pot.modules."""
+    """Lazy import models that require transformers to avoid mandatory dependency."""
+    if name == "ParserBase":
+        from src.models.base import ParserBase
+        return ParserBase
+    if name == "BaselineParser":
+        from src.models.baseline import BaselineParser
+        return BaselineParser
+    if name == "VanillaBlock":
+        from src.models.baseline import VanillaBlock
+        return VanillaBlock
+    if name == "PoHParser":
+        from src.models.poh import PoHParser
+        return PoHParser
+    if name == "PointerMoHTransformerBlock":
+        from src.models.pointer_block import PointerMoHTransformerBlock
+        return PointerMoHTransformerBlock
     if name == "PoHGPT":
         from src.pot.models.poh_gpt import PoHGPT
         return PoHGPT
