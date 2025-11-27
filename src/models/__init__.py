@@ -29,8 +29,8 @@ from src.models.layers import (
     entropy_from_logits,
     gumbel_softmax_topk,
 )
-from src.pot.models.poh_gpt import PoHGPT
-from src.models.baseline_gpt import BaselineGPT
+# Note: PoHGPT and BaselineGPT are imported lazily to avoid circular imports
+# with src.pot.modules. Access them via src.models.PoHGPT or src.models.BaselineGPT
 
 __all__ = [
     "ParserBase",
@@ -49,3 +49,13 @@ __all__ = [
     "PoHGPT",
     "BaselineGPT",
 ]
+
+def __getattr__(name):
+    """Lazy import GPT models to avoid circular imports with src.pot.modules."""
+    if name == "PoHGPT":
+        from src.pot.models.poh_gpt import PoHGPT
+        return PoHGPT
+    if name == "BaselineGPT":
+        from src.models.baseline_gpt import BaselineGPT
+        return BaselineGPT
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
