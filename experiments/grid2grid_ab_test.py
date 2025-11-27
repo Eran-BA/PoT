@@ -534,6 +534,7 @@ def run_grid2grid_benchmark(
     n_heads: int = 4,
     d_model: int = 128,
     d_ff: int = None,
+    poh_d_ff: int = None,  # Separate FFN dim for PoH (default: d_ff // 2)
     baseline_layers: int = 4,
     poh_layers: int = 2,
     batch_size: int = 32,
@@ -602,10 +603,12 @@ def run_grid2grid_benchmark(
     print(f"Training: PoH-HRM (R={R}, T={T})")
     print(f"{'='*60}")
     
+    # PoH uses smaller FFN since it iterates R times
+    actual_poh_d_ff = poh_d_ff if poh_d_ff is not None else (d_ff // 2 if d_ff else d_model)
     poh = PoHGrid2Grid(
         d_model=d_model, 
         n_heads=n_heads, 
-        d_ff=d_ff,
+        d_ff=actual_poh_d_ff,
         num_layers=poh_layers,
         R=R, 
         T=T
@@ -613,7 +616,7 @@ def run_grid2grid_benchmark(
     n_params = sum(p.numel() for p in poh.parameters())
     poh_params = n_params
     print(f"Parameters: {n_params/1e6:.2f}M")
-    print(f"Config: d_model={d_model}, d_ff={d_ff or 2*d_model}, layers={poh_layers}, R={R}, T={T}")
+    print(f"Config: d_model={d_model}, d_ff={actual_poh_d_ff}, layers={poh_layers}, R={R}, T={T}")
     print(f"Using LR: {poh_lr} with warmup + cosine schedule")
     
     poh = train_model(poh, train_loader, device, epochs, lr=poh_lr,
@@ -644,7 +647,8 @@ if __name__ == '__main__':
     parser.add_argument('--T', type=int, default=4, help='HRM outer loop period')
     parser.add_argument('--heads', type=int, default=4, help='Number of attention heads')
     parser.add_argument('--d-model', type=int, default=128, help='Model dimension')
-    parser.add_argument('--d-ff', type=int, default=None, help='FFN dimension (default: 4*d_model for baseline, 2*d_model for PoH)')
+    parser.add_argument('--d-ff', type=int, default=None, help='FFN dimension for baseline (default: 4*d_model)')
+    parser.add_argument('--poh-d-ff', type=int, default=None, help='FFN dimension for PoH (default: d_ff/2, smaller since PoH iterates)')
     parser.add_argument('--baseline-layers', type=int, default=4, help='Number of layers for baseline')
     parser.add_argument('--poh-layers', type=int, default=2, help='Number of layers for PoH')
     parser.add_argument('--batch-size', type=int, default=32, help='Batch size')
@@ -663,9 +667,12 @@ if __name__ == '__main__':
         args.d_model = 512
         args.d_ff = 2048
         args.baseline_layers = 4
-        args.poh_layers = 3
+        args.poh_layers = 2  # Reduced: PoH iterates R times, needs fewer layers
         args.heads = 8
-        print("🔥 Using 14M parameter preset!")
+        # Scale down LR for larger models (sqrt scaling rule)
+        args.baseline_lr = 3e-4
+        args.poh_lr = 3e-4
+        print("🔥 Using 14M parameter preset (with scaled LR for stability)!")
     
     results = run_grid2grid_benchmark(
         n_train=args.train,
@@ -676,6 +683,7 @@ if __name__ == '__main__':
         n_heads=args.heads,
         d_model=args.d_model,
         d_ff=args.d_ff,
+        poh_d_ff=args.poh_d_ff,
         baseline_layers=args.baseline_layers,
         poh_layers=args.poh_layers,
         batch_size=args.batch_size,
