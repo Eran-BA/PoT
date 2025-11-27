@@ -53,6 +53,7 @@ datasets/
 *.conllu
 
 # Logs & Outputs
+logs/
 *.log
 *.csv
 *.png
