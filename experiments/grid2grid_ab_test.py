@@ -309,10 +309,12 @@ class BaselineGrid2Grid(nn.Module):
         self,
         d_model: int = 128,
         n_heads: int = 4,
-        d_ff: int = 512,
+        d_ff: int = None,  # Default: 4 * d_model
         num_layers: int = 4,
         dropout: float = 0.1
     ):
+        if d_ff is None:
+            d_ff = 4 * d_model
         super().__init__()
         self.d_model = d_model
         self.seq_len = GRID_SIZE * GRID_SIZE
@@ -362,12 +364,14 @@ class PoHGrid2Grid(nn.Module):
         self,
         d_model: int = 128,
         n_heads: int = 4,
-        d_ff: int = 256,
+        d_ff: int = None,  # Default: 2 * d_model (smaller for PoH since iterative)
         num_layers: int = 2,
         R: int = 4,
         T: int = 4,
         dropout: float = 0.1
     ):
+        if d_ff is None:
+            d_ff = 2 * d_model
         super().__init__()
         self.d_model = d_model
         self.seq_len = GRID_SIZE * GRID_SIZE
@@ -529,6 +533,9 @@ def run_grid2grid_benchmark(
     T: int = 4,
     n_heads: int = 4,
     d_model: int = 128,
+    d_ff: int = None,
+    baseline_layers: int = 4,
+    poh_layers: int = 2,
     batch_size: int = 32,
     seed: int = 42,
     baseline_lr: float = 3e-4,
@@ -572,39 +579,55 @@ def run_grid2grid_benchmark(
     print("Training: Baseline Transformer")
     print(f"{'='*60}")
     
-    baseline = BaselineGrid2Grid(d_model=d_model, n_heads=n_heads).to(device)
+    baseline = BaselineGrid2Grid(
+        d_model=d_model, 
+        n_heads=n_heads, 
+        d_ff=d_ff,
+        num_layers=baseline_layers
+    ).to(device)
     n_params = sum(p.numel() for p in baseline.parameters())
     print(f"Parameters: {n_params/1e6:.2f}M")
+    print(f"Config: d_model={d_model}, d_ff={d_ff or 4*d_model}, layers={baseline_layers}")
     print(f"Using LR: {baseline_lr} with warmup + cosine schedule")
     
+    baseline_params = n_params
     baseline = train_model(baseline, train_loader, device, epochs, lr=baseline_lr,
                           warmup_epochs=max(5, epochs//10), model_name="Baseline")
     pixel_acc, grid_acc = evaluate_model(baseline, test_loader, device)
     print(f"Pixel Accuracy: {pixel_acc:.2f}%, Grid Accuracy: {grid_acc:.2f}%")
-    results['baseline'] = {'pixel_acc': pixel_acc, 'grid_acc': grid_acc}
+    results['baseline'] = {'pixel_acc': pixel_acc, 'grid_acc': grid_acc, 'params': baseline_params}
     
     # PoH-HRM
     print(f"\n{'='*60}")
     print(f"Training: PoH-HRM (R={R}, T={T})")
     print(f"{'='*60}")
     
-    poh = PoHGrid2Grid(d_model=d_model, n_heads=n_heads, R=R, T=T).to(device)
+    poh = PoHGrid2Grid(
+        d_model=d_model, 
+        n_heads=n_heads, 
+        d_ff=d_ff,
+        num_layers=poh_layers,
+        R=R, 
+        T=T
+    ).to(device)
     n_params = sum(p.numel() for p in poh.parameters())
+    poh_params = n_params
     print(f"Parameters: {n_params/1e6:.2f}M")
+    print(f"Config: d_model={d_model}, d_ff={d_ff or 2*d_model}, layers={poh_layers}, R={R}, T={T}")
     print(f"Using LR: {poh_lr} with warmup + cosine schedule")
     
     poh = train_model(poh, train_loader, device, epochs, lr=poh_lr,
                      warmup_epochs=max(5, epochs//10), model_name="PoH-HRM")
     pixel_acc, grid_acc = evaluate_model(poh, test_loader, device)
     print(f"Pixel Accuracy: {pixel_acc:.2f}%, Grid Accuracy: {grid_acc:.2f}%")
-    results['poh'] = {'pixel_acc': pixel_acc, 'grid_acc': grid_acc}
+    results['poh'] = {'pixel_acc': pixel_acc, 'grid_acc': grid_acc, 'params': poh_params}
     
     # Summary
     print(f"\n{'='*80}")
     print("RESULTS SUMMARY")
     print(f"{'='*80}")
-    print(f"Baseline: Pixel={results['baseline']['pixel_acc']:.2f}%, Grid={results['baseline']['grid_acc']:.2f}%")
-    print(f"PoH-HRM:  Pixel={results['poh']['pixel_acc']:.2f}%, Grid={results['poh']['grid_acc']:.2f}%")
+    print(f"Baseline ({baseline_params/1e6:.2f}M): Pixel={results['baseline']['pixel_acc']:.2f}%, Grid={results['baseline']['grid_acc']:.2f}%")
+    print(f"PoH-HRM  ({poh_params/1e6:.2f}M): Pixel={results['poh']['pixel_acc']:.2f}%, Grid={results['poh']['grid_acc']:.2f}%")
     print(f"{'='*80}\n")
     
     return results
@@ -621,12 +644,28 @@ if __name__ == '__main__':
     parser.add_argument('--T', type=int, default=4, help='HRM outer loop period')
     parser.add_argument('--heads', type=int, default=4, help='Number of attention heads')
     parser.add_argument('--d-model', type=int, default=128, help='Model dimension')
+    parser.add_argument('--d-ff', type=int, default=None, help='FFN dimension (default: 4*d_model for baseline, 2*d_model for PoH)')
+    parser.add_argument('--baseline-layers', type=int, default=4, help='Number of layers for baseline')
+    parser.add_argument('--poh-layers', type=int, default=2, help='Number of layers for PoH')
     parser.add_argument('--batch-size', type=int, default=32, help='Batch size')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
     parser.add_argument('--baseline-lr', type=float, default=3e-4, help='Learning rate for baseline')
     parser.add_argument('--poh-lr', type=float, default=1e-3, help='Learning rate for PoH')
     
+    # Preset for 14M parameter models
+    parser.add_argument('--14m', dest='use_14m', action='store_true', 
+                       help='Use ~14M parameter preset (d_model=512, d_ff=2048, baseline_layers=4, poh_layers=3)')
+    
     args = parser.parse_args()
+    
+    # Apply 14M preset if requested
+    if args.use_14m:
+        args.d_model = 512
+        args.d_ff = 2048
+        args.baseline_layers = 4
+        args.poh_layers = 3
+        args.heads = 8
+        print("🔥 Using 14M parameter preset!")
     
     results = run_grid2grid_benchmark(
         n_train=args.train,
@@ -636,6 +675,9 @@ if __name__ == '__main__':
         T=args.T,
         n_heads=args.heads,
         d_model=args.d_model,
+        d_ff=args.d_ff,
+        baseline_layers=args.baseline_layers,
+        poh_layers=args.poh_layers,
         batch_size=args.batch_size,
         seed=args.seed,
         baseline_lr=args.baseline_lr,
