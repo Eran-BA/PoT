@@ -135,8 +135,12 @@ def download_sudoku_dataset(output_dir: str, subsample_size: int = 1000, num_aug
             if subsample_size and split == 'train':
                 puzzles = puzzles[:subsample_size]
             
-            for puzzle_idx, (puzzle, solution, difficulty) in enumerate(tqdm(puzzles, desc=f"Processing {split}")):
-                # Convert string to numpy array
+            for puzzle_idx, row in enumerate(tqdm(puzzles, desc=f"Processing {split}")):
+                # CSV format: source, puzzle, solution, rating
+                source, puzzle, solution, rating = row[0], row[1], row[2], row[3]
+                
+                # Convert string to numpy array (replace '.' with '0' for blanks)
+                puzzle = puzzle.replace('.', '0')
                 inp = np.array([int(c) for c in puzzle], dtype=np.uint8)
                 sol = np.array([int(c) for c in solution], dtype=np.uint8)
                 
