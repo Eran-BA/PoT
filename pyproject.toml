@@ -68,4 +68,5 @@ line_length = 100
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "-v --cov=src/pot --cov-report=term-missing"
+addopts = "-v"
+# For coverage, run: pytest --cov=src/pot --cov-report=term-missing
