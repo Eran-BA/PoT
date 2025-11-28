@@ -498,10 +498,180 @@ class BaselineSudokuSolver(nn.Module):
 
 
 # ============================================================================
+# Debugging Functions
+# ============================================================================
+
+def debug_gradients(model):
+    """Log gradient norms per layer."""
+    grad_norms = {}
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            grad_norms[name] = param.grad.norm().item()
+    
+    # Summarize by component
+    components = {}
+    for name, norm in grad_norms.items():
+        component = name.split('.')[0]
+        if component not in components:
+            components[component] = []
+        components[component].append(norm)
+    
+    print("\n📊 Gradient Norms:")
+    for comp, norms in sorted(components.items()):
+        avg = sum(norms) / len(norms)
+        max_norm = max(norms)
+        print(f"  {comp}: avg={avg:.2e}, max={max_norm:.2e}")
+    
+    # Check for zero/vanishing gradients
+    zero_grads = [n for n, v in grad_norms.items() if v < 1e-10]
+    if zero_grads:
+        print(f"  ⚠️ Zero gradients in: {zero_grads[:5]}...")
+
+
+def debug_activations(model, x, puzzle_ids):
+    """Check activation statistics through the model."""
+    model.eval()
+    activations = {}
+    
+    def hook_fn(name):
+        def hook(module, input, output):
+            if isinstance(output, torch.Tensor):
+                activations[name] = {
+                    'mean': output.mean().item(),
+                    'std': output.std().item(),
+                    'max': output.abs().max().item(),
+                    'nan': torch.isnan(output).any().item(),
+                    'inf': torch.isinf(output).any().item(),
+                }
+        return hook
+    
+    hooks = []
+    for name, module in model.named_modules():
+        if isinstance(module, (nn.Linear, nn.LayerNorm, nn.MultiheadAttention)):
+            hooks.append(module.register_forward_hook(hook_fn(name)))
+    
+    with torch.no_grad():
+        model(x, puzzle_ids)
+    
+    for h in hooks:
+        h.remove()
+    
+    print("\n📈 Activation Statistics:")
+    problems = []
+    for name, stats in sorted(activations.items())[:10]:  # Show first 10
+        status = "✓" if not stats['nan'] and not stats['inf'] and stats['max'] < 100 else "⚠️"
+        print(f"  {status} {name}: mean={stats['mean']:.3f}, std={stats['std']:.3f}, max={stats['max']:.3f}")
+        if stats['nan'] or stats['inf']:
+            problems.append(f"{name}: NaN={stats['nan']}, Inf={stats['inf']}")
+    
+    if problems:
+        print(f"  🚨 PROBLEMS: {problems}")
+    
+    model.train()
+
+
+def debug_predictions(model, batch, device, num_samples=2):
+    """Visualize sample predictions vs ground truth."""
+    model.eval()
+    inp = batch['input'][:num_samples].to(device)
+    label = batch['label'][:num_samples].to(device)
+    puzzle_ids = batch['puzzle_id'][:num_samples].to(device)
+    
+    with torch.no_grad():
+        logits, _, _, steps = model(inp, puzzle_ids)
+        preds = logits.argmax(dim=-1)
+    
+    print(f"\n🧩 Sample Predictions (steps={steps}):")
+    for i in range(num_samples):
+        inp_grid = inp[i].view(9, 9).cpu().numpy()
+        pred_grid = preds[i].view(9, 9).cpu().numpy()
+        label_grid = label[i].view(9, 9).cpu().numpy()
+        
+        # Count errors
+        blank_mask = inp_grid == 0
+        errors = (pred_grid != label_grid) & blank_mask
+        total_blanks = blank_mask.sum()
+        correct_blanks = total_blanks - errors.sum()
+        
+        print(f"\n  Puzzle {i+1}: {correct_blanks}/{total_blanks} blanks correct")
+        print("  Input:      Prediction:  Label:")
+        for row in range(9):
+            inp_row = ''.join(str(x) if x > 0 else '.' for x in inp_grid[row])
+            pred_row = ''.join(str(x) for x in pred_grid[row])
+            label_row = ''.join(str(x) for x in label_grid[row])
+            # Mark errors
+            err_row = ''.join('X' if pred_grid[row][c] != label_grid[row][c] and inp_grid[row][c] == 0 else ' ' for c in range(9))
+            print(f"  {inp_row}    {pred_row}    {label_row}    {err_row}")
+    
+    model.train()
+
+
+def debug_routing(model, batch, device):
+    """Analyze HRM controller routing weights."""
+    if not hasattr(model, 'hrm_controller'):
+        print("\n🔀 No HRM controller found")
+        return
+    
+    model.eval()
+    inp = batch['input'][:1].to(device)
+    puzzle_ids = batch['puzzle_id'][:1].to(device)
+    
+    # Hook to capture routing weights
+    routing_weights = []
+    
+    def hook_fn(module, input, output):
+        if isinstance(output, tuple) and len(output) >= 1:
+            alphas = output[0]  # [B, n_heads]
+            routing_weights.append(alphas.detach().cpu())
+    
+    hook = model.hrm_controller.register_forward_hook(hook_fn)
+    
+    with torch.no_grad():
+        model(inp, puzzle_ids)
+    
+    hook.remove()
+    
+    if routing_weights:
+        alphas = routing_weights[-1][0]  # Last routing, first sample
+        print(f"\n🔀 Routing Weights (last step):")
+        print(f"  Heads: {[f'{a:.3f}' for a in alphas.numpy()]}")
+        print(f"  Entropy: {-(alphas * alphas.clamp(min=1e-10).log()).sum():.3f}")
+        print(f"  Max head: {alphas.argmax().item()} ({alphas.max():.3f})")
+    
+    model.train()
+
+
+def run_debug(model, dataloader, optimizer, device, epoch):
+    """Run all debug checks."""
+    print(f"\n{'='*60}")
+    print(f"🔍 DEBUG REPORT - Epoch {epoch}")
+    print(f"{'='*60}")
+    
+    # Get a sample batch
+    batch = next(iter(dataloader))
+    inp = batch['input'].to(device)
+    puzzle_ids = batch['puzzle_id'].to(device)
+    
+    # 1. Gradient analysis (after backward)
+    debug_gradients(model)
+    
+    # 2. Activation analysis
+    debug_activations(model, inp, puzzle_ids)
+    
+    # 3. Prediction visualization
+    debug_predictions(model, batch, device)
+    
+    # 4. Routing analysis
+    debug_routing(model, batch, device)
+    
+    print(f"{'='*60}\n")
+
+
+# ============================================================================
 # Training Functions
 # ============================================================================
 
-def train_epoch(model, dataloader, optimizer, puzzle_optimizer, device, epoch, use_poh=True):
+def train_epoch(model, dataloader, optimizer, puzzle_optimizer, device, epoch, use_poh=True, debug=False):
     """Train for one epoch."""
     model.train()
     total_loss = 0
@@ -560,6 +730,10 @@ def train_epoch(model, dataloader, optimizer, puzzle_optimizer, device, epoch, u
             'cell_acc': f'{100*correct_cells/total_cells:.1f}%',
             'grid_acc': f'{100*correct_grids/total_grids:.1f}%',
         })
+    
+    # Run debug at end of epoch if enabled
+    if debug:
+        run_debug(model, dataloader, optimizer, device, epoch)
     
     return {
         'loss': total_loss / len(dataloader),
@@ -637,6 +811,8 @@ def main():
     parser.add_argument('--weight-decay', type=float, default=1.0)
     parser.add_argument('--eval-interval', type=int, default=500)
     parser.add_argument('--patience', type=int, default=2000, help='Early stopping patience')
+    parser.add_argument('--debug', action='store_true', help='Enable debug logging')
+    parser.add_argument('--debug-interval', type=int, default=10, help='Debug every N epochs')
     
     # Output
     parser.add_argument('--output', type=str, default='experiments/results/sudoku_poh')
@@ -746,9 +922,12 @@ def main():
     os.makedirs(args.output, exist_ok=True)
     
     for epoch in range(1, args.epochs + 1):
+        # Debug every N epochs if enabled
+        do_debug = args.debug and (epoch == 1 or epoch % args.debug_interval == 0)
+        
         train_metrics = train_epoch(
             model, train_loader, optimizer, puzzle_optimizer, 
-            device, epoch, use_poh=use_poh
+            device, epoch, use_poh=use_poh, debug=do_debug
         )
         
         # Resample augmentations for next epoch (HRM-style)
