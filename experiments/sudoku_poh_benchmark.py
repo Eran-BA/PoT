@@ -568,8 +568,8 @@ class HybridPoHHRMSolver(nn.Module):
         L_layers: int = 2,  # Layers in L_level
         d_ff: int = 2048,
         dropout: float = 0.1,
-        H_cycles: int = 1,  # Outer loop iterations
-        L_cycles: int = 4,  # Inner loop iterations
+        H_cycles: int = 2,  # Outer loop iterations (increased from 1)
+        L_cycles: int = 8,  # Inner loop iterations (increased from 4)
         T: int = 4,  # HRM period for pointer controller
         num_puzzles: int = 1000,
         puzzle_emb_dim: int = 512,
@@ -659,9 +659,9 @@ class HybridPoHHRMSolver(nn.Module):
             # H_level: z_H = H(z_H, z_L) - integrates L's reasoning
             z_H, H_ptr_state = self.H_level(z_H, z_L, H_ptr_state)
         
-        # Output from H_level with residual connection from input
+        # Output from H_level (NO residual - force model to learn through H/L)
         x = self.final_norm(z_H)
-        logits = self.output_proj(x) + self.output_proj(input_emb)  # Residual
+        logits = self.output_proj(x)
         
         # Q-values for halting (for API compatibility)
         q_logits = self.q_head(z_H[:, 0])  # Use first position
@@ -1093,8 +1093,8 @@ def main():
     parser.add_argument('--T', type=int, default=4, help='HRM outer period')
     parser.add_argument('--max-halt', type=int, default=16, help='Max halting steps')
     # Hybrid model args
-    parser.add_argument('--H-cycles', type=int, default=1, help='Hybrid H_level outer cycles')
-    parser.add_argument('--L-cycles', type=int, default=4, help='Hybrid L_level inner cycles')
+    parser.add_argument('--H-cycles', type=int, default=2, help='Hybrid H_level outer cycles')
+    parser.add_argument('--L-cycles', type=int, default=8, help='Hybrid L_level inner cycles')
     parser.add_argument('--H-layers', type=int, default=2, help='Layers in H_level module')
     parser.add_argument('--L-layers', type=int, default=2, help='Layers in L_level module')
     
