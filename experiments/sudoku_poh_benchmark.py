@@ -601,9 +601,9 @@ class HybridPoHHRMSolver(nn.Module):
         # Position embedding
         self.pos_embed = nn.Parameter(torch.randn(1, self.seq_len, d_model) * 0.02)
         
-        # Initial hidden states (learned)
-        self.H_init = nn.Parameter(torch.randn(d_model) * 0.02)
-        self.L_init = nn.Parameter(torch.randn(d_model) * 0.02)
+        # Initial hidden states (learned) - use std=1 like HRM
+        self.H_init = nn.Parameter(torch.randn(d_model) * 1.0)
+        self.L_init = nn.Parameter(torch.randn(d_model) * 1.0)
         
         # Two-timescale reasoning modules with PoT head routing
         self.L_level = ReasoningModule(d_model, n_heads, L_layers, d_ff, dropout, T)
@@ -640,33 +640,36 @@ class HybridPoHHRMSolver(nn.Module):
         puzzle_emb = self.puzzle_emb_proj(puzzle_emb)  # [B, d_model]
         input_emb = input_emb + puzzle_emb.unsqueeze(1)  # Broadcast to all 81 positions
         
-        # Initialize hidden states WITH input embedding (HRM-style)
-        # This gives the model a meaningful starting point instead of zeros
-        z_H = input_emb + self.H_init.view(1, 1, -1)  # [B, 81, d_model]
-        z_L = input_emb + self.L_init.view(1, 1, -1)  # [B, 81, d_model]
+        # Initialize hidden states from LEARNED PARAMETERS ONLY (like HRM)
+        # Input comes ONLY through injection, not initialization
+        z_H = self.H_init.view(1, 1, -1).expand(B, self.seq_len, -1).clone()  # [B, 81, d_model]
+        z_L = self.L_init.view(1, 1, -1).expand(B, self.seq_len, -1).clone()  # [B, 81, d_model]
         
         # Initialize pointer controller states
         L_ptr_state = self.L_level.pointer_controller.init_state(B, device)
         H_ptr_state = self.H_level.pointer_controller.init_state(B, device)
         
         # HRM-style nested iteration
-        # - L_level runs fast (inner loop), gradients flow through all L steps
-        # - H_level runs slow (outer loop), detach between outer steps for O(1) memory
-        for H_step in range(self.H_cycles):
-            # Detach z_H between outer steps for O(1) memory
-            # (but NOT on first step - we need gradients to flow to init)
-            if H_step > 0:
-                z_H = z_H.detach()
-                z_L = z_L.detach()
-            
-            # Inner loop: L reasons fast with input injection
-            for L_step in range(self.L_cycles):
-                # L_level: z_L = L(z_L, z_H + input_emb)
-                # Input injection at every step is key to HRM
-                z_L, L_ptr_state = self.L_level(z_L, z_H + input_emb, L_ptr_state)
-            
-            # H_level: z_H = H(z_H, z_L) - integrates L's reasoning
-            z_H, H_ptr_state = self.H_level(z_H, z_L, H_ptr_state)
+        # KEY: Run ALL iterations in no_grad EXCEPT the final L and H steps
+        # This is how HRM actually trains - only backprop through final step
+        total_L_steps = self.H_cycles * self.L_cycles
+        step_count = 0
+        
+        with torch.no_grad():
+            for H_step in range(self.H_cycles):
+                for L_step in range(self.L_cycles):
+                    step_count += 1
+                    # Skip the last L step (will do with grad)
+                    if step_count < total_L_steps:
+                        z_L, L_ptr_state = self.L_level(z_L, z_H + input_emb, L_ptr_state)
+                
+                # Skip the last H step (will do with grad)
+                if H_step < self.H_cycles - 1:
+                    z_H, H_ptr_state = self.H_level(z_H, z_L, H_ptr_state)
+        
+        # ONLY the final L and H steps get gradients (exactly like HRM)
+        z_L, L_ptr_state = self.L_level(z_L, z_H + input_emb, L_ptr_state)
+        z_H, H_ptr_state = self.H_level(z_H, z_L, H_ptr_state)
         
         # Output from H_level (NO residual - force model to learn through H/L)
         x = self.final_norm(z_H)
