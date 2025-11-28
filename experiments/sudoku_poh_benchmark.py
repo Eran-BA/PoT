@@ -514,19 +514,27 @@ def train_epoch(model, dataloader, optimizer, puzzle_optimizer, device, epoch, u
         
         logits, q_halt, q_continue, steps = model(inp, puzzle_ids)
         
-        # CE loss (ignore blank cells in input for loss? No - predict all)
-        lm_loss = F.cross_entropy(
-            logits.view(-1, model.vocab_size),
-            label.view(-1)
-        )
+        # CE loss ONLY on blank cells (where input == 0)
+        # The model should learn to SOLVE, not copy given cells
+        blank_mask = (inp == 0).view(-1)  # (B*81,)
+        
+        if blank_mask.sum() > 0:
+            lm_loss = F.cross_entropy(
+                logits.view(-1, model.vocab_size)[blank_mask],
+                label.view(-1)[blank_mask]
+            )
+        else:
+            lm_loss = torch.tensor(0.0, device=device)
         
         # Q-halt loss (if PoH)
         if use_poh and q_halt is not None:
             with torch.no_grad():
                 preds = logits.argmax(dim=-1)
-                is_correct = (preds == label).all(dim=1).float()
+                # Check if BLANK cells are all correct (ignore given cells)
+                blank_mask_2d = (inp == 0)  # (B, 81)
+                blank_correct = ((preds == label) | ~blank_mask_2d).all(dim=1).float()
             
-            q_halt_loss = F.binary_cross_entropy_with_logits(q_halt, is_correct)
+            q_halt_loss = F.binary_cross_entropy_with_logits(q_halt, blank_correct)
             loss = lm_loss + 0.5 * q_halt_loss
         else:
             loss = lm_loss
@@ -537,12 +545,14 @@ def train_epoch(model, dataloader, optimizer, puzzle_optimizer, device, epoch, u
         if puzzle_optimizer:
             puzzle_optimizer.step()
         
-        # Metrics
+        # Metrics (only count BLANK cells - what the model actually solves)
         total_loss += loss.item()
         preds = logits.argmax(dim=-1)
-        correct_cells += (preds == label).sum().item()
-        total_cells += label.numel()
-        correct_grids += (preds == label).all(dim=1).sum().item()
+        blank_mask_2d = (inp == 0)  # (B, 81)
+        correct_cells += ((preds == label) & blank_mask_2d).sum().item()
+        total_cells += blank_mask_2d.sum().item()
+        # Grid correct = all BLANK cells correct
+        correct_grids += ((preds == label) | ~blank_mask_2d).all(dim=1).sum().item()
         total_grids += label.size(0)
         total_steps += steps
         
@@ -577,13 +587,24 @@ def evaluate(model, dataloader, device, use_poh=True):
             
             logits, _, _, _ = model(inp, puzzle_ids)
             
-            loss = F.cross_entropy(logits.view(-1, model.vocab_size), label.view(-1))
+            # Loss only on blank cells
+            blank_mask = (inp == 0).view(-1)
+            if blank_mask.sum() > 0:
+                loss = F.cross_entropy(
+                    logits.view(-1, model.vocab_size)[blank_mask],
+                    label.view(-1)[blank_mask]
+                )
+            else:
+                loss = torch.tensor(0.0, device=device)
             total_loss += loss.item()
             
+            # Accuracy only on blank cells
             preds = logits.argmax(dim=-1)
-            correct_cells += (preds == label).sum().item()
-            total_cells += label.numel()
-            correct_grids += (preds == label).all(dim=1).sum().item()
+            blank_mask_2d = (inp == 0)
+            correct_cells += ((preds == label) & blank_mask_2d).sum().item()
+            total_cells += blank_mask_2d.sum().item()
+            # Grid correct = all BLANK cells correct
+            correct_grids += ((preds == label) | ~blank_mask_2d).all(dim=1).sum().item()
             total_grids += label.size(0)
     
     return {
