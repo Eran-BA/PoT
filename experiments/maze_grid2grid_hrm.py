@@ -185,10 +185,15 @@ class Grid2GridMazeSolver(nn.Module):
         if self.use_poh:
             # Apply one refinement iteration with HRM routing
             B, T, D = x.shape
+            n_heads = self.attn_layers[0].num_heads
             
             # Get routing weights from HRM
             route_weights, hrm_state, _ = self.hrm_controller(x, state=hrm_state)
             # route_weights: [B, n_heads]
+            
+            # CRITICAL FIX: Scale routing weights by n_heads to preserve magnitude
+            # Softmax weights sum to 1, so without scaling we'd reduce output by n_heads factor
+            route_weights_scaled = route_weights * n_heads  # [B, H] -> sums to n_heads
             
             # Apply stacked HRM-style layers
             for attn, ffn, norm1, norm2, drop in zip(self.attn_layers, self.ffn_layers, self.norm1_layers, self.norm2_layers, self.dropout_layers):
@@ -196,7 +201,7 @@ class Grid2GridMazeSolver(nn.Module):
                 attn_out, _ = attn(x, x, x, need_weights=False)
                 d_head = D // attn.num_heads
                 attn_out_heads = attn_out.view(B, T, attn.num_heads, d_head)
-                route_weights_exp = route_weights.unsqueeze(1).unsqueeze(-1)
+                route_weights_exp = route_weights_scaled.unsqueeze(1).unsqueeze(-1)
                 attn_out_routed = (attn_out_heads * route_weights_exp).view(B, T, D)
                 x = x + drop(attn_out_routed)
                 x = norm1(x)

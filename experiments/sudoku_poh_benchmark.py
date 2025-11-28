@@ -343,9 +343,14 @@ class PoHSudokuSolver(nn.Module):
     def _encode_once(self, x: torch.Tensor, hrm_state: Optional[HRMState] = None):
         """Single encoding pass with HRM routing."""
         B, T, D = x.shape
+        n_heads = self.attn_layers[0].num_heads
         
         # Get routing weights
         route_weights, hrm_state, _ = self.hrm_controller(x, state=hrm_state)
+        
+        # CRITICAL FIX: Scale routing weights by n_heads to preserve magnitude
+        # Softmax weights sum to 1, so without scaling we'd reduce output by n_heads factor
+        route_weights_scaled = route_weights * n_heads  # [B, H] -> sums to n_heads
         
         # Apply transformer layers with head routing
         for attn, ffn, norm1, norm2, drop in zip(
@@ -356,7 +361,7 @@ class PoHSudokuSolver(nn.Module):
             attn_out, _ = attn(x, x, x, need_weights=False)
             d_head = D // attn.num_heads
             attn_out_heads = attn_out.view(B, T, attn.num_heads, d_head)
-            route_exp = route_weights.unsqueeze(1).unsqueeze(-1)
+            route_exp = route_weights_scaled.unsqueeze(1).unsqueeze(-1)
             attn_out_routed = (attn_out_heads * route_exp).view(B, T, D)
             x = norm1(x + drop(attn_out_routed))
             
@@ -526,6 +531,10 @@ class ReasoningModule(nn.Module):
         route_weights, ptr_state, _ = self.pointer_controller(x, state=ptr_state)
         
         # Apply transformer layers with head routing
+        # CRITICAL FIX: Scale routing weights by n_heads to preserve magnitude
+        # Softmax weights sum to 1, so without scaling we'd reduce output by n_heads factor
+        route_weights_scaled = route_weights * self.n_heads  # [B, H] -> sums to n_heads
+        
         for attn, ffn, norm1, norm2, drop in zip(
             self.attn_layers, self.ffn_layers,
             self.norm1_layers, self.norm2_layers, self.dropout_layers
@@ -534,7 +543,7 @@ class ReasoningModule(nn.Module):
             attn_out, _ = attn(x, x, x, need_weights=False)
             d_head = D // self.n_heads
             attn_out_heads = attn_out.view(B, T, self.n_heads, d_head)
-            route_exp = route_weights.unsqueeze(1).unsqueeze(-1)  # [B, 1, H, 1]
+            route_exp = route_weights_scaled.unsqueeze(1).unsqueeze(-1)  # [B, 1, H, 1]
             attn_out_routed = (attn_out_heads * route_exp).view(B, T, D)
             x = norm1(x + drop(attn_out_routed))
             
