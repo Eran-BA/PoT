@@ -580,6 +580,7 @@ def debug_predictions(model, batch, device, num_samples=2):
     with torch.no_grad():
         logits, _, _, steps = model(inp, puzzle_ids)
         preds = logits.argmax(dim=-1)
+        probs = F.softmax(logits, dim=-1)
     
     print(f"\n🧩 Sample Predictions (steps={steps}):")
     for i in range(num_samples):
@@ -593,7 +594,11 @@ def debug_predictions(model, batch, device, num_samples=2):
         total_blanks = blank_mask.sum()
         correct_blanks = total_blanks - errors.sum()
         
-        print(f"\n  Puzzle {i+1}: {correct_blanks}/{total_blanks} blanks correct")
+        # Check given cells (should be perfect!)
+        given_mask = inp_grid > 0
+        given_correct = (pred_grid == label_grid) & given_mask
+        
+        print(f"\n  Puzzle {i+1}: {correct_blanks}/{total_blanks} blanks correct, {given_correct.sum()}/{given_mask.sum()} given correct")
         print("  Input:      Prediction:  Label:")
         for row in range(9):
             inp_row = ''.join(str(x) if x > 0 else '.' for x in inp_grid[row])
@@ -602,6 +607,74 @@ def debug_predictions(model, batch, device, num_samples=2):
             # Mark errors
             err_row = ''.join('X' if pred_grid[row][c] != label_grid[row][c] and inp_grid[row][c] == 0 else ' ' for c in range(9))
             print(f"  {inp_row}    {pred_row}    {label_row}    {err_row}")
+    
+    # Output distribution analysis
+    print(f"\n📊 Output Distribution:")
+    pred_counts = torch.bincount(preds.view(-1), minlength=10).cpu().numpy()
+    print(f"  Digit counts: {dict(enumerate(pred_counts))}")
+    print(f"  Most common: {pred_counts.argmax()} ({pred_counts.max()}/{pred_counts.sum()} = {100*pred_counts.max()/pred_counts.sum():.1f}%)")
+    
+    # Logit analysis
+    mean_logits = logits.mean(dim=(0, 1)).cpu().numpy()
+    print(f"  Mean logits per digit: {[f'{x:.2f}' for x in mean_logits]}")
+    
+    model.train()
+
+
+def debug_input_injection(model, batch, device):
+    """Verify input injection is working correctly."""
+    model.eval()
+    inp = batch['input'][:1].to(device)
+    puzzle_ids = batch['puzzle_id'][:1].to(device)
+    
+    print(f"\n🔬 Input Injection Analysis:")
+    
+    with torch.no_grad():
+        # Get input embedding
+        x_grid_input = model.input_embed(inp)
+        
+        # Check if embeddings differ for different digits
+        unique_digits = inp[0].unique()
+        print(f"  Unique digits in input: {unique_digits.cpu().tolist()}")
+        
+        emb_by_digit = {}
+        for d in unique_digits:
+            mask = inp[0] == d
+            if mask.any():
+                emb_d = x_grid_input[0, mask].mean(dim=0)
+                emb_by_digit[d.item()] = emb_d
+        
+        # Compare embeddings
+        if 0 in emb_by_digit and len(emb_by_digit) > 1:
+            other_digit = [k for k in emb_by_digit.keys() if k != 0][0]
+            diff = (emb_by_digit[0] - emb_by_digit[other_digit]).abs().mean()
+            print(f"  Embedding diff (0 vs {other_digit}): {diff:.4f}")
+        
+        # Check hidden state evolution
+        x_grid_hidden = torch.zeros_like(x_grid_input)
+        
+        print(f"  Step 0 - hidden norm: {x_grid_hidden.norm():.4f}, input norm: {x_grid_input.norm():.4f}")
+        
+        # Run one step manually
+        puzzle_emb = model.puzzle_emb(puzzle_ids.clamp(0, model.puzzle_emb.num_puzzles - 1))
+        pad_size = model.puzzle_emb_len * model.d_model - puzzle_emb.size(-1)
+        if pad_size > 0:
+            puzzle_emb = F.pad(puzzle_emb, (0, pad_size))
+        puzzle_emb = puzzle_emb.view(1, model.puzzle_emb_len, model.d_model)
+        
+        x_grid_step = x_grid_hidden + x_grid_input
+        print(f"  Step 1 - x_grid_step norm: {x_grid_step.norm():.4f}")
+        
+        # Check if given cells have different values than blank cells
+        given_mask = inp[0] > 0
+        blank_mask = inp[0] == 0
+        
+        given_emb = x_grid_step[0, given_mask]
+        blank_emb = x_grid_step[0, blank_mask]
+        
+        print(f"  Given cells embedding mean: {given_emb.mean():.4f}, std: {given_emb.std():.4f}")
+        print(f"  Blank cells embedding mean: {blank_emb.mean():.4f}, std: {blank_emb.std():.4f}")
+        print(f"  Given-Blank diff: {(given_emb.mean() - blank_emb.mean()).abs():.4f}")
     
     model.train()
 
@@ -658,10 +731,13 @@ def run_debug(model, dataloader, optimizer, device, epoch):
     # 2. Activation analysis
     debug_activations(model, inp, puzzle_ids)
     
-    # 3. Prediction visualization
+    # 3. Input injection verification
+    debug_input_injection(model, batch, device)
+    
+    # 4. Prediction visualization
     debug_predictions(model, batch, device)
     
-    # 4. Routing analysis
+    # 5. Routing analysis
     debug_routing(model, batch, device)
     
     print(f"{'='*60}\n")
