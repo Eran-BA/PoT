@@ -395,11 +395,13 @@ class PoHSudokuSolver(nn.Module):
         puzzle_emb = puzzle_emb.view(B, self.puzzle_emb_len, self.d_model)
         
         # Input embedding
-        x_grid = self.input_embed(input_seq)
-        x_grid_ref = x_grid  # Keep reference
+        x_grid_input = self.input_embed(input_seq)  # Original input (constant)
         
         # Latent tokens
         latent_cur = self.latent_init.expand(B, -1, -1)
+        
+        # Persistent hidden state over grid positions (HRM-style)
+        x_grid_hidden = torch.zeros_like(x_grid_input)  # [B, 81, d_model]
         
         # Initialize HRM state
         hrm_state = self.hrm_controller.init_state(B, device)
@@ -408,15 +410,18 @@ class PoHSudokuSolver(nn.Module):
         
         # Iterative refinement
         for step in range(1, self.max_halting_steps + 1):
+            # INPUT INJECTION: add original input to hidden state (key HRM insight)
+            x_grid_step = x_grid_hidden + x_grid_input
+            
             # Inner latent updates
             for _ in range(self.latent_k):
-                ctx = torch.cat([puzzle_emb, x_grid_ref], dim=1)
+                ctx = torch.cat([puzzle_emb, x_grid_step], dim=1)
                 lat_attn, _ = self.latent_attn(latent_cur, ctx, ctx, need_weights=False)
                 latent_cur = self.latent_norm1(latent_cur + self.latent_drop(lat_attn))
                 latent_cur = self.latent_norm2(latent_cur + self.latent_drop(self.latent_ffn(latent_cur)))
             
             # Build sequence
-            x_step = torch.cat([puzzle_emb, latent_cur, x_grid_ref], dim=1)
+            x_step = torch.cat([puzzle_emb, latent_cur, x_grid_step], dim=1)
             x_step = x_step + self.pos_embed[:, :x_step.size(1), :]
             x_step = self.pre_norm(x_step)
             
@@ -431,9 +436,13 @@ class PoHSudokuSolver(nn.Module):
                 actual_steps = step
                 break
             
+            # Update hidden state for next iteration (HRM-style carry)
+            x_grid_hidden = x_out[:, self.puzzle_emb_len + self.latent_len:, :]
+            
             # Detach for O(1) memory
             latent_cur = latent_cur.detach()
             x_out = x_out.detach()
+            x_grid_hidden = x_grid_hidden.detach()
             if hrm_state is not None:
                 hrm_state = HRMState(
                     z_L=hrm_state.z_L.detach(),
@@ -514,27 +523,19 @@ def train_epoch(model, dataloader, optimizer, puzzle_optimizer, device, epoch, u
         
         logits, q_halt, q_continue, steps = model(inp, puzzle_ids)
         
-        # CE loss ONLY on blank cells (where input == 0)
-        # The model should learn to SOLVE, not copy given cells
-        blank_mask = (inp == 0).view(-1)  # (B*81,)
-        
-        if blank_mask.sum() > 0:
-            lm_loss = F.cross_entropy(
-                logits.view(-1, model.vocab_size)[blank_mask],
-                label.view(-1)[blank_mask]
-            )
-        else:
-            lm_loss = torch.tensor(0.0, device=device)
+        # CE loss on ALL cells (HRM-style)
+        lm_loss = F.cross_entropy(
+            logits.view(-1, model.vocab_size),
+            label.view(-1)
+        )
         
         # Q-halt loss (if PoH)
         if use_poh and q_halt is not None:
             with torch.no_grad():
                 preds = logits.argmax(dim=-1)
-                # Check if BLANK cells are all correct (ignore given cells)
-                blank_mask_2d = (inp == 0)  # (B, 81)
-                blank_correct = ((preds == label) | ~blank_mask_2d).all(dim=1).float()
+                is_correct = (preds == label).all(dim=1).float()
             
-            q_halt_loss = F.binary_cross_entropy_with_logits(q_halt, blank_correct)
+            q_halt_loss = F.binary_cross_entropy_with_logits(q_halt, is_correct)
             loss = lm_loss + 0.5 * q_halt_loss
         else:
             loss = lm_loss
@@ -545,14 +546,12 @@ def train_epoch(model, dataloader, optimizer, puzzle_optimizer, device, epoch, u
         if puzzle_optimizer:
             puzzle_optimizer.step()
         
-        # Metrics (only count BLANK cells - what the model actually solves)
+        # Metrics (all cells)
         total_loss += loss.item()
         preds = logits.argmax(dim=-1)
-        blank_mask_2d = (inp == 0)  # (B, 81)
-        correct_cells += ((preds == label) & blank_mask_2d).sum().item()
-        total_cells += blank_mask_2d.sum().item()
-        # Grid correct = all BLANK cells correct
-        correct_grids += ((preds == label) | ~blank_mask_2d).all(dim=1).sum().item()
+        correct_cells += (preds == label).sum().item()
+        total_cells += label.numel()
+        correct_grids += (preds == label).all(dim=1).sum().item()
         total_grids += label.size(0)
         total_steps += steps
         
@@ -587,24 +586,13 @@ def evaluate(model, dataloader, device, use_poh=True):
             
             logits, _, _, _ = model(inp, puzzle_ids)
             
-            # Loss only on blank cells
-            blank_mask = (inp == 0).view(-1)
-            if blank_mask.sum() > 0:
-                loss = F.cross_entropy(
-                    logits.view(-1, model.vocab_size)[blank_mask],
-                    label.view(-1)[blank_mask]
-                )
-            else:
-                loss = torch.tensor(0.0, device=device)
+            loss = F.cross_entropy(logits.view(-1, model.vocab_size), label.view(-1))
             total_loss += loss.item()
             
-            # Accuracy only on blank cells
             preds = logits.argmax(dim=-1)
-            blank_mask_2d = (inp == 0)
-            correct_cells += ((preds == label) & blank_mask_2d).sum().item()
-            total_cells += blank_mask_2d.sum().item()
-            # Grid correct = all BLANK cells correct
-            correct_grids += ((preds == label) | ~blank_mask_2d).all(dim=1).sum().item()
+            correct_cells += (preds == label).sum().item()
+            total_cells += label.numel()
+            correct_grids += (preds == label).all(dim=1).sum().item()
             total_grids += label.size(0)
     
     return {
@@ -735,8 +723,9 @@ def main():
         puzzle_params = list(model.puzzle_emb.parameters())
         model_params = [p for p in model.parameters() if p not in set(puzzle_params)]
         
-        optimizer = torch.optim.AdamW(model_params, lr=args.lr, weight_decay=args.weight_decay)
-        puzzle_optimizer = torch.optim.AdamW(puzzle_params, lr=args.puzzle_lr, weight_decay=0.0)
+        # HRM-style: lower weight decay for model, higher for puzzle embeddings
+        optimizer = torch.optim.AdamW(model_params, lr=args.lr, weight_decay=0.1)
+        puzzle_optimizer = torch.optim.AdamW(puzzle_params, lr=args.puzzle_lr, weight_decay=args.weight_decay)
     else:
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
         puzzle_optimizer = None
