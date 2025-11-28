@@ -47,21 +47,18 @@ class SudokuDataset(Dataset):
     """
     Sudoku dataset loader for HRM-format data.
     
-    Supports two formats:
-    1. HuggingFace CSV: sapientinc/sudoku-extreme
-    2. Pre-built numpy: data/sudoku-extreme-1k-aug-1000/
+    Key insight from HRM: iterate over PUZZULAR (1000), not samples (1M).
+    Each epoch visits each puzzle once, sampling one augmentation per puzzle.
     """
     
     def __init__(
         self, 
         data_dir: str, 
         split: str = 'train',
-        augment: bool = False,
-        num_aug: int = 0
+        samples_per_epoch: int = None,  # If set, sample this many per epoch
     ):
         self.data_dir = Path(data_dir) / split
-        self.augment = augment
-        self.num_aug = num_aug
+        self.split = split
         
         # Load numpy format
         inputs_path = self.data_dir / 'all__inputs.npy'
@@ -76,7 +73,6 @@ class SudokuDataset(Dataset):
             if puzzle_idx_path.exists():
                 self.puzzle_indices = np.load(puzzle_idx_path)
             else:
-                # Each row is a unique puzzle (no augmentation loaded)
                 self.puzzle_indices = np.arange(len(self.inputs))
         else:
             raise FileNotFoundError(
@@ -85,23 +81,64 @@ class SudokuDataset(Dataset):
                 f"--output-dir {data_dir}"
             )
         
-        print(f"[{split}] Loaded {len(self.inputs)} Sudoku puzzles")
-        print(f"  Input shape: {self.inputs.shape}")
-        print(f"  Unique puzzles: {len(np.unique(self.puzzle_indices))}")
+        # Build puzzle -> sample indices mapping
+        self.unique_puzzles = np.unique(self.puzzle_indices)
+        self.num_puzzles = len(self.unique_puzzles)
+        
+        # For each puzzle, store indices of its augmentations
+        self.puzzle_to_samples = {}
+        for puzzle_id in self.unique_puzzles:
+            self.puzzle_to_samples[puzzle_id] = np.where(self.puzzle_indices == puzzle_id)[0]
+        
+        # For training: epoch = iterate over puzzles, sample one augmentation each
+        # For test: use all samples (no augmentation sampling)
+        self.samples_per_epoch = samples_per_epoch
+        if split == 'train' and samples_per_epoch is None:
+            # Default: one sample per puzzle per epoch (like HRM)
+            self.samples_per_epoch = self.num_puzzles
+        
+        self._epoch_indices = None
+        self._resample_epoch()
+        
+        print(f"[{split}] Loaded {len(self.inputs)} total samples")
+        print(f"  Unique puzzles: {self.num_puzzles}")
+        print(f"  Samples per epoch: {len(self)}")
+    
+    def _resample_epoch(self):
+        """Resample which augmentation to use for each puzzle this epoch."""
+        if self.split == 'train':
+            # Sample one augmentation per puzzle
+            indices = []
+            puzzle_order = np.random.permutation(self.unique_puzzles)
+            for puzzle_id in puzzle_order:
+                aug_indices = self.puzzle_to_samples[puzzle_id]
+                # Randomly pick one augmentation
+                idx = np.random.choice(aug_indices)
+                indices.append(idx)
+            self._epoch_indices = np.array(indices)
+        else:
+            # Test: use all samples
+            self._epoch_indices = np.arange(len(self.inputs))
     
     def __len__(self):
-        return len(self.inputs)
+        return len(self._epoch_indices)
     
     def __getitem__(self, idx):
-        inp = torch.LongTensor(self.inputs[idx])  # (81,)
-        label = torch.LongTensor(self.labels[idx])  # (81,)
-        puzzle_id = torch.tensor(self.puzzle_indices[idx], dtype=torch.long)
+        real_idx = self._epoch_indices[idx]
+        inp = torch.LongTensor(self.inputs[real_idx])
+        label = torch.LongTensor(self.labels[real_idx])
+        puzzle_id = torch.tensor(self.puzzle_indices[real_idx], dtype=torch.long)
         
         return {
             'input': inp,
             'label': label,
             'puzzle_id': puzzle_id,
         }
+    
+    def on_epoch_end(self):
+        """Call this at the end of each epoch to resample augmentations."""
+        if self.split == 'train':
+            self._resample_epoch()
 
 
 def download_sudoku_dataset(output_dir: str, subsample_size: int = 1000, num_aug: int = 1000):
@@ -703,6 +740,9 @@ def main():
             model, train_loader, optimizer, puzzle_optimizer, 
             device, epoch, use_poh=use_poh
         )
+        
+        # Resample augmentations for next epoch (HRM-style)
+        train_dataset.on_epoch_end()
         
         # Evaluate periodically
         if epoch % args.eval_interval == 0 or epoch == 1:
