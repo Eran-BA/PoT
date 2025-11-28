@@ -452,6 +452,11 @@ class PoHSudokuSolver(nn.Module):
         
         # Extract output (remove puzzle + latent tokens)
         x = x_out[:, self.puzzle_emb_len + self.latent_len:, :]
+        
+        # RESIDUAL CONNECTION: add input embedding to output for better gradient flow
+        # This ensures the model has direct access to input information
+        x = x + x_grid_input
+        
         logits = self.output_proj(x)
         
         return logits, q_halt, q_continue, actual_steps
@@ -882,9 +887,9 @@ def main():
     # Training
     parser.add_argument('--epochs', type=int, default=20000)
     parser.add_argument('--batch-size', type=int, default=384)
-    parser.add_argument('--lr', type=float, default=7e-5)
-    parser.add_argument('--puzzle-lr', type=float, default=7e-5)
-    parser.add_argument('--weight-decay', type=float, default=1.0)
+    parser.add_argument('--lr', type=float, default=3e-4)
+    parser.add_argument('--puzzle-lr', type=float, default=3e-4)
+    parser.add_argument('--weight-decay', type=float, default=0.01)
     parser.add_argument('--eval-interval', type=int, default=500)
     parser.add_argument('--patience', type=int, default=2000, help='Early stopping patience')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
