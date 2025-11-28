@@ -344,8 +344,14 @@ class PoHSudokuSolver(nn.Module):
         B = input_seq.size(0)
         device = input_seq.device
         
-        # Puzzle embedding
-        puzzle_emb = self.puzzle_emb(puzzle_ids)
+        # Puzzle embedding (clamp IDs to valid range, use zeros for unseen puzzles)
+        max_puzzle_id = self.puzzle_emb.num_puzzles - 1
+        valid_mask = puzzle_ids <= max_puzzle_id
+        clamped_ids = puzzle_ids.clamp(0, max_puzzle_id)
+        puzzle_emb = self.puzzle_emb(clamped_ids)
+        # Zero out embeddings for unseen puzzles (test set)
+        puzzle_emb = puzzle_emb * valid_mask.unsqueeze(-1).float()
+        
         pad_size = self.puzzle_emb_len * self.d_model - puzzle_emb.size(-1)
         if pad_size > 0:
             puzzle_emb = F.pad(puzzle_emb, (0, pad_size))
