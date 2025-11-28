@@ -463,6 +463,211 @@ class PoHSudokuSolver(nn.Module):
 
 
 # ============================================================================
+# Hybrid PoT-HRM Model (NEW)
+# ============================================================================
+
+class ReasoningModule(nn.Module):
+    """
+    Transformer stack with PoT head routing.
+    Used as H_level or L_level in the hybrid architecture.
+    """
+    
+    def __init__(
+        self,
+        d_model: int = 512,
+        n_heads: int = 8,
+        n_layers: int = 2,
+        d_ff: int = 2048,
+        dropout: float = 0.1,
+        T: int = 4,  # HRM period for pointer controller
+    ):
+        super().__init__()
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.n_layers = n_layers
+        
+        # PoT Pointer Controller for head routing
+        self.pointer_controller = HRMPointerController(
+            d_model=d_model,
+            n_heads=n_heads,
+            T=T,
+            dropout=dropout
+        )
+        
+        # Transformer layers
+        self.attn_layers = nn.ModuleList([
+            nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
+            for _ in range(n_layers)
+        ])
+        self.ffn_layers = nn.ModuleList([
+            SwiGLU(d_model, d_ff, dropout) for _ in range(n_layers)
+        ])
+        self.norm1_layers = nn.ModuleList([RMSNorm(d_model) for _ in range(n_layers)])
+        self.norm2_layers = nn.ModuleList([RMSNorm(d_model) for _ in range(n_layers)])
+        self.dropout_layers = nn.ModuleList([nn.Dropout(dropout) for _ in range(n_layers)])
+    
+    def forward(
+        self, 
+        hidden: torch.Tensor,      # [B, 81, d_model] - current hidden state
+        injection: torch.Tensor,   # [B, 81, d_model] - input to inject
+        ptr_state: Optional[HRMState] = None
+    ):
+        """
+        Forward pass with input injection and PoT head routing.
+        
+        HRM-style: hidden = hidden + injection before processing
+        """
+        B, T, D = hidden.shape
+        
+        # Input injection (HRM key insight)
+        x = hidden + injection
+        
+        # Get routing weights from PoT controller
+        route_weights, ptr_state, _ = self.pointer_controller(x, state=ptr_state)
+        
+        # Apply transformer layers with head routing
+        for attn, ffn, norm1, norm2, drop in zip(
+            self.attn_layers, self.ffn_layers,
+            self.norm1_layers, self.norm2_layers, self.dropout_layers
+        ):
+            # Attention with PoT head routing
+            attn_out, _ = attn(x, x, x, need_weights=False)
+            d_head = D // self.n_heads
+            attn_out_heads = attn_out.view(B, T, self.n_heads, d_head)
+            route_exp = route_weights.unsqueeze(1).unsqueeze(-1)  # [B, 1, H, 1]
+            attn_out_routed = (attn_out_heads * route_exp).view(B, T, D)
+            x = norm1(x + drop(attn_out_routed))
+            
+            # FFN
+            x = norm2(x + drop(ffn(x)))
+        
+        return x, ptr_state
+
+
+class HybridPoHHRMSolver(nn.Module):
+    """
+    Hybrid PoT-HRM Sudoku solver.
+    
+    Combines:
+    - HRM's two-timescale reasoning (H_level slow, L_level fast)
+    - PoT's pointer-based head routing inside each reasoning module
+    
+    Architecture:
+    - z_H, z_L: Persistent hidden states over 81 grid positions
+    - L_level: Fast reasoning, updates every inner step
+    - H_level: Slow reasoning, updates every outer step
+    - Both use PoT head routing for dynamic attention
+    """
+    
+    def __init__(
+        self,
+        vocab_size: int = 10,
+        d_model: int = 512,
+        n_heads: int = 8,
+        H_layers: int = 2,  # Layers in H_level
+        L_layers: int = 2,  # Layers in L_level
+        d_ff: int = 2048,
+        dropout: float = 0.1,
+        H_cycles: int = 1,  # Outer loop iterations
+        L_cycles: int = 4,  # Inner loop iterations
+        T: int = 4,  # HRM period for pointer controller
+        num_puzzles: int = 1000,
+        puzzle_emb_dim: int = 512,
+    ):
+        super().__init__()
+        
+        self.vocab_size = vocab_size
+        self.d_model = d_model
+        self.seq_len = 81
+        self.H_cycles = H_cycles
+        self.L_cycles = L_cycles
+        
+        # Input embedding
+        self.input_embed = nn.Embedding(vocab_size, d_model)
+        
+        # Puzzle embedding
+        self.puzzle_emb = PuzzleEmbedding(num_puzzles, puzzle_emb_dim, init_std=0.02)
+        self.puzzle_emb_proj = nn.Linear(puzzle_emb_dim, d_model) if puzzle_emb_dim != d_model else nn.Identity()
+        
+        # Position embedding
+        self.pos_embed = nn.Parameter(torch.randn(1, self.seq_len, d_model) * 0.02)
+        
+        # Initial hidden states (learned)
+        self.H_init = nn.Parameter(torch.randn(d_model) * 0.02)
+        self.L_init = nn.Parameter(torch.randn(d_model) * 0.02)
+        
+        # Two-timescale reasoning modules with PoT head routing
+        self.L_level = ReasoningModule(d_model, n_heads, L_layers, d_ff, dropout, T)
+        self.H_level = ReasoningModule(d_model, n_heads, H_layers, d_ff, dropout, T)
+        
+        # Output
+        self.final_norm = RMSNorm(d_model)
+        self.output_proj = nn.Linear(d_model, vocab_size)
+        
+        # Q-halting (for API compatibility)
+        self.q_head = nn.Linear(d_model, 2)
+    
+    def forward(self, input_seq: torch.Tensor, puzzle_ids: torch.Tensor):
+        """
+        Forward pass with HRM-style nested iteration and PoT head routing.
+        """
+        B = input_seq.size(0)
+        device = input_seq.device
+        
+        # Input embedding + position
+        input_emb = self.input_embed(input_seq) + self.pos_embed
+        
+        # Add puzzle embedding (broadcast to all positions)
+        max_puzzle_id = self.puzzle_emb.num_puzzles - 1
+        valid_mask = puzzle_ids <= max_puzzle_id
+        clamped_ids = puzzle_ids.clamp(0, max_puzzle_id)
+        puzzle_emb = self.puzzle_emb(clamped_ids)
+        puzzle_emb = puzzle_emb * valid_mask.unsqueeze(-1).float()
+        puzzle_emb = self.puzzle_emb_proj(puzzle_emb)  # [B, d_model]
+        input_emb = input_emb + puzzle_emb.unsqueeze(1)  # Broadcast to all 81 positions
+        
+        # Initialize hidden states over 81 positions
+        z_H = self.H_init.view(1, 1, -1).expand(B, self.seq_len, -1).clone()
+        z_L = self.L_init.view(1, 1, -1).expand(B, self.seq_len, -1).clone()
+        
+        # Initialize pointer controller states
+        L_ptr_state = self.L_level.pointer_controller.init_state(B, device)
+        H_ptr_state = self.H_level.pointer_controller.init_state(B, device)
+        
+        # HRM-style nested iteration
+        # Inner loops are no-grad for O(1) memory, only last step has gradients
+        with torch.no_grad():
+            for H_step in range(self.H_cycles):
+                for L_step in range(self.L_cycles):
+                    # Skip last iteration (will be done with gradients)
+                    if H_step == self.H_cycles - 1 and L_step == self.L_cycles - 1:
+                        continue
+                    # L reasons fast: z_L = L(z_L, z_H + input)
+                    z_L, L_ptr_state = self.L_level(z_L, z_H + input_emb, L_ptr_state)
+                
+                # Skip last H update (will be done with gradients)
+                if H_step == self.H_cycles - 1:
+                    continue
+                # H reasons slow: z_H = H(z_H, z_L)
+                z_H, H_ptr_state = self.H_level(z_H, z_L, H_ptr_state)
+        
+        # Final step WITH gradients
+        z_L, _ = self.L_level(z_L, z_H + input_emb, L_ptr_state)
+        z_H, _ = self.H_level(z_H, z_L, H_ptr_state)
+        
+        # Output from H_level (high-level reasoning result)
+        x = self.final_norm(z_H)
+        logits = self.output_proj(x)
+        
+        # Q-values for halting (for API compatibility)
+        q_logits = self.q_head(z_H[:, 0])  # Use first position
+        q_halt = q_logits[:, 0]
+        q_continue = q_logits[:, 1]
+        
+        return logits, q_halt, q_continue, self.H_cycles * self.L_cycles
+
+
+# ============================================================================
 # Baseline Model (Standard Transformer)
 # ============================================================================
 
@@ -875,7 +1080,7 @@ def main():
                        help='Augmentations per puzzle (for download)')
     
     # Model
-    parser.add_argument('--model', choices=['poh', 'baseline'], default='poh')
+    parser.add_argument('--model', choices=['poh', 'baseline', 'hybrid'], default='hybrid')
     parser.add_argument('--d-model', type=int, default=512)
     parser.add_argument('--n-heads', type=int, default=8)
     parser.add_argument('--n-layers', type=int, default=2, help='Layers for PoH (baseline uses 6)')
@@ -883,6 +1088,11 @@ def main():
     parser.add_argument('--R', type=int, default=8, help='Refinement iterations')
     parser.add_argument('--T', type=int, default=4, help='HRM outer period')
     parser.add_argument('--max-halt', type=int, default=16, help='Max halting steps')
+    # Hybrid model args
+    parser.add_argument('--H-cycles', type=int, default=1, help='Hybrid H_level outer cycles')
+    parser.add_argument('--L-cycles', type=int, default=4, help='Hybrid L_level inner cycles')
+    parser.add_argument('--H-layers', type=int, default=2, help='Layers in H_level module')
+    parser.add_argument('--L-layers', type=int, default=2, help='Layers in L_level module')
     
     # Training
     parser.add_argument('--epochs', type=int, default=20000)
@@ -928,8 +1138,9 @@ def main():
     num_puzzles = len(np.unique(train_dataset.puzzle_indices)) + 1000  # Buffer
     
     # Build model
-    use_poh = args.model == 'poh'
-    if use_poh:
+    use_poh = args.model in ('poh', 'hybrid')  # Both use puzzle embeddings
+    
+    if args.model == 'poh':
         model = PoHSudokuSolver(
             d_model=args.d_model,
             n_heads=args.n_heads,
@@ -940,6 +1151,20 @@ def main():
             num_puzzles=num_puzzles,
             max_halting_steps=args.max_halt,
         ).to(device)
+    elif args.model == 'hybrid':
+        model = HybridPoHHRMSolver(
+            d_model=args.d_model,
+            n_heads=args.n_heads,
+            H_layers=args.H_layers,
+            L_layers=args.L_layers,
+            d_ff=args.d_ff,
+            H_cycles=args.H_cycles,
+            L_cycles=args.L_cycles,
+            T=args.T,
+            num_puzzles=num_puzzles,
+        ).to(device)
+        print(f"Hybrid model: H_cycles={args.H_cycles}, L_cycles={args.L_cycles}")
+        print(f"H_layers={args.H_layers}, L_layers={args.L_layers}")
     else:
         model = BaselineSudokuSolver(
             d_model=args.d_model,
