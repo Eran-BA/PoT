@@ -610,6 +610,11 @@ class HybridPoHHRMSolver(nn.Module):
     def forward(self, input_seq: torch.Tensor, puzzle_ids: torch.Tensor):
         """
         Forward pass with HRM-style nested iteration and PoT head routing.
+        
+        Key differences from previous version:
+        1. Initialize z_H, z_L with input_emb (not zeros) - gives model a starting point
+        2. Use detach() between H steps (not no_grad) - allows gradient flow within each outer step
+        3. Add residual from input_emb to output - direct gradient path
         """
         B = input_seq.size(0)
         device = input_seq.device
@@ -626,38 +631,37 @@ class HybridPoHHRMSolver(nn.Module):
         puzzle_emb = self.puzzle_emb_proj(puzzle_emb)  # [B, d_model]
         input_emb = input_emb + puzzle_emb.unsqueeze(1)  # Broadcast to all 81 positions
         
-        # Initialize hidden states over 81 positions
-        z_H = self.H_init.view(1, 1, -1).expand(B, self.seq_len, -1).clone()
-        z_L = self.L_init.view(1, 1, -1).expand(B, self.seq_len, -1).clone()
+        # Initialize hidden states WITH input embedding (HRM-style)
+        # This gives the model a meaningful starting point instead of zeros
+        z_H = input_emb + self.H_init.view(1, 1, -1)  # [B, 81, d_model]
+        z_L = input_emb + self.L_init.view(1, 1, -1)  # [B, 81, d_model]
         
         # Initialize pointer controller states
         L_ptr_state = self.L_level.pointer_controller.init_state(B, device)
         H_ptr_state = self.H_level.pointer_controller.init_state(B, device)
         
         # HRM-style nested iteration
-        # Inner loops are no-grad for O(1) memory, only last step has gradients
-        with torch.no_grad():
-            for H_step in range(self.H_cycles):
-                for L_step in range(self.L_cycles):
-                    # Skip last iteration (will be done with gradients)
-                    if H_step == self.H_cycles - 1 and L_step == self.L_cycles - 1:
-                        continue
-                    # L reasons fast: z_L = L(z_L, z_H + input)
-                    z_L, L_ptr_state = self.L_level(z_L, z_H + input_emb, L_ptr_state)
-                
-                # Skip last H update (will be done with gradients)
-                if H_step == self.H_cycles - 1:
-                    continue
-                # H reasons slow: z_H = H(z_H, z_L)
-                z_H, H_ptr_state = self.H_level(z_H, z_L, H_ptr_state)
+        # - L_level runs fast (inner loop), gradients flow through all L steps
+        # - H_level runs slow (outer loop), detach between outer steps for O(1) memory
+        for H_step in range(self.H_cycles):
+            # Detach z_H between outer steps for O(1) memory
+            # (but NOT on first step - we need gradients to flow to init)
+            if H_step > 0:
+                z_H = z_H.detach()
+                z_L = z_L.detach()
+            
+            # Inner loop: L reasons fast with input injection
+            for L_step in range(self.L_cycles):
+                # L_level: z_L = L(z_L, z_H + input_emb)
+                # Input injection at every step is key to HRM
+                z_L, L_ptr_state = self.L_level(z_L, z_H + input_emb, L_ptr_state)
+            
+            # H_level: z_H = H(z_H, z_L) - integrates L's reasoning
+            z_H, H_ptr_state = self.H_level(z_H, z_L, H_ptr_state)
         
-        # Final step WITH gradients
-        z_L, _ = self.L_level(z_L, z_H + input_emb, L_ptr_state)
-        z_H, _ = self.H_level(z_H, z_L, H_ptr_state)
-        
-        # Output from H_level (high-level reasoning result)
+        # Output from H_level with residual connection from input
         x = self.final_norm(z_H)
-        logits = self.output_proj(x)
+        logits = self.output_proj(x) + self.output_proj(input_emb)  # Residual
         
         # Q-values for halting (for API compatibility)
         q_logits = self.q_head(z_H[:, 0])  # Use first position
