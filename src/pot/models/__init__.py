@@ -9,6 +9,19 @@ Year: 2025
 """
 
 from .poh_gpt import PoHGPT
+from .reasoning_module import ReasoningModule
+from .hybrid_hrm import HybridHRMBase
+from .puzzle_embedding import PuzzleEmbedding
+from .hrm_layers import RMSNorm, SwiGLU
+from .adaptive_halting import QHaltingController
 
-__all__ = ["PoHGPT"]
+__all__ = [
+    "PoHGPT",
+    "ReasoningModule",
+    "HybridHRMBase",
+    "PuzzleEmbedding",
+    "RMSNorm",
+    "SwiGLU",
+    "QHaltingController",
+]
 

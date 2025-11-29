@@ -48,9 +48,14 @@ from tqdm import tqdm
 from pathlib import Path
 
 from src.pot.core.hrm_controller import HRMPointerController, HRMState
-from src.pot.models.puzzle_embedding import PuzzleEmbedding
-from src.pot.models.adaptive_halting import QHaltingController
-from src.pot.models.hrm_layers import RMSNorm, SwiGLU
+from src.pot.models import (
+    ReasoningModule,
+    HybridHRMBase,
+    PuzzleEmbedding,
+    QHaltingController,
+    RMSNorm,
+    SwiGLU,
+)
 
 
 # ============================================================================
@@ -484,110 +489,20 @@ class PoHSudokuSolver(nn.Module):
 
 
 # ============================================================================
-# Hybrid PoT-HRM Model (NEW)
+# Hybrid PoT-HRM Sudoku Solver
 # ============================================================================
 
-class ReasoningModule(nn.Module):
-    """
-    Transformer stack with PoT head routing.
-    Used as H_level or L_level in the hybrid architecture.
-    
-    Follows HRM's post-norm structure but adds PoT head routing.
-    """
-    
-    def __init__(
-        self,
-        d_model: int = 512,
-        n_heads: int = 8,
-        n_layers: int = 2,
-        d_ff: int = 2048,
-        dropout: float = 0.0,  # HRM doesn't use dropout
-        T: int = 4,  # HRM period for pointer controller
-    ):
-        super().__init__()
-        self.d_model = d_model
-        self.n_heads = n_heads
-        self.n_layers = n_layers
-        
-        # PoT Pointer Controller for head routing
-        self.pointer_controller = HRMPointerController(
-            d_model=d_model,
-            n_heads=n_heads,
-            T=T,
-            dropout=dropout
-        )
-        
-        # Transformer layers (no dropout to match HRM)
-        self.attn_layers = nn.ModuleList([
-            nn.MultiheadAttention(d_model, n_heads, dropout=0.0, batch_first=True)
-            for _ in range(n_layers)
-        ])
-        self.ffn_layers = nn.ModuleList([
-            SwiGLU(d_model, d_ff, dropout=0.0) for _ in range(n_layers)
-        ])
-        self.norm1_layers = nn.ModuleList([RMSNorm(d_model) for _ in range(n_layers)])
-        self.norm2_layers = nn.ModuleList([RMSNorm(d_model) for _ in range(n_layers)])
-    
-    def forward(
-        self, 
-        hidden: torch.Tensor,      # [B, 81, d_model] - current hidden state
-        injection: torch.Tensor,   # [B, 81, d_model] - input to inject
-        ptr_state: Optional[HRMState] = None
-    ):
-        """
-        Forward pass with input injection and PoT head routing.
-        
-        HRM-style: hidden = hidden + injection before processing (post-norm)
-        """
-        B, T, D = hidden.shape
-        
-        # Input injection (HRM key insight)
-        x = hidden + injection
-        
-        # Get routing weights from PoT controller
-        route_weights, ptr_state, _ = self.pointer_controller(x, state=ptr_state)
-        
-        # CRITICAL: Scale routing weights by n_heads to preserve magnitude
-        # Softmax weights sum to 1, so without scaling we'd reduce output by n_heads factor
-        route_weights_scaled = route_weights * self.n_heads  # [B, H] -> sums to n_heads
-        
-        for attn, ffn, norm1, norm2 in zip(
-            self.attn_layers, self.ffn_layers,
-            self.norm1_layers, self.norm2_layers
-        ):
-            # Attention with PoT head routing
-            attn_out, _ = attn(x, x, x, need_weights=False)
-            d_head = D // self.n_heads
-            attn_out_heads = attn_out.view(B, T, self.n_heads, d_head)
-            route_exp = route_weights_scaled.unsqueeze(1).unsqueeze(-1)  # [B, 1, H, 1]
-            attn_out_routed = (attn_out_heads * route_exp).view(B, T, D)
-            
-            # Post-norm (like HRM)
-            x = norm1(x + attn_out_routed)
-            x = norm2(x + ffn(x))
-        
-        return x, ptr_state
-
-
-class HybridPoHHRMSolver(nn.Module):
+class HybridPoHHRMSolver(HybridHRMBase):
     """
     Hybrid PoT-HRM Sudoku solver.
     
-    Combines:
-    - HRM's two-timescale reasoning (H_level slow, L_level fast)
-    - PoT's pointer-based head routing inside each reasoning module
+    Extends HybridHRMBase with Sudoku-specific embeddings and output.
     
-    Architecture:
+    Architecture (from base class):
     - z_H, z_L: Persistent hidden states over 81 grid positions
     - L_level: Fast reasoning, updates every inner step
     - H_level: Slow reasoning, updates every outer step
     - Both use PoT head routing for dynamic attention
-    
-    Key HRM implementation details:
-    - Embedding scaling by sqrt(d_model) 
-    - H_init/L_init as buffers (not learned)
-    - Zero-initialized puzzle embeddings
-    - Q head initialized to near-zero
     """
     
     def __init__(
@@ -595,72 +510,50 @@ class HybridPoHHRMSolver(nn.Module):
         vocab_size: int = 10,
         d_model: int = 512,
         n_heads: int = 8,
-        H_layers: int = 2,  # Layers in H_level
-        L_layers: int = 2,  # Layers in L_level
+        H_layers: int = 2,
+        L_layers: int = 2,
         d_ff: int = 2048,
-        dropout: float = 0.0,  # HRM doesn't use dropout
-        H_cycles: int = 2,  # Outer loop iterations
-        L_cycles: int = 8,  # Inner loop iterations
-        T: int = 4,  # HRM period for pointer controller
-        num_puzzles: int = 1000,
+        dropout: float = 0.0,
+        H_cycles: int = 2,
+        L_cycles: int = 8,
+        T: int = 4,
+        num_puzzles: int = 1,  # Single shared embedding like HRM
         puzzle_emb_dim: int = 512,
     ):
-        super().__init__()
+        # Initialize base class (creates H_level, L_level, q_head, etc.)
+        super().__init__(
+            d_model=d_model,
+            n_heads=n_heads,
+            H_layers=H_layers,
+            L_layers=L_layers,
+            d_ff=d_ff,
+            seq_len=81,  # Sudoku grid
+            H_cycles=H_cycles,
+            L_cycles=L_cycles,
+            dropout=dropout,
+            T=T,
+        )
         
         self.vocab_size = vocab_size
-        self.d_model = d_model
-        self.seq_len = 81
-        self.H_cycles = H_cycles
-        self.L_cycles = L_cycles
-        
-        # Embedding scaling factor (CRITICAL: HRM uses this!)
-        self.embed_scale = d_model ** 0.5  # sqrt(512) ≈ 22.6
         embed_init_std = 1.0 / self.embed_scale
         
-        # Input embedding (init with 1/sqrt(d_model) std)
+        # Sudoku-specific: Input embedding (init with 1/sqrt(d_model) std)
         self.input_embed = nn.Embedding(vocab_size, d_model)
         nn.init.normal_(self.input_embed.weight, mean=0, std=embed_init_std)
         
-        # Puzzle embedding (ZERO initialized like HRM!)
+        # Sudoku-specific: Puzzle embedding (ZERO initialized like HRM!)
         self.puzzle_emb = PuzzleEmbedding(num_puzzles, puzzle_emb_dim, init_std=0.0)
         self.puzzle_emb_proj = nn.Linear(puzzle_emb_dim, d_model) if puzzle_emb_dim != d_model else nn.Identity()
         
-        # Position embedding (also scaled)
+        # Sudoku-specific: Position embedding (also scaled)
         self.pos_embed = nn.Parameter(torch.randn(1, self.seq_len, d_model) * embed_init_std)
         
-        # Initial hidden states as BUFFERS (NOT learned, like HRM)
-        # HRM uses trunc_normal with std=1
-        self.register_buffer('H_init', torch.randn(d_model) * 1.0)
-        self.register_buffer('L_init', torch.randn(d_model) * 1.0)
-        
-        # Two-timescale reasoning modules with PoT head routing
-        self.L_level = ReasoningModule(d_model, n_heads, L_layers, d_ff, dropout, T)
-        self.H_level = ReasoningModule(d_model, n_heads, H_layers, d_ff, dropout, T)
-        
-        # Output
-        self.final_norm = RMSNorm(d_model)
+        # Sudoku-specific: Output projection
         self.output_proj = nn.Linear(d_model, vocab_size)
-        
-        # Q-halting with HRM-style initialization
-        self.q_head = nn.Linear(d_model, 2)
-        # Zero weights and bias=-5 for faster Q-learning bootstrap
-        nn.init.zeros_(self.q_head.weight)
-        nn.init.constant_(self.q_head.bias, -5.0)
     
     def forward(self, input_seq: torch.Tensor, puzzle_ids: torch.Tensor):
-        """
-        Forward pass with HRM-style nested iteration and PoT head routing.
-        
-        Key HRM implementation details:
-        1. Scale embeddings by sqrt(d_model) - CRITICAL for signal strength
-        2. Initialize z_H, z_L from buffers (not learned) 
-        3. Only backprop through final L and H steps
-        4. Input comes ONLY through injection, not initialization
-        """
-        B = input_seq.size(0)
-        device = input_seq.device
-        
-        # Input embedding + position (with HRM-style scaling!)
+        """Forward pass for Sudoku solving."""
+        # Compute input embedding
         input_emb = self.input_embed(input_seq) + self.pos_embed
         
         # Add puzzle embedding (broadcast to all positions)
@@ -675,47 +568,13 @@ class HybridPoHHRMSolver(nn.Module):
         # CRITICAL: Scale embeddings by sqrt(d_model) like HRM!
         input_emb = self.embed_scale * input_emb
         
-        # Initialize hidden states from BUFFERS (not learned, like HRM)
-        # Input comes ONLY through injection, not initialization
-        z_H = self.H_init.view(1, 1, -1).expand(B, self.seq_len, -1).clone()  # [B, 81, d_model]
-        z_L = self.L_init.view(1, 1, -1).expand(B, self.seq_len, -1).clone()  # [B, 81, d_model]
+        # Run the two-timescale reasoning loop (from base class)
+        hidden, q_halt, q_continue, steps = self.reasoning_loop(input_emb)
         
-        # Initialize pointer controller states
-        L_ptr_state = self.L_level.pointer_controller.init_state(B, device)
-        H_ptr_state = self.H_level.pointer_controller.init_state(B, device)
+        # Output projection
+        logits = self.output_proj(hidden)
         
-        # HRM-style nested iteration
-        # KEY: Run ALL iterations in no_grad EXCEPT the final L and H steps
-        # This is how HRM actually trains - only backprop through final step
-        total_L_steps = self.H_cycles * self.L_cycles
-        step_count = 0
-        
-        with torch.no_grad():
-            for H_step in range(self.H_cycles):
-                for L_step in range(self.L_cycles):
-                    step_count += 1
-                    # Skip the last L step (will do with grad)
-                    if step_count < total_L_steps:
-                        z_L, L_ptr_state = self.L_level(z_L, z_H + input_emb, L_ptr_state)
-                
-                # Skip the last H step (will do with grad)
-                if H_step < self.H_cycles - 1:
-                    z_H, H_ptr_state = self.H_level(z_H, z_L, H_ptr_state)
-        
-        # ONLY the final L and H steps get gradients (exactly like HRM)
-        z_L, L_ptr_state = self.L_level(z_L, z_H + input_emb, L_ptr_state)
-        z_H, H_ptr_state = self.H_level(z_H, z_L, H_ptr_state)
-        
-        # Output from H_level (NO residual - force model to learn through H/L)
-        x = self.final_norm(z_H)
-        logits = self.output_proj(x)
-        
-        # Q-values for halting (for API compatibility)
-        q_logits = self.q_head(z_H[:, 0])  # Use first position
-        q_halt = q_logits[:, 0]
-        q_continue = q_logits[:, 1]
-        
-        return logits, q_halt, q_continue, self.H_cycles * self.L_cycles
+        return logits, q_halt, q_continue, steps
 
 
 # ============================================================================
