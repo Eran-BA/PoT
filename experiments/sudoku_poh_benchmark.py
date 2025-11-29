@@ -21,6 +21,9 @@ Key HRM implementation details matched in this code:
 6. Post-norm architecture with RMSNorm and SwiGLU
 7. Only final iteration gets gradients (all others in no_grad)
 8. Loss computed on ALL 81 cells (not just blanks)
+9. SINGLE shared puzzle embedding for ALL puzzles (id=0 always)
+   - This is a learned bias, NOT puzzle-specific memorization
+   - Using per-puzzle embeddings causes severe overfitting!
 
 Author: Eran Ben Artzy
 Year: 2025
@@ -138,7 +141,9 @@ class SudokuDataset(Dataset):
         real_idx = self._epoch_indices[idx]
         inp = torch.LongTensor(self.inputs[real_idx])
         label = torch.LongTensor(self.labels[real_idx])
-        puzzle_id = torch.tensor(self.puzzle_indices[real_idx], dtype=torch.long)
+        # HRM uses puzzle_identifiers=0 for ALL puzzles (single shared embedding)
+        # NOT puzzle_indices (which is unique per puzzle and causes memorization)
+        puzzle_id = torch.tensor(0, dtype=torch.long)
         
         return {
             'input': inp,
@@ -1189,8 +1194,10 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
     
-    # Get number of unique puzzles
-    num_puzzles = len(np.unique(train_dataset.puzzle_indices)) + 1000  # Buffer
+    # HRM uses a SINGLE shared puzzle embedding for ALL puzzles (id=0)
+    # This is a learned bias, NOT puzzle-specific information
+    # Using per-puzzle embeddings causes memorization and prevents generalization
+    num_puzzles = 1  # Single shared embedding like HRM
     
     # Build model
     use_poh = args.model in ('poh', 'hybrid')  # Both use puzzle embeddings
