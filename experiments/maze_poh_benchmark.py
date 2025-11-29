@@ -44,7 +44,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
-from typing import Optional, Tuple
+from typing import Optional
 import argparse
 import json
 from tqdm import tqdm
@@ -118,7 +118,11 @@ class MazeDataset(Dataset):
 
 
 def download_maze_dataset(output_dir: str, maze_size: int = 20, aug: bool = True):
-    """Download maze dataset from HuggingFace."""
+    """
+    Download maze dataset from HuggingFace.
+    
+    Uses sapientinc/maze-{size}x{size}-hard-1k repos.
+    """
     from huggingface_hub import hf_hub_download
     import csv
     
@@ -126,37 +130,39 @@ def download_maze_dataset(output_dir: str, maze_size: int = 20, aug: bool = True
     
     # Choose repo based on maze size
     if maze_size == 20:
-        source_repo = "sapientinc/maze-20x20-hard"
+        source_repo = "sapientinc/maze-20x20-hard-1k"
     elif maze_size == 30:
-        source_repo = "sapientinc/maze-30x30-hard"
+        source_repo = "sapientinc/maze-30x30-hard-1k"
     else:
         raise ValueError(f"Unsupported maze size: {maze_size}. Use 20 or 30.")
     
     print(f"Downloading maze dataset from {source_repo}...")
+    
+    # HRM character set
+    CHARSET = "# SGo"  # wall, space, start, goal, path
+    char2id = np.zeros(256, dtype=np.uint8)
+    char2id[np.array(list(map(ord, CHARSET)))] = np.arange(len(CHARSET)) + 1
     
     for split in ['train', 'test']:
         split_dir = output_path / split
         split_dir.mkdir(parents=True, exist_ok=True)
         
         # Download CSV
+        print(f"  Downloading {split}...")
         csv_path = hf_hub_download(source_repo, f"{split}.csv", repo_type="dataset")
         
         # Parse CSV
         inputs = []
         labels = []
-        all_chars = set()
         
         with open(csv_path, newline="") as f:
             reader = csv.reader(f)
             next(reader)  # Skip header
-            for row in reader:
+            for row in tqdm(reader, desc=f"  [{split}]"):
                 if len(row) >= 4:
                     source, q, a, rating = row[:4]
                 else:
                     continue
-                    
-                all_chars.update(q)
-                all_chars.update(a)
                 
                 grid_size = int(len(q) ** 0.5)
                 inp = np.frombuffer(q.encode(), dtype=np.uint8).reshape(grid_size, grid_size)
@@ -167,37 +173,21 @@ def download_maze_dataset(output_dir: str, maze_size: int = 20, aug: bool = True
         
         print(f"  [{split}] Loaded {len(inputs)} mazes from CSV")
         
-        # Create character mapping
-        charset = " #SGoX"  # PAD + standard maze chars
-        char2id = np.zeros(256, dtype=np.uint8)
-        for i, c in enumerate(charset):
-            char2id[ord(c)] = i + 1  # 1-indexed (0 = PAD)
-        
-        # Convert to numpy arrays
-        def to_numpy(grids):
-            result = []
-            for g in grids:
-                flat = g.flatten()
-                mapped = char2id[flat]
-                result.append(mapped)
-            return np.array(result)
-        
         # Apply augmentation for training (8x dihedral group)
         if split == 'train' and aug:
             aug_inputs = []
             aug_labels = []
             for inp, lab in zip(inputs, labels):
                 for k in range(8):
-                    aug_inp = dihedral_transform(inp, k)
-                    aug_lab = dihedral_transform(lab, k)
-                    aug_inputs.append(aug_inp)
-                    aug_labels.append(aug_lab)
+                    aug_inputs.append(dihedral_transform(inp, k))
+                    aug_labels.append(dihedral_transform(lab, k))
             inputs = aug_inputs
             labels = aug_labels
             print(f"  [{split}] After 8x augmentation: {len(inputs)} mazes")
         
-        inputs_np = to_numpy(inputs)
-        labels_np = to_numpy(labels)
+        # Convert to numpy with character mapping
+        inputs_np = np.vstack([char2id[inp.flatten()] for inp in inputs])
+        labels_np = np.vstack([char2id[lab.flatten()] for lab in labels])
         
         # Save
         np.save(split_dir / 'all__inputs.npy', inputs_np)
@@ -206,7 +196,7 @@ def download_maze_dataset(output_dir: str, maze_size: int = 20, aug: bool = True
         # Save metadata
         metadata = {
             'seq_len': inputs_np.shape[1],
-            'vocab_size': len(charset) + 1,
+            'vocab_size': len(CHARSET) + 1,
             'grid_size': int(np.sqrt(inputs_np.shape[1])),
             'num_samples': len(inputs_np),
         }
