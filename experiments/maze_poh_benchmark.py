@@ -117,24 +117,23 @@ class MazeDataset(Dataset):
         }
 
 
-def download_maze_dataset(output_dir: str, maze_size: int = 20, aug: bool = True):
+def download_maze_dataset(output_dir: str, maze_size: int = 30, aug: bool = True):
     """
     Download maze dataset from HuggingFace.
     
-    Uses sapientinc/maze-{size}x{size}-hard-1k repos.
+    Uses sapientinc/maze-30x30-hard-1k (public dataset).
     """
     from huggingface_hub import hf_hub_download
     import csv
     
     output_path = Path(output_dir)
     
-    # Choose repo based on maze size
-    if maze_size == 20:
-        source_repo = "sapientinc/maze-20x20-hard-1k"
-    elif maze_size == 30:
-        source_repo = "sapientinc/maze-30x30-hard-1k"
-    else:
-        raise ValueError(f"Unsupported maze size: {maze_size}. Use 20 or 30.")
+    # Only 30x30 is publicly available
+    if maze_size != 30:
+        print(f"⚠️  Only 30x30 mazes publicly available. Using maze-30x30-hard-1k.")
+        maze_size = 30
+    
+    source_repo = "sapientinc/maze-30x30-hard-1k"
     
     print(f"Downloading maze dataset from {source_repo}...")
     
@@ -463,8 +462,8 @@ def main():
                        help='Path to maze dataset (auto-set based on maze-size)')
     parser.add_argument('--download', action='store_true',
                        help='Download dataset from HuggingFace')
-    parser.add_argument('--maze-size', type=int, default=20, choices=[20, 30],
-                       help='Maze size (20 or 30)')
+    parser.add_argument('--maze-size', type=int, default=30,
+                       help='Maze size (only 30x30 publicly available)')
     parser.add_argument('--no-aug', action='store_true',
                        help='Disable training data augmentation')
     
