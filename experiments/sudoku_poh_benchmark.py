@@ -1161,7 +1161,7 @@ def main():
     parser.add_argument('--puzzle-weight-decay', type=float, default=1.0, help='HRM uses 1.0')
     parser.add_argument('--warmup-steps', type=int, default=100, help='LR warmup steps')
     parser.add_argument('--eval-interval', type=int, default=500)
-    parser.add_argument('--patience', type=int, default=2000, help='Early stopping patience')
+    # Early stopping removed - train for full epochs like HRM
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     parser.add_argument('--debug-interval', type=int, default=10, help='Debug every N epochs')
     
@@ -1301,7 +1301,6 @@ def main():
         print(f"R={args.R}, T={args.T}, max_halt={args.max_halt}")
     
     best_grid_acc = 0
-    patience_counter = 0
     results = []
     
     os.makedirs(args.output, exist_ok=True)
@@ -1339,24 +1338,15 @@ def main():
                 'test_grid_acc': test_metrics['grid_acc'],
             })
             
-            # Early stopping
+            # Save best model
             if test_metrics['grid_acc'] > best_grid_acc:
                 best_grid_acc = test_metrics['grid_acc']
-                patience_counter = 0
-                
-                # Save best model
                 torch.save({
                     'epoch': epoch,
                     'model_state_dict': model.state_dict(),
                     'test_grid_acc': best_grid_acc,
                 }, os.path.join(args.output, f'{args.model}_best.pt'))
                 print(f"  ✓ New best: {best_grid_acc:.2f}%")
-            else:
-                patience_counter += args.eval_interval
-            
-            if patience_counter >= args.patience:
-                print(f"\n⚠ Early stopping at epoch {epoch}")
-                break
             
             # Check for near-perfect accuracy (HRM target)
             if train_metrics['grid_acc'] >= 99.5:
