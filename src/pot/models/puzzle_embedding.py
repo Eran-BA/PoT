@@ -48,10 +48,17 @@ class PuzzleEmbedding(nn.Module):
         # Embedding lookup table
         self.embeddings = nn.Embedding(num_puzzles, emb_dim)
         
-        # Small random init (if init_std=0, use 0.02 as default for better gradient flow)
+        # Initialize embeddings
+        # HRM uses zero init (init_std=0) to force learning from scratch
+        # Use -1 to get default 0.02 std for non-HRM usage
         if init_std == 0.0:
-            init_std = 0.02  # Small but non-zero for better learning
-        nn.init.normal_(self.embeddings.weight, mean=0.0, std=init_std)
+            # True zero initialization (HRM style)
+            nn.init.zeros_(self.embeddings.weight)
+        elif init_std < 0:
+            # Default small random init for better gradient flow
+            nn.init.normal_(self.embeddings.weight, mean=0.0, std=0.02)
+        else:
+            nn.init.normal_(self.embeddings.weight, mean=0.0, std=init_std)
     
     def forward(self, puzzle_ids: torch.Tensor) -> torch.Tensor:
         """

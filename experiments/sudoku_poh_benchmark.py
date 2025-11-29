@@ -12,6 +12,16 @@ Task: Given a 9x9 Sudoku puzzle with blanks (0), output the complete solution.
 Input:  81 tokens (flattened 9x9), vocab 0-9 (0=blank)
 Output: 81 tokens (complete solution), vocab 1-9
 
+Key HRM implementation details matched in this code:
+1. Embedding scaling by sqrt(d_model) - amplifies signal ~22x
+2. H_init/L_init as buffers (NOT learned parameters)
+3. Zero-initialized puzzle embeddings
+4. Q head initialized to near-zero (bias=-5)
+5. No dropout in transformer blocks
+6. Post-norm architecture with RMSNorm and SwiGLU
+7. Only final iteration gets gradients (all others in no_grad)
+8. Loss computed on ALL 81 cells (not just blanks)
+
 Author: Eran Ben Artzy
 Year: 2025
 License: Apache 2.0
@@ -19,6 +29,7 @@ License: Apache 2.0
 
 import sys
 import os
+import math
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import torch
@@ -475,6 +486,8 @@ class ReasoningModule(nn.Module):
     """
     Transformer stack with PoT head routing.
     Used as H_level or L_level in the hybrid architecture.
+    
+    Follows HRM's post-norm structure but adds PoT head routing.
     """
     
     def __init__(
@@ -483,7 +496,7 @@ class ReasoningModule(nn.Module):
         n_heads: int = 8,
         n_layers: int = 2,
         d_ff: int = 2048,
-        dropout: float = 0.1,
+        dropout: float = 0.0,  # HRM doesn't use dropout
         T: int = 4,  # HRM period for pointer controller
     ):
         super().__init__()
@@ -499,17 +512,16 @@ class ReasoningModule(nn.Module):
             dropout=dropout
         )
         
-        # Transformer layers
+        # Transformer layers (no dropout to match HRM)
         self.attn_layers = nn.ModuleList([
-            nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
+            nn.MultiheadAttention(d_model, n_heads, dropout=0.0, batch_first=True)
             for _ in range(n_layers)
         ])
         self.ffn_layers = nn.ModuleList([
-            SwiGLU(d_model, d_ff, dropout) for _ in range(n_layers)
+            SwiGLU(d_model, d_ff, dropout=0.0) for _ in range(n_layers)
         ])
         self.norm1_layers = nn.ModuleList([RMSNorm(d_model) for _ in range(n_layers)])
         self.norm2_layers = nn.ModuleList([RMSNorm(d_model) for _ in range(n_layers)])
-        self.dropout_layers = nn.ModuleList([nn.Dropout(dropout) for _ in range(n_layers)])
     
     def forward(
         self, 
@@ -520,7 +532,7 @@ class ReasoningModule(nn.Module):
         """
         Forward pass with input injection and PoT head routing.
         
-        HRM-style: hidden = hidden + injection before processing
+        HRM-style: hidden = hidden + injection before processing (post-norm)
         """
         B, T, D = hidden.shape
         
@@ -530,14 +542,13 @@ class ReasoningModule(nn.Module):
         # Get routing weights from PoT controller
         route_weights, ptr_state, _ = self.pointer_controller(x, state=ptr_state)
         
-        # Apply transformer layers with head routing
-        # CRITICAL FIX: Scale routing weights by n_heads to preserve magnitude
+        # CRITICAL: Scale routing weights by n_heads to preserve magnitude
         # Softmax weights sum to 1, so without scaling we'd reduce output by n_heads factor
         route_weights_scaled = route_weights * self.n_heads  # [B, H] -> sums to n_heads
         
-        for attn, ffn, norm1, norm2, drop in zip(
+        for attn, ffn, norm1, norm2 in zip(
             self.attn_layers, self.ffn_layers,
-            self.norm1_layers, self.norm2_layers, self.dropout_layers
+            self.norm1_layers, self.norm2_layers
         ):
             # Attention with PoT head routing
             attn_out, _ = attn(x, x, x, need_weights=False)
@@ -545,10 +556,10 @@ class ReasoningModule(nn.Module):
             attn_out_heads = attn_out.view(B, T, self.n_heads, d_head)
             route_exp = route_weights_scaled.unsqueeze(1).unsqueeze(-1)  # [B, 1, H, 1]
             attn_out_routed = (attn_out_heads * route_exp).view(B, T, D)
-            x = norm1(x + drop(attn_out_routed))
             
-            # FFN
-            x = norm2(x + drop(ffn(x)))
+            # Post-norm (like HRM)
+            x = norm1(x + attn_out_routed)
+            x = norm2(x + ffn(x))
         
         return x, ptr_state
 
@@ -566,6 +577,12 @@ class HybridPoHHRMSolver(nn.Module):
     - L_level: Fast reasoning, updates every inner step
     - H_level: Slow reasoning, updates every outer step
     - Both use PoT head routing for dynamic attention
+    
+    Key HRM implementation details:
+    - Embedding scaling by sqrt(d_model) 
+    - H_init/L_init as buffers (not learned)
+    - Zero-initialized puzzle embeddings
+    - Q head initialized to near-zero
     """
     
     def __init__(
@@ -576,9 +593,9 @@ class HybridPoHHRMSolver(nn.Module):
         H_layers: int = 2,  # Layers in H_level
         L_layers: int = 2,  # Layers in L_level
         d_ff: int = 2048,
-        dropout: float = 0.1,
-        H_cycles: int = 2,  # Outer loop iterations (increased from 1)
-        L_cycles: int = 8,  # Inner loop iterations (increased from 4)
+        dropout: float = 0.0,  # HRM doesn't use dropout
+        H_cycles: int = 2,  # Outer loop iterations
+        L_cycles: int = 8,  # Inner loop iterations
         T: int = 4,  # HRM period for pointer controller
         num_puzzles: int = 1000,
         puzzle_emb_dim: int = 512,
@@ -591,19 +608,25 @@ class HybridPoHHRMSolver(nn.Module):
         self.H_cycles = H_cycles
         self.L_cycles = L_cycles
         
-        # Input embedding
-        self.input_embed = nn.Embedding(vocab_size, d_model)
+        # Embedding scaling factor (CRITICAL: HRM uses this!)
+        self.embed_scale = d_model ** 0.5  # sqrt(512) ≈ 22.6
+        embed_init_std = 1.0 / self.embed_scale
         
-        # Puzzle embedding
-        self.puzzle_emb = PuzzleEmbedding(num_puzzles, puzzle_emb_dim, init_std=0.02)
+        # Input embedding (init with 1/sqrt(d_model) std)
+        self.input_embed = nn.Embedding(vocab_size, d_model)
+        nn.init.normal_(self.input_embed.weight, mean=0, std=embed_init_std)
+        
+        # Puzzle embedding (ZERO initialized like HRM!)
+        self.puzzle_emb = PuzzleEmbedding(num_puzzles, puzzle_emb_dim, init_std=0.0)
         self.puzzle_emb_proj = nn.Linear(puzzle_emb_dim, d_model) if puzzle_emb_dim != d_model else nn.Identity()
         
-        # Position embedding
-        self.pos_embed = nn.Parameter(torch.randn(1, self.seq_len, d_model) * 0.02)
+        # Position embedding (also scaled)
+        self.pos_embed = nn.Parameter(torch.randn(1, self.seq_len, d_model) * embed_init_std)
         
-        # Initial hidden states (learned) - use std=1 like HRM
-        self.H_init = nn.Parameter(torch.randn(d_model) * 1.0)
-        self.L_init = nn.Parameter(torch.randn(d_model) * 1.0)
+        # Initial hidden states as BUFFERS (NOT learned, like HRM)
+        # HRM uses trunc_normal with std=1
+        self.register_buffer('H_init', torch.randn(d_model) * 1.0)
+        self.register_buffer('L_init', torch.randn(d_model) * 1.0)
         
         # Two-timescale reasoning modules with PoT head routing
         self.L_level = ReasoningModule(d_model, n_heads, L_layers, d_ff, dropout, T)
@@ -613,22 +636,26 @@ class HybridPoHHRMSolver(nn.Module):
         self.final_norm = RMSNorm(d_model)
         self.output_proj = nn.Linear(d_model, vocab_size)
         
-        # Q-halting (for API compatibility)
+        # Q-halting with HRM-style initialization
         self.q_head = nn.Linear(d_model, 2)
+        # Zero weights and bias=-5 for faster Q-learning bootstrap
+        nn.init.zeros_(self.q_head.weight)
+        nn.init.constant_(self.q_head.bias, -5.0)
     
     def forward(self, input_seq: torch.Tensor, puzzle_ids: torch.Tensor):
         """
         Forward pass with HRM-style nested iteration and PoT head routing.
         
-        Key differences from previous version:
-        1. Initialize z_H, z_L with input_emb (not zeros) - gives model a starting point
-        2. Use detach() between H steps (not no_grad) - allows gradient flow within each outer step
-        3. Add residual from input_emb to output - direct gradient path
+        Key HRM implementation details:
+        1. Scale embeddings by sqrt(d_model) - CRITICAL for signal strength
+        2. Initialize z_H, z_L from buffers (not learned) 
+        3. Only backprop through final L and H steps
+        4. Input comes ONLY through injection, not initialization
         """
         B = input_seq.size(0)
         device = input_seq.device
         
-        # Input embedding + position
+        # Input embedding + position (with HRM-style scaling!)
         input_emb = self.input_embed(input_seq) + self.pos_embed
         
         # Add puzzle embedding (broadcast to all positions)
@@ -640,7 +667,10 @@ class HybridPoHHRMSolver(nn.Module):
         puzzle_emb = self.puzzle_emb_proj(puzzle_emb)  # [B, d_model]
         input_emb = input_emb + puzzle_emb.unsqueeze(1)  # Broadcast to all 81 positions
         
-        # Initialize hidden states from LEARNED PARAMETERS ONLY (like HRM)
+        # CRITICAL: Scale embeddings by sqrt(d_model) like HRM!
+        input_emb = self.embed_scale * input_emb
+        
+        # Initialize hidden states from BUFFERS (not learned, like HRM)
         # Input comes ONLY through injection, not initialization
         z_H = self.H_init.view(1, 1, -1).expand(B, self.seq_len, -1).clone()  # [B, 81, d_model]
         z_L = self.L_init.view(1, 1, -1).expand(B, self.seq_len, -1).clone()  # [B, 81, d_model]
@@ -973,7 +1003,8 @@ def run_debug(model, dataloader, optimizer, device, epoch):
 # Training Functions
 # ============================================================================
 
-def train_epoch(model, dataloader, optimizer, puzzle_optimizer, device, epoch, use_poh=True, debug=False):
+def train_epoch(model, dataloader, optimizer, puzzle_optimizer, device, epoch, 
+                use_poh=True, debug=False, scheduler=None, puzzle_scheduler=None):
     """Train for one epoch."""
     model.train()
     total_loss = 0
@@ -1017,6 +1048,12 @@ def train_epoch(model, dataloader, optimizer, puzzle_optimizer, device, epoch, u
         optimizer.step()
         if puzzle_optimizer:
             puzzle_optimizer.step()
+        
+        # Step schedulers
+        if scheduler:
+            scheduler.step()
+        if puzzle_scheduler:
+            puzzle_scheduler.step()
         
         # Metrics (all cells)
         total_loss += loss.item()
@@ -1110,12 +1147,14 @@ def main():
     parser.add_argument('--H-layers', type=int, default=2, help='Layers in H_level module')
     parser.add_argument('--L-layers', type=int, default=2, help='Layers in L_level module')
     
-    # Training
+    # Training (HRM defaults: lr=7e-5, weight_decay=1.0)
     parser.add_argument('--epochs', type=int, default=20000)
     parser.add_argument('--batch-size', type=int, default=384)
-    parser.add_argument('--lr', type=float, default=3e-4)
-    parser.add_argument('--puzzle-lr', type=float, default=3e-4)
-    parser.add_argument('--weight-decay', type=float, default=0.01)
+    parser.add_argument('--lr', type=float, default=7e-5, help='HRM uses 7e-5')
+    parser.add_argument('--puzzle-lr', type=float, default=7e-5, help='HRM uses same as lr')
+    parser.add_argument('--weight-decay', type=float, default=1.0, help='HRM uses 1.0')
+    parser.add_argument('--puzzle-weight-decay', type=float, default=1.0, help='HRM uses 1.0')
+    parser.add_argument('--warmup-steps', type=int, default=100, help='LR warmup steps')
     parser.add_argument('--eval-interval', type=int, default=500)
     parser.add_argument('--patience', type=int, default=2000, help='Early stopping patience')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
@@ -1216,24 +1255,41 @@ def main():
         print(f"\n{'='*60}")
         return
     
-    # Optimizers (HRM style: separate for puzzle embeddings)
+    # Optimizers (HRM style: separate for puzzle embeddings with high weight decay)
     if use_poh:
         puzzle_params = list(model.puzzle_emb.parameters())
         model_params = [p for p in model.parameters() if p not in set(puzzle_params)]
         
-        # HRM-style: lower weight decay for model, higher for puzzle embeddings
-        optimizer = torch.optim.AdamW(model_params, lr=args.lr, weight_decay=0.1)
-        puzzle_optimizer = torch.optim.AdamW(puzzle_params, lr=args.puzzle_lr, weight_decay=args.weight_decay)
+        # HRM uses same weight_decay for both (1.0)
+        optimizer = torch.optim.AdamW(model_params, lr=args.lr, weight_decay=args.weight_decay)
+        puzzle_optimizer = torch.optim.AdamW(puzzle_params, lr=args.puzzle_lr, weight_decay=args.puzzle_weight_decay)
+        
+        print(f"\nOptimizer: AdamW")
+        print(f"  Model params: {sum(p.numel() for p in model_params):,}, lr={args.lr}, wd={args.weight_decay}")
+        print(f"  Puzzle params: {sum(p.numel() for p in puzzle_params):,}, lr={args.puzzle_lr}, wd={args.puzzle_weight_decay}")
     else:
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
         puzzle_optimizer = None
     
     # Training loop
+    # Learning rate scheduler with warmup (like HRM)
+    total_steps = args.epochs * len(train_loader)
+    
+    def lr_lambda(step):
+        if step < args.warmup_steps:
+            return float(step) / float(max(1, args.warmup_steps))
+        progress = float(step - args.warmup_steps) / float(max(1, total_steps - args.warmup_steps))
+        return 0.5 * (1.0 + math.cos(math.pi * progress))  # Cosine decay
+    
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    puzzle_scheduler = torch.optim.lr_scheduler.LambdaLR(puzzle_optimizer, lr_lambda) if puzzle_optimizer else None
+    
     print(f"\n{'='*60}")
     print(f"Training {args.model.upper()} Sudoku Solver")
     print(f"{'='*60}")
     print(f"Epochs: {args.epochs}, Batch size: {args.batch_size}")
     print(f"LR: {args.lr}, Weight decay: {args.weight_decay}")
+    print(f"Warmup: {args.warmup_steps} steps, Total: {total_steps} steps")
     if use_poh:
         print(f"R={args.R}, T={args.T}, max_halt={args.max_halt}")
     
@@ -1249,7 +1305,8 @@ def main():
         
         train_metrics = train_epoch(
             model, train_loader, optimizer, puzzle_optimizer, 
-            device, epoch, use_poh=use_poh, debug=do_debug
+            device, epoch, use_poh=use_poh, debug=do_debug,
+            scheduler=scheduler, puzzle_scheduler=puzzle_scheduler
         )
         
         # Resample augmentations for next epoch (HRM-style)
