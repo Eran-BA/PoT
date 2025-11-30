@@ -123,7 +123,7 @@ class HybridHRMBase(nn.Module):
     def reasoning_loop(
         self, 
         input_emb: torch.Tensor,
-        grad_steps: int = 4
+        grad_steps: int = 1
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
         """
         Core two-timescale reasoning loop.
