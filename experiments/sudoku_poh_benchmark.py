@@ -775,12 +775,13 @@ def debug_input_injection(model, batch, device):
         
         print(f"  Step 0 - hidden norm: {x_grid_hidden.norm():.4f}, input norm: {x_grid_input.norm():.4f}")
         
-        # Run one step manually
-        puzzle_emb = model.puzzle_emb(puzzle_ids.clamp(0, model.puzzle_emb.num_puzzles - 1))
-        pad_size = model.puzzle_emb_len * model.d_model - puzzle_emb.size(-1)
-        if pad_size > 0:
-            puzzle_emb = F.pad(puzzle_emb, (0, pad_size))
-        puzzle_emb = puzzle_emb.view(1, model.puzzle_emb_len, model.d_model)
+        # Run one step manually (only for models with puzzle_emb_len)
+        if hasattr(model, 'puzzle_emb_len'):
+            puzzle_emb = model.puzzle_emb(puzzle_ids.clamp(0, model.puzzle_emb.num_puzzles - 1))
+            pad_size = model.puzzle_emb_len * model.d_model - puzzle_emb.size(-1)
+            if pad_size > 0:
+                puzzle_emb = F.pad(puzzle_emb, (0, pad_size))
+            puzzle_emb = puzzle_emb.view(1, model.puzzle_emb_len, model.d_model)
         
         x_grid_step = x_grid_hidden + x_grid_input
         print(f"  Step 1 - x_grid_step norm: {x_grid_step.norm():.4f}")
@@ -867,8 +868,52 @@ def run_debug(model, dataloader, optimizer, device, epoch):
 # Training Functions
 # ============================================================================
 
+def sudoku_constraint_loss(logits: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
+    """
+    Compute auxiliary loss for Sudoku constraint violations.
+    
+    Encourages each row, column, and 3x3 box to have each digit exactly once
+    by penalizing duplicate predictions via soft entropy-like loss.
+    
+    Args:
+        logits: [B, 81, vocab_size] - raw logits (vocab 0-9, but we focus on 1-9)
+        temperature: Softmax temperature for soft constraints
+        
+    Returns:
+        constraint_loss: Scalar loss penalizing constraint violations
+    """
+    B = logits.size(0)
+    # Get probabilities for digits 1-9 only (ignore 0=blank)
+    probs = F.softmax(logits[:, :, 1:10] / temperature, dim=-1)  # [B, 81, 9]
+    probs = probs.view(B, 9, 9, 9)  # [B, row, col, digit]
+    
+    constraint_loss = 0.0
+    
+    # Row constraint: sum of probs for each digit in each row should be ~1
+    row_sums = probs.sum(dim=2)  # [B, 9, 9] - sum over columns
+    row_loss = ((row_sums - 1.0) ** 2).mean()
+    constraint_loss += row_loss
+    
+    # Column constraint: sum of probs for each digit in each column should be ~1
+    col_sums = probs.sum(dim=1)  # [B, 9, 9] - sum over rows
+    col_loss = ((col_sums - 1.0) ** 2).mean()
+    constraint_loss += col_loss
+    
+    # Box constraint: sum of probs for each digit in each 3x3 box should be ~1
+    for box_row in range(3):
+        for box_col in range(3):
+            box = probs[:, box_row*3:(box_row+1)*3, box_col*3:(box_col+1)*3, :]  # [B, 3, 3, 9]
+            box_sums = box.sum(dim=(1, 2))  # [B, 9] - sum over box cells
+            box_loss = ((box_sums - 1.0) ** 2).mean()
+            constraint_loss += box_loss
+    
+    # Normalize by number of constraint groups (9 rows + 9 cols + 9 boxes = 27)
+    return constraint_loss / 27.0
+
+
 def train_epoch(model, dataloader, optimizer, puzzle_optimizer, device, epoch, 
-                use_poh=True, debug=False, scheduler=None, puzzle_scheduler=None):
+                use_poh=True, debug=False, scheduler=None, puzzle_scheduler=None,
+                constraint_weight: float = 0.5):
     """Train for one epoch."""
     model.train()
     total_loss = 0
@@ -896,6 +941,9 @@ def train_epoch(model, dataloader, optimizer, puzzle_optimizer, device, epoch,
             label.view(-1)
         )
         
+        # Sudoku constraint loss - helps learn row/col/box uniqueness
+        constraint_loss = sudoku_constraint_loss(logits)
+        
         # Q-halt loss (if PoH)
         if use_poh and q_halt is not None:
             with torch.no_grad():
@@ -903,9 +951,9 @@ def train_epoch(model, dataloader, optimizer, puzzle_optimizer, device, epoch,
                 is_correct = (preds == label).all(dim=1).float()
             
             q_halt_loss = F.binary_cross_entropy_with_logits(q_halt, is_correct)
-            loss = lm_loss + 0.5 * q_halt_loss
+            loss = lm_loss + constraint_weight * constraint_loss + 0.5 * q_halt_loss
         else:
-            loss = lm_loss
+            loss = lm_loss + constraint_weight * constraint_loss
         
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -1005,21 +1053,22 @@ def main():
     parser.add_argument('--R', type=int, default=8, help='Refinement iterations')
     parser.add_argument('--T', type=int, default=4, help='HRM outer period')
     parser.add_argument('--max-halt', type=int, default=16, help='Max halting steps')
-    # Hybrid model args
-    parser.add_argument('--H-cycles', type=int, default=2, help='Hybrid H_level outer cycles')
-    parser.add_argument('--L-cycles', type=int, default=8, help='Hybrid L_level inner cycles')
-    parser.add_argument('--H-layers', type=int, default=2, help='Layers in H_level module')
-    parser.add_argument('--L-layers', type=int, default=2, help='Layers in L_level module')
+    # Hybrid model args (increased for Sudoku constraint propagation)
+    parser.add_argument('--H-cycles', type=int, default=4, help='Hybrid H_level outer cycles')
+    parser.add_argument('--L-cycles', type=int, default=16, help='Hybrid L_level inner cycles')
+    parser.add_argument('--H-layers', type=int, default=4, help='Layers in H_level module')
+    parser.add_argument('--L-layers', type=int, default=4, help='Layers in L_level module')
     
-    # Training (HRM defaults: lr=7e-5, weight_decay=1.0)
+    # Training (adjusted from HRM defaults for better convergence)
     parser.add_argument('--epochs', type=int, default=20000)
     parser.add_argument('--batch-size', type=int, default=384)
-    parser.add_argument('--lr', type=float, default=7e-5, help='HRM uses 7e-5')
-    parser.add_argument('--puzzle-lr', type=float, default=7e-5, help='HRM uses same as lr')
-    parser.add_argument('--weight-decay', type=float, default=1.0, help='HRM uses 1.0')
-    parser.add_argument('--puzzle-weight-decay', type=float, default=1.0, help='HRM uses 1.0')
-    parser.add_argument('--warmup-steps', type=int, default=100, help='LR warmup steps')
-    parser.add_argument('--eval-interval', type=int, default=500)
+    parser.add_argument('--lr', type=float, default=3e-4, help='Higher LR for faster learning')
+    parser.add_argument('--puzzle-lr', type=float, default=3e-4, help='Same as main LR')
+    parser.add_argument('--weight-decay', type=float, default=0.01, help='Much lower WD')
+    parser.add_argument('--puzzle-weight-decay', type=float, default=0.01, help='Much lower WD')
+    parser.add_argument('--warmup-steps', type=int, default=500, help='LR warmup steps')
+    parser.add_argument('--eval-interval', type=int, default=100)
+    parser.add_argument('--constraint-weight', type=float, default=0.5, help='Weight for Sudoku constraint loss')
     # Early stopping removed - train for full epochs like HRM
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     parser.add_argument('--debug-interval', type=int, default=10, help='Debug every N epochs')
@@ -1171,7 +1220,8 @@ def main():
         train_metrics = train_epoch(
             model, train_loader, optimizer, puzzle_optimizer, 
             device, epoch, use_poh=use_poh, debug=do_debug,
-            scheduler=scheduler, puzzle_scheduler=puzzle_scheduler
+            scheduler=scheduler, puzzle_scheduler=puzzle_scheduler,
+            constraint_weight=args.constraint_weight
         )
         
         # Resample augmentations for next epoch (HRM-style)

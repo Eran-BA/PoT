@@ -122,15 +122,17 @@ class HybridHRMBase(nn.Module):
     
     def reasoning_loop(
         self, 
-        input_emb: torch.Tensor
+        input_emb: torch.Tensor,
+        grad_steps: int = 4
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
         """
         Core two-timescale reasoning loop.
         
-        Implements HRM-style nested iteration with gradient only through final step.
+        Modified from HRM to allow gradients through last N steps for better learning.
         
         Args:
             input_emb: Scaled input embedding [B, seq_len, d_model]
+            grad_steps: Number of final H_cycles to allow gradients through (default: 4)
             
         Returns:
             hidden: Final hidden state [B, seq_len, d_model]
@@ -150,27 +152,30 @@ class HybridHRMBase(nn.Module):
         L_ptr_state = self.L_level.pointer_controller.init_state(B, device)
         H_ptr_state = self.H_level.pointer_controller.init_state(B, device)
         
-        # HRM-style nested iteration
-        # KEY: Run ALL iterations in no_grad EXCEPT the final L and H steps
-        # This is how HRM actually trains - only backprop through final step
-        total_L_steps = self.H_cycles * self.L_cycles
-        step_count = 0
+        # Determine which H_cycles get gradients (last `grad_steps` cycles)
+        grad_start = max(0, self.H_cycles - grad_steps)
         
-        with torch.no_grad():
-            for H_step in range(self.H_cycles):
-                for L_step in range(self.L_cycles):
-                    step_count += 1
-                    # Skip the last L step (will do with grad)
-                    if step_count < total_L_steps:
+        for H_step in range(self.H_cycles):
+            # Use no_grad for early iterations, gradients for final ones
+            use_grad = H_step >= grad_start
+            
+            # Inner L-level loop
+            for L_step in range(self.L_cycles):
+                if use_grad:
+                    z_L, L_ptr_state = self.L_level(z_L, z_H + input_emb, L_ptr_state)
+                else:
+                    with torch.no_grad():
                         z_L, L_ptr_state = self.L_level(z_L, z_H + input_emb, L_ptr_state)
-                
-                # Skip the last H step (will do with grad)
-                if H_step < self.H_cycles - 1:
+                    # Detach to prevent memory accumulation
+                    z_L = z_L.detach()
+            
+            # Outer H-level update
+            if use_grad:
+                z_H, H_ptr_state = self.H_level(z_H, z_L, H_ptr_state)
+            else:
+                with torch.no_grad():
                     z_H, H_ptr_state = self.H_level(z_H, z_L, H_ptr_state)
-        
-        # ONLY the final L and H steps get gradients (exactly like HRM)
-        z_L, L_ptr_state = self.L_level(z_L, z_H + input_emb, L_ptr_state)
-        z_H, H_ptr_state = self.H_level(z_H, z_L, H_ptr_state)
+                z_H = z_H.detach()
         
         # Normalize output
         hidden = self.final_norm(z_H)
