@@ -121,8 +121,73 @@ flowchart TB
   class SKIP1,SKIP2 skip
 ```
 
+### HybridHRM Architecture (for Sudoku/Maze)
 
+The diagram above shows **one PoH Block** — the atomic building block. For complex reasoning tasks like Sudoku, we stack these blocks into a **two-timescale architecture** inspired by the [HRM paper](https://arxiv.org/abs/2506.21734):
 
+```mermaid
+flowchart TB
+    classDef input fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#111
+    classDef state fill:#fff3e0,stroke:#ef6c00,stroke-width:2px,color:#111
+    classDef fast fill:#e0f7fa,stroke:#00838f,stroke-width:2px,color:#111
+    classDef slow fill:#ffebee,stroke:#c62828,stroke-width:2px,color:#111
+    classDef output fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#111
+    classDef poh fill:#fff9c4,stroke:#f9a825,stroke-width:2px,color:#111
+
+    INPUT[/"Input Embedding<br/>(scaled by √d_model)"/]:::input
+    
+    subgraph STATES["Persistent Hidden States"]
+        ZH["z_H (slow)"]:::state
+        ZL["z_L (fast)"]:::state
+    end
+    
+    INJECT["⊕ z_H + input_emb"]:::input
+    
+    subgraph LLEVEL["L_level: ReasoningModule (FAST)"]
+        LPOH["PoH Block × n_layers<br/>(diagram above)"]:::poh
+    end
+    
+    subgraph HLEVEL["H_level: ReasoningModule (SLOW)"]
+        HPOH["PoH Block × n_layers<br/>(diagram above)"]:::poh
+    end
+    
+    INNER{{"Inner Loop<br/>L_cycles=8"}}:::fast
+    OUTER{{"Outer Loop<br/>H_cycles=2"}}:::slow
+    
+    OUTPUT[/"Output Logits"/]:::output
+    
+    INPUT --> INJECT
+    ZH --> INJECT
+    INJECT --> LLEVEL
+    ZL --> LLEVEL
+    LLEVEL --> |"updates"|ZL
+    ZL --> INNER
+    INNER --> |"repeat"|LLEVEL
+    INNER --> |"done"|HLEVEL
+    ZH --> HLEVEL
+    ZL --> HLEVEL
+    HLEVEL --> |"updates"|ZH
+    ZH --> OUTER
+    OUTER --> |"repeat"|INNER
+    OUTER --> |"done"|OUTPUT
+```
+
+**How it connects:**
+
+| Level | What it is | Contains |
+|-------|-----------|----------|
+| **PoH Block** (first diagram) | Atomic unit | HRM Controller + Weighted MHA + FFN |
+| **ReasoningModule** | Stack of PoH Blocks | `n_layers` × PoH Block |
+| **HybridHRMBase** | Two-timescale wrapper | L_level + H_level in nested loops |
+
+**Key insight:** The first diagram shows *what happens inside each reasoning step*. The HybridHRM diagram shows *how those steps are organized* into fast (L_level, 8×) and slow (H_level, 2×) timescales for iterative constraint solving.
+
+```
+Total reasoning steps = H_cycles × L_cycles = 2 × 8 = 16
+Each step uses the PoH Block with dynamic head routing
+```
+
+---
 
 ## 🧠 PoT in Plain English — Thinking in the Embedding Space
 
