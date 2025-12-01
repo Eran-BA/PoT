@@ -370,33 +370,6 @@ python experiments/sudoku_poh_benchmark.py --download --model hybrid
 
 ---
 
-## 📊 Results
-
-
-### Optimal Hyperparameters
-
-**Task-specific recommendations:**
-- **NLI/Language tasks**: R=12, T=4
-- **Maze solving**: R=4, T=4
-- **Sorting**: R=4, T=4
-
-**See:** [docs/POH_ITERATION_GUIDE.md](docs/POH_ITERATION_GUIDE.md) for detailed analysis.
-
-### Parameter Counts
-
-**Configuration:** d=512, h=8, ff=2048, depth=6
-
-| Model | Parameters | Delta | Notes |
-|-------|------------|-------|-------|
-| TransformerEncoder (baseline) | 18,914,304 | — | — |
-| PoH (pos=none) | 18,965,680 | **+0.27%** ✅ | Routing overhead only |
-| PoH (pos=absolute, L=512) | 19,227,824 | +1.66% | Includes positional embeddings |
-
-**Breakdown:** HeadRouter (66k params) + head_gain (48 params) = **51k params (0.27%)**
-
-
----
-
 ## 🧪 Testing
 
 ```bash
