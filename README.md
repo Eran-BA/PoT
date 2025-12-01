@@ -295,21 +295,24 @@ pip install pyyaml datasets  # For NLI benchmarks
 - **Skip Connections**: Residual connections around attention and FFN
 - **Refinement**: Model refines representation R times per forward pass (R=12 optimal)
 
-### Hierarchy
+### Hierarchy (HybridHRM)
 
 ```
-IterRefiner                # R=12 refinement steps (optimal) + optional ACT halting
-  ↓
-PoHStack                   # N transformer blocks + positional encoding
-  ↓
-PoHBlock (×N)              # Head-wise routing (via HRM controller) + MHA + FFN
-  ├─ HRM Controller       # f_L (inner loop) + f_H (outer loop) for routing
-  ├─ HeadRouter           # Converts f_L state → routing logits
-  ├─ MultiheadAttention   # Standard PyTorch MHA
-  ├─ Weighted Mixing      # α-weighted head combination
-  ├─ Residual #1          # x + dropout(attn)
-  ├─ FeedForward          # Standard FFN
-  └─ Residual #2          # x + dropout(ffn)
+HybridHRMBase                    # Two-timescale reasoning wrapper
+  │
+  ├── L_level: ReasoningModule   # FAST (8 cycles per H_cycle)
+  │       └── PoH Block × 2      # See Diagram 1️⃣ above
+  │               ├─ HRM Controller (GRU f_L + f_H → α)
+  │               ├─ Multi-Head Attention (weighted by α)
+  │               └─ SwiGLU FFN + RMSNorm
+  │
+  └── H_level: ReasoningModule   # SLOW (2 cycles total)
+          └── PoH Block × 2      # See Diagram 1️⃣ above
+                  ├─ HRM Controller (GRU f_L + f_H → α)
+                  ├─ Multi-Head Attention (weighted by α)
+                  └─ SwiGLU FFN + RMSNorm
+
+Total reasoning steps: H_cycles × L_cycles = 2 × 8 = 16
 ```
 
 ### Key Features
@@ -570,37 +573,23 @@ This work builds upon several foundational papers:
 
 ## 🚀 Status
 
-**v1.1.0** - Active Development 🚧
+**v2.0.0** - HybridHRM Focus 🎯
 
 ### Core Architecture ✅
-- [x] Modular architecture (PoHBlock → PoHStack → IterRefiner)
-- [x] HRM controller integration (two-timescale routing)
-- [x] Parameter parity (0.27% overhead)
-- [x] Config-switchable positional encoding
-- [x] Inner-loop logging & visualization
+- [x] HybridHRM two-timescale reasoning (L_level fast + H_level slow)
+- [x] PoH Block with dynamic head routing (HRM Controller → α weights)
+- [x] Modular code structure (`src/pot/models/`, `src/data/`, `src/training/`)
+- [x] Constraint loss for Sudoku rule enforcement
 - [x] 17/17 tests passing
-- [x] Comprehensive documentation
 
-### Benchmarks & Applications ✅
-- [x] **NLI benchmarks (BERT vs PoH)** - +52.58% improvement
-- [x] **GPT-style autoregressive model (PoH-GPT)**
-- [x] **Optimal hyperparameters** (R=12, T=4 for NLI; R=4, T=4 for mazes)
-- [x] **Maze solving benchmark** (with `maze-dataset` library)
-- [x] **Maze scaling benchmark** (8×8 → 30×30)
-- [x] **Connect Four strategic game play**
-- [x] **A/B testing framework** (Baseline vs BERT vs PoH-HRM)
-- [x] **Colab notebooks** (GPU-optimized, A100 support)
+### Sudoku Benchmark 🔄
+- [x] HybridPoHHRMSolver implementation (~25.8M params)
+- [x] Sudoku-Extreme dataset integration (1000 puzzles × 1000 augmentations)
+- [x] Colab notebook for A100 training
+- [ ] Reaching HRM paper target (55% grid accuracy)
 
-### In Progress 🔄
-- [ ] Maze benchmark results analysis (running now)
-- [ ] Dependency parsing baselines (Dozat-Manning, transformer+biaffine)
-- [ ] Multi-language evaluation (UD)
-- [ ] Publication-ready results
-
-### Planned 📋
-- [ ] RNN/LSTM baselines for sequential tasks
-- [ ] Attention visualization tools
-- [ ] Interactive demos
+### Archived (in `archive/` and `experiments/`)
+- NLI, GPT, Maze, Connect Four benchmarks
 
 ---
 
