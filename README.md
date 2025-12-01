@@ -6,8 +6,8 @@
 
 ## 🗞 News
 
-- Maze Scaling Benchmark (Colab, A100) — run the latest notebook:
-  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Maze_Scaling_Benchmark_Colab.ipynb)
+- **Sudoku Benchmark (Colab, A100)** — train a master-level Sudoku solver:
+  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Sudoku_PoH_Benchmark.ipynb)
 
 - Blog: BERT/GPT with inner thinking cycles (same parameter count)
   https://medium.com/@eranbt92/bert-gpt-with-inner-thinking-cycles-same-parameter-dc54dbdec61e
