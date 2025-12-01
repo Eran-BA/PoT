@@ -77,6 +77,8 @@ def main():
     parser.add_argument('--L-cycles', type=int, default=8, help='Hybrid L_level inner cycles')
     parser.add_argument('--H-layers', type=int, default=2, help='Layers in H_level module')
     parser.add_argument('--L-layers', type=int, default=2, help='Layers in L_level module')
+    parser.add_argument('--hrm-grad-style', action='store_true',
+                       help='Use HRM-style gradients (only last L+H call). Default: all calls in last H_cycle.')
     
     # Training (adjusted from HRM defaults for better convergence)
     parser.add_argument('--epochs', type=int, default=20000)
@@ -162,9 +164,11 @@ def main():
             L_cycles=args.L_cycles,
             T=args.T,
             num_puzzles=num_puzzles,
+            hrm_grad_style=args.hrm_grad_style,
         ).to(device)
         print(f"Hybrid model: H_cycles={args.H_cycles}, L_cycles={args.L_cycles}")
         print(f"H_layers={args.H_layers}, L_layers={args.L_layers}")
+        print(f"Gradient style: {'HRM (last L+H only)' if args.hrm_grad_style else 'Full (last H_cycle)'}")
     else:
         model = BaselineSudokuSolver(
             d_model=args.d_model,

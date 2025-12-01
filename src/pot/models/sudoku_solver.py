@@ -275,6 +275,7 @@ class HybridPoHHRMSolver(HybridHRMBase):
         T: HRM period for pointer controller
         num_puzzles: Number of puzzle embeddings (1 for shared)
         puzzle_emb_dim: Puzzle embedding dimension
+        hrm_grad_style: If True, only last L+H get gradients. If False (default), all calls in last H_cycle.
     """
     
     def __init__(
@@ -291,6 +292,7 @@ class HybridPoHHRMSolver(HybridHRMBase):
         T: int = 4,
         num_puzzles: int = 1,  # Single shared embedding like HRM
         puzzle_emb_dim: int = 512,
+        hrm_grad_style: bool = False,  # Default: all calls in last H_cycle get gradients
     ):
         # Initialize base class
         super().__init__(
@@ -304,6 +306,7 @@ class HybridPoHHRMSolver(HybridHRMBase):
             L_cycles=L_cycles,
             dropout=dropout,
             T=T,
+            hrm_grad_style=hrm_grad_style,
         )
         
         self.vocab_size = vocab_size
