@@ -335,73 +335,28 @@ PoHBlock (×N)              # Head-wise routing (via HRM controller) + MHA + FFN
 
 ---
 
-## 🚀 Applications & Benchmarks
+## 🚀 Sudoku Benchmark
 
-### 1. Natural Language Inference (NLI)
-
-### 2. Maze Solving with HRM (Scaling Benchmark)
-
-**Test challenging pathfinding with proper maze generation:**
+Train a master-level Sudoku solver using the HybridHRM architecture:
 
 ```bash
-# Single test (20×20 mazes, min path 80)
-pip install maze-dataset
-python experiments/maze_ab_proper_generation.py
+# Download dataset and train
+python experiments/sudoku_poh_benchmark.py --download --model hybrid
 
-# Hyperparameter search (find optimal R, T, n_heads)
-python experiments/maze_hyperparam_search.py --quick  # Fast test on 10×10
-python experiments/analyze_maze_hyperparam_results.py results.csv
+# Or run in Colab (A100 recommended)
 ```
 
-**See:** [Hyperparameter Search Guide](experiments/MAZE_HYPERPARAM_SEARCH_README.md)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Sudoku_PoH_Benchmark.ipynb)
 
 **Features:**
-- ✅ Uses [`maze-dataset`](https://github.com/understanding-search/maze-dataset) library for robust maze generation
-- ✅ Minimum path length filtering (ensures challenging mazes)
-- ✅ Proper train/test split (300 train, 50 test)
-- ✅ 3-way comparison: **Baseline Transformer vs BERT vs PoH-HRM**
-- ✅ Dynamic parameter parity for fair comparison
-- ✅ GPU-optimized (A100 recommended for fast training)
+- ✅ 1000 extreme Sudoku puzzles with 1000 augmentations each
+- ✅ HybridHRM two-timescale reasoning (L_level fast + H_level slow)
+- ✅ Constraint loss for Sudoku rule enforcement
+- ✅ ~25.8M parameters, trains in ~10 hours on A100
 
-**Metrics:**
-- **Accuracy**: % of correct next-step predictions
-- **Optimality**: % of paths matching optimal solution length
+**Target:** [HRM paper](https://arxiv.org/abs/2506.21734) achieves 55% grid accuracy on Sudoku-Extreme.
 
-**Hyperparameter search results:**
-- CSV (10×10): `experiments/results/maze_hyperparam_search_10x10.csv`
-- CSV (12×12): `experiments/results/maze_hyperparam_search_12x12.csv`
-
-**Best configurations observed:**
-- 10×10 (balanced): R=2, T=4, heads=4 → ~92% acc, ~82% opt
-  - Highest accuracy: R=8, T=8, heads=8 → ~94% acc, ~76% opt
-- 12×12 (balanced): R=2, T=4, heads=2 → ~93% acc, ~85% opt
-  - Near-best: R=4, T=4, heads=8 → ~91% acc, ~85% opt; R=4, T=8, heads=8 → ~93% acc, ~84% opt
-
-**Recommendation for larger mazes (≥20×20):** start with R=2, T=4–8, heads=8; if needed, try R=4 with T=4–8.
-
-**Colab Notebooks:**
-- **Single Size (20×20)**: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Maze_AB_Test_Colab.ipynb)
-- **Scaling Benchmark (8×8→30×30)**: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Maze_Scaling_Benchmark_Colab.ipynb)
-
-**Why this matters:** Maze solving tests hierarchical reasoning - HRM's two-timescale controller (f_L fast + f_H slow) should excel at long-horizon planning compared to single-timescale baselines.
-
-### 3. Connect Four (Strategic Game Play)
-
-**Test multi-step strategic reasoning:**
-
-```bash
-python experiments/connect_four_ab_test.py
-```
-
-- Minimax AI for optimal move generation
-- Policy + value network training
-- 3-way comparison: Baseline vs BERT vs PoH-HRM
-
-**Colab:** [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Connect_Four_AB_Test_Colab.ipynb)
-
-### 4. Synthetic Tasks (Partial-Observability Sorting)
-
-See [examples/synthetic/README.md](examples/synthetic/README.md)
+**See also:** [experiments/](experiments/) for archived benchmarks (Maze, NLI, Connect Four)
 
 ---
 
