@@ -407,33 +407,11 @@ See [examples/synthetic/README.md](examples/synthetic/README.md)
 
 ## 📓 Interactive Notebooks
 
-Explore PoH interactively in Colab or Jupyter (maze first):
-
-- **Maze_Scaling_Benchmark_Colab** 🆕 — Maze Scaling 8×8→30×30 (A100) [Recommended]
+- **Sudoku_PoH_Benchmark** 🆕 — Train a master-level Sudoku solver (A100) [Recommended]
   
-  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Maze_Scaling_Benchmark_Colab.ipynb)
+  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Sudoku_PoH_Benchmark.ipynb)
 
-- **Maze_AB_Test_Colab** — Single-size Maze Solving (A100)
-  
-  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Maze_AB_Test_Colab.ipynb)
-
-- **PoH_NLI_Benchmark** — NLI (3 min)
-  
-  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/PoH_NLI_Benchmark.ipynb)
-
-- **PoH_GPT_AB_Test** — Language Modeling (2 min)
-  
-  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/PoH_GPT_AB_Test.ipynb)
-
-- **PoT_Colab** — Dependency Parsing (10–15 min)
-  
-  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/PoT_Colab.ipynb)
-
-- **Connect_Four_AB_Test_Colab** — Connect Four (A100)
-  
-  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Connect_Four_AB_Test_Colab.ipynb)
-
-**See:** [notebooks/README.md](notebooks/README.md) for details
+**See:** [notebooks/](notebooks/) for archived notebooks (Maze, NLI, GPT, Connect Four)
 
 ---
 
