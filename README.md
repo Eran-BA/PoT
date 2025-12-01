@@ -21,7 +21,9 @@
 
 ## 🏗️ Architecture
 
-### Visual Overview
+### 1️⃣ PoH Block — The Atomic Unit
+
+This is **one PoH Block** — a single transformer layer with dynamic head routing. The HRM Controller produces weights α that determine how much each attention head contributes to the output.
 
 ```mermaid
 flowchart TB
@@ -121,9 +123,9 @@ flowchart TB
   class SKIP1,SKIP2 skip
 ```
 
-### HybridHRM Architecture (for Sudoku/Maze)
+### 2️⃣ HybridHRM — Full Architecture (for Sudoku/Maze)
 
-The diagram above shows **one PoH Block** — the atomic building block. For complex reasoning tasks like Sudoku, we stack these blocks into a **two-timescale architecture** inspired by the [HRM paper](https://arxiv.org/abs/2506.21734):
+For complex reasoning tasks, we wrap multiple PoH Blocks into a **two-timescale architecture** inspired by the [HRM paper](https://arxiv.org/abs/2506.21734). Each yellow box below contains the PoH Block shown above:
 
 ```mermaid
 flowchart TB
@@ -172,20 +174,35 @@ flowchart TB
     OUTER --> |"done"|OUTPUT
 ```
 
-**How it connects:**
-
-| Level | What it is | Contains |
-|-------|-----------|----------|
-| **PoH Block** (first diagram) | Atomic unit | HRM Controller + Weighted MHA + FFN |
-| **ReasoningModule** | Stack of PoH Blocks | `n_layers` × PoH Block |
-| **HybridHRMBase** | Two-timescale wrapper | L_level + H_level in nested loops |
-
-**Key insight:** The first diagram shows *what happens inside each reasoning step*. The HybridHRM diagram shows *how those steps are organized* into fast (L_level, 8×) and slow (H_level, 2×) timescales for iterative constraint solving.
+**Architecture Hierarchy:**
 
 ```
+┌─────────────────────────────────────────────────────────────────┐
+│  HybridHRMBase (Sudoku Solver)                                  │
+│  ├── L_level: ReasoningModule (FAST, runs 8× per H_cycle)      │
+│  │       └── PoH Block × 2 layers  ← (Diagram 1️⃣ above)        │
+│  │               ├── HRM Controller (GRU f_L + f_H → α)        │
+│  │               ├── Multi-Head Attention (weighted by α)      │
+│  │               └── SwiGLU FFN + RMSNorm                      │
+│  │                                                              │
+│  └── H_level: ReasoningModule (SLOW, runs 2×)                  │
+│          └── PoH Block × 2 layers  ← (Diagram 1️⃣ above)        │
+│                  ├── HRM Controller (GRU f_L + f_H → α)        │
+│                  ├── Multi-Head Attention (weighted by α)      │
+│                  └── SwiGLU FFN + RMSNorm                      │
+└─────────────────────────────────────────────────────────────────┘
+
 Total reasoning steps = H_cycles × L_cycles = 2 × 8 = 16
-Each step uses the PoH Block with dynamic head routing
+Each step uses PoH Block with dynamic head routing (α weights)
 ```
+
+| Component | What it does | Diagram |
+|-----------|-------------|---------|
+| **PoH Block** | Single layer: HRM Controller → α → Weighted MHA → FFN | 1️⃣ above |
+| **ReasoningModule** | Stack of PoH Blocks with shared controller state | Inside 2️⃣ |
+| **HybridHRMBase** | Two-timescale loop: L_level (fast) + H_level (slow) | 2️⃣ above |
+
+**Key insight:** Diagram 1️⃣ shows *what happens at each step* (head routing). Diagram 2️⃣ shows *how steps are organized* into fast/slow timescales for iterative reasoning.
 
 ---
 
