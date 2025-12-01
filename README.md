@@ -392,18 +392,36 @@ pytest tests/test_poh_modules.py -v
 
 ## 🎛️ Configuration
 
-All features are config-driven via `PoHConfig`:
+### HybridHRM (Sudoku/Reasoning Tasks)
 
 ```python
-cfg = PoHConfig(
-    d_model=512, n_heads=8, d_ff=2048,
-    route_mode="topk", route_topk=2,        # Sparse routing
-    pos_encoding="absolute", max_seq_len=512,
-    max_inner_iters=12,                     # R refinement steps
+from src.pot.models import HybridPoHHRMSolver
+
+model = HybridPoHHRMSolver(
+    d_model=512,          # Hidden dimension
+    n_heads=8,            # Attention heads
+    d_ff=2048,            # FFN dimension
+    H_cycles=2,           # Outer loop iterations (slow)
+    L_cycles=8,           # Inner loop iterations (fast)
+    H_layers=2,           # Layers in H_level module
+    L_layers=2,           # Layers in L_level module
+    T=4,                  # HRM period for pointer controller
 )
 ```
 
-**Key parameters:** routing mode, refinement steps (R), HRM period (T), positional encoding. See `PoHConfig` docstring for full options.
+**Or via CLI:**
+
+```bash
+python experiments/sudoku_poh_benchmark.py \
+    --model hybrid \
+    --H-cycles 2 --L-cycles 8 \
+    --d-model 512 --n-heads 8
+```
+
+**Key parameters:**
+- `H_cycles × L_cycles` = total reasoning steps (2×8 = 16)
+- `H_layers`, `L_layers` = depth of each module
+- `T` = how often the slow GRU (f_H) updates in the pointer controller
 
 ---
 
