@@ -1,0 +1,317 @@
+"""
+Sudoku Training Utilities.
+
+Training and evaluation functions for Sudoku solvers.
+Includes debugging utilities for analyzing model behavior.
+
+Author: Eran Ben Artzy
+Year: 2025
+License: Apache 2.0
+"""
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import Dict, Any, Optional
+from tqdm import tqdm
+
+from src.pot.core.sudoku_loss import sudoku_constraint_loss
+
+
+def train_epoch(
+    model: nn.Module,
+    dataloader,
+    optimizer,
+    puzzle_optimizer: Optional[torch.optim.Optimizer],
+    device: torch.device,
+    epoch: int,
+    use_poh: bool = True,
+    debug: bool = False,
+    scheduler: Optional[Any] = None,
+    puzzle_scheduler: Optional[Any] = None,
+    constraint_weight: float = 0.5,
+) -> Dict[str, float]:
+    """
+    Train for one epoch.
+    
+    Args:
+        model: The Sudoku solver model
+        dataloader: Training data loader
+        optimizer: Main optimizer
+        puzzle_optimizer: Optimizer for puzzle embeddings (optional)
+        device: Device to train on
+        epoch: Current epoch number
+        use_poh: Whether model uses PoH/puzzle embeddings
+        debug: Enable debug logging
+        scheduler: Learning rate scheduler
+        puzzle_scheduler: LR scheduler for puzzle optimizer
+        constraint_weight: Weight for Sudoku constraint loss
+        
+    Returns:
+        Dictionary with loss, cell_acc, grid_acc, avg_steps
+    """
+    model.train()
+    total_loss = 0
+    correct_cells = 0
+    total_cells = 0
+    correct_grids = 0
+    total_grids = 0
+    total_steps = 0
+    
+    pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
+    for batch in pbar:
+        inp = batch['input'].to(device)
+        label = batch['label'].to(device)
+        puzzle_ids = batch['puzzle_id'].to(device)
+        
+        optimizer.zero_grad()
+        if puzzle_optimizer:
+            puzzle_optimizer.zero_grad()
+        
+        logits, q_halt, q_continue, steps = model(inp, puzzle_ids)
+        
+        # CE loss on ALL cells (HRM-style)
+        lm_loss = F.cross_entropy(
+            logits.view(-1, model.vocab_size),
+            label.view(-1)
+        )
+        
+        # Sudoku constraint loss
+        constraint_loss = sudoku_constraint_loss(logits)
+        
+        # Q-halt loss (if PoH)
+        if use_poh and q_halt is not None:
+            with torch.no_grad():
+                preds = logits.argmax(dim=-1)
+                is_correct = (preds == label).all(dim=1).float()
+            
+            q_halt_loss = F.binary_cross_entropy_with_logits(q_halt, is_correct)
+            loss = lm_loss + constraint_weight * constraint_loss + 0.5 * q_halt_loss
+        else:
+            loss = lm_loss + constraint_weight * constraint_loss
+        
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
+        if puzzle_optimizer:
+            puzzle_optimizer.step()
+        
+        # Step schedulers
+        if scheduler:
+            scheduler.step()
+        if puzzle_scheduler:
+            puzzle_scheduler.step()
+        
+        # Metrics
+        total_loss += loss.item()
+        preds = logits.argmax(dim=-1)
+        correct_cells += (preds == label).sum().item()
+        total_cells += label.numel()
+        correct_grids += (preds == label).all(dim=1).sum().item()
+        total_grids += label.size(0)
+        total_steps += steps
+        
+        pbar.set_postfix({
+            'loss': f'{loss.item():.4f}',
+            'cell_acc': f'{100*correct_cells/total_cells:.1f}%',
+            'grid_acc': f'{100*correct_grids/total_grids:.1f}%',
+        })
+    
+    # Run debug at end of epoch if enabled
+    if debug:
+        run_debug(model, dataloader, optimizer, device, epoch)
+    
+    return {
+        'loss': total_loss / len(dataloader),
+        'cell_acc': 100 * correct_cells / total_cells,
+        'grid_acc': 100 * correct_grids / total_grids,
+        'avg_steps': total_steps / len(dataloader),
+    }
+
+
+def evaluate(
+    model: nn.Module,
+    dataloader,
+    device: torch.device,
+    use_poh: bool = True,
+) -> Dict[str, float]:
+    """
+    Evaluate model.
+    
+    Args:
+        model: The Sudoku solver model
+        dataloader: Test data loader
+        device: Device to evaluate on
+        use_poh: Whether model uses PoH/puzzle embeddings
+        
+    Returns:
+        Dictionary with loss, cell_acc, grid_acc
+    """
+    model.eval()
+    total_loss = 0
+    correct_cells = 0
+    total_cells = 0
+    correct_grids = 0
+    total_grids = 0
+    
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Evaluating"):
+            inp = batch['input'].to(device)
+            label = batch['label'].to(device)
+            puzzle_ids = batch['puzzle_id'].to(device)
+            
+            logits, _, _, _ = model(inp, puzzle_ids)
+            
+            loss = F.cross_entropy(logits.view(-1, model.vocab_size), label.view(-1))
+            total_loss += loss.item()
+            
+            preds = logits.argmax(dim=-1)
+            correct_cells += (preds == label).sum().item()
+            total_cells += label.numel()
+            correct_grids += (preds == label).all(dim=1).sum().item()
+            total_grids += label.size(0)
+    
+    return {
+        'loss': total_loss / len(dataloader),
+        'cell_acc': 100 * correct_cells / total_cells,
+        'grid_acc': 100 * correct_grids / total_grids,
+    }
+
+
+# ============================================================================
+# Debugging Functions
+# ============================================================================
+
+def debug_gradients(model: nn.Module) -> None:
+    """Log gradient norms per layer."""
+    grad_norms = {}
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            grad_norms[name] = param.grad.norm().item()
+    
+    # Summarize by component
+    components = {}
+    for name, norm in grad_norms.items():
+        component = name.split('.')[0]
+        if component not in components:
+            components[component] = []
+        components[component].append(norm)
+    
+    print("\n📊 Gradient Norms:")
+    for comp, norms in sorted(components.items()):
+        avg = sum(norms) / len(norms)
+        max_norm = max(norms)
+        print(f"  {comp}: avg={avg:.2e}, max={max_norm:.2e}")
+    
+    # Check for zero/vanishing gradients
+    zero_grads = [n for n, v in grad_norms.items() if v < 1e-10]
+    if zero_grads:
+        print(f"  ⚠️ Zero gradients in: {zero_grads[:5]}...")
+
+
+def debug_activations(model: nn.Module, x: torch.Tensor, puzzle_ids: torch.Tensor) -> None:
+    """Check activation statistics through the model."""
+    model.eval()
+    activations = {}
+    
+    def hook_fn(name):
+        def hook(module, input, output):
+            if isinstance(output, torch.Tensor):
+                activations[name] = {
+                    'mean': output.mean().item(),
+                    'std': output.std().item(),
+                    'max': output.abs().max().item(),
+                    'nan': torch.isnan(output).any().item(),
+                    'inf': torch.isinf(output).any().item(),
+                }
+        return hook
+    
+    hooks = []
+    for name, module in model.named_modules():
+        if isinstance(module, (nn.Linear, nn.LayerNorm, nn.MultiheadAttention)):
+            hooks.append(module.register_forward_hook(hook_fn(name)))
+    
+    with torch.no_grad():
+        model(x, puzzle_ids)
+    
+    for h in hooks:
+        h.remove()
+    
+    print("\n📈 Activation Statistics:")
+    problems = []
+    for name, stats in sorted(activations.items())[:10]:
+        status = "✓" if not stats['nan'] and not stats['inf'] and stats['max'] < 100 else "⚠️"
+        print(f"  {status} {name}: mean={stats['mean']:.3f}, std={stats['std']:.3f}, max={stats['max']:.3f}")
+        if stats['nan'] or stats['inf']:
+            problems.append(f"{name}: NaN={stats['nan']}, Inf={stats['inf']}")
+    
+    if problems:
+        print(f"  🚨 PROBLEMS: {problems}")
+    
+    model.train()
+
+
+def debug_predictions(model: nn.Module, batch: Dict, device: torch.device, num_samples: int = 2) -> None:
+    """Visualize sample predictions vs ground truth."""
+    model.eval()
+    inp = batch['input'][:num_samples].to(device)
+    label = batch['label'][:num_samples].to(device)
+    puzzle_ids = batch['puzzle_id'][:num_samples].to(device)
+    
+    with torch.no_grad():
+        logits, _, _, steps = model(inp, puzzle_ids)
+        preds = logits.argmax(dim=-1)
+    
+    print(f"\n🧩 Sample Predictions (steps={steps}):")
+    for i in range(num_samples):
+        inp_grid = inp[i].view(9, 9).cpu().numpy()
+        pred_grid = preds[i].view(9, 9).cpu().numpy()
+        label_grid = label[i].view(9, 9).cpu().numpy()
+        
+        # Count errors
+        blank_mask = inp_grid == 0
+        errors = (pred_grid != label_grid) & blank_mask
+        total_blanks = blank_mask.sum()
+        correct_blanks = total_blanks - errors.sum()
+        
+        # Check given cells
+        given_mask = inp_grid > 0
+        given_correct = (pred_grid == label_grid) & given_mask
+        
+        print(f"\n  Puzzle {i+1}: {correct_blanks}/{total_blanks} blanks correct, "
+              f"{given_correct.sum()}/{given_mask.sum()} given correct")
+        print("  Input:      Prediction:  Label:")
+        for row in range(9):
+            inp_row = ''.join(str(x) if x > 0 else '.' for x in inp_grid[row])
+            pred_row = ''.join(str(x) for x in pred_grid[row])
+            label_row = ''.join(str(x) for x in label_grid[row])
+            err_row = ''.join('X' if pred_grid[row][c] != label_grid[row][c] and inp_grid[row][c] == 0 
+                            else ' ' for c in range(9))
+            print(f"  {inp_row}    {pred_row}    {label_row}    {err_row}")
+    
+    # Output distribution analysis
+    print(f"\n📊 Output Distribution:")
+    pred_counts = torch.bincount(preds.view(-1), minlength=10).cpu().numpy()
+    print(f"  Digit counts: {dict(enumerate(pred_counts))}")
+    print(f"  Most common: {pred_counts.argmax()} ({pred_counts.max()}/{pred_counts.sum()} = "
+          f"{100*pred_counts.max()/pred_counts.sum():.1f}%)")
+    
+    model.train()
+
+
+def run_debug(model: nn.Module, dataloader, optimizer, device: torch.device, epoch: int) -> None:
+    """Run all debug checks."""
+    print(f"\n{'='*60}")
+    print(f"🔍 DEBUG REPORT - Epoch {epoch}")
+    print(f"{'='*60}")
+    
+    batch = next(iter(dataloader))
+    inp = batch['input'].to(device)
+    puzzle_ids = batch['puzzle_id'].to(device)
+    
+    debug_gradients(model)
+    debug_activations(model, inp, puzzle_ids)
+    debug_predictions(model, batch, device)
+    
+    print(f"{'='*60}\n")
+

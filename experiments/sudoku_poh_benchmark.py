@@ -12,18 +12,15 @@ Task: Given a 9x9 Sudoku puzzle with blanks (0), output the complete solution.
 Input:  81 tokens (flattened 9x9), vocab 0-9 (0=blank)
 Output: 81 tokens (complete solution), vocab 1-9
 
-Key HRM implementation details matched in this code:
-1. Embedding scaling by sqrt(d_model) - amplifies signal ~22x
-2. H_init/L_init as buffers (NOT learned parameters)
-3. Zero-initialized puzzle embeddings
-4. Q head initialized to near-zero (bias=-5)
-5. No dropout in transformer blocks
-6. Post-norm architecture with RMSNorm and SwiGLU
-7. Only final iteration gets gradients (all others in no_grad)
-8. Loss computed on ALL 81 cells (not just blanks)
-9. SINGLE shared puzzle embedding for ALL puzzles (id=0 always)
-   - This is a learned bias, NOT puzzle-specific memorization
-   - Using per-puzzle embeddings causes severe overfitting!
+Usage:
+    # Download dataset and train hybrid model
+    python experiments/sudoku_poh_benchmark.py --download --model hybrid
+    
+    # Train with custom settings
+    python experiments/sudoku_poh_benchmark.py --model hybrid --H-cycles 3 --L-cycles 12
+    
+    # Evaluate checkpoint
+    python experiments/sudoku_poh_benchmark.py --eval-only --checkpoint path/to/model.pt
 
 Author: Eran Ben Artzy
 Year: 2025
@@ -33,1003 +30,24 @@ License: Apache 2.0
 import sys
 import os
 import math
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import numpy as np
-from torch.utils.data import Dataset, DataLoader
-from typing import Optional, Tuple
 import argparse
 import json
-import csv
-from tqdm import tqdm
-from pathlib import Path
+import numpy as np
+import torch
+from torch.utils.data import DataLoader
 
-from src.pot.core.hrm_controller import HRMPointerController, HRMState
+# Import from refactored modules
+from src.data import SudokuDataset, download_sudoku_dataset
 from src.pot.models import (
-    ReasoningModule,
-    HybridHRMBase,
-    PuzzleEmbedding,
-    QHaltingController,
-    RMSNorm,
-    SwiGLU,
+    PoHSudokuSolver,
+    HybridPoHHRMSolver,
+    BaselineSudokuSolver,
 )
+from src.training import train_epoch, evaluate
 
-
-# ============================================================================
-# Sudoku Dataset
-# ============================================================================
-
-class SudokuDataset(Dataset):
-    """
-    Sudoku dataset loader for HRM-format data.
-    
-    Key insight from HRM: iterate over PUZZULAR (1000), not samples (1M).
-    Each epoch visits each puzzle once, sampling one augmentation per puzzle.
-    """
-    
-    def __init__(
-        self, 
-        data_dir: str, 
-        split: str = 'train',
-        samples_per_epoch: int = None,  # If set, sample this many per epoch
-    ):
-        self.data_dir = Path(data_dir) / split
-        self.split = split
-        
-        # Load numpy format
-        inputs_path = self.data_dir / 'all__inputs.npy'
-        labels_path = self.data_dir / 'all__labels.npy'
-        
-        if inputs_path.exists():
-            self.inputs = np.load(inputs_path)
-            self.labels = np.load(labels_path)
-            
-            # Load puzzle indices for proper ID mapping
-            puzzle_idx_path = self.data_dir / 'all__puzzle_indices.npy'
-            if puzzle_idx_path.exists():
-                self.puzzle_indices = np.load(puzzle_idx_path)
-            else:
-                self.puzzle_indices = np.arange(len(self.inputs))
-        else:
-            raise FileNotFoundError(
-                f"Dataset not found at {self.data_dir}. "
-                f"Run: python vendor/hrm/dataset/build_sudoku_dataset.py "
-                f"--output-dir {data_dir}"
-            )
-        
-        # Build puzzle -> sample indices mapping
-        self.unique_puzzles = np.unique(self.puzzle_indices)
-        self.num_puzzles = len(self.unique_puzzles)
-        
-        # For each puzzle, store indices of its augmentations
-        self.puzzle_to_samples = {}
-        for puzzle_id in self.unique_puzzles:
-            self.puzzle_to_samples[puzzle_id] = np.where(self.puzzle_indices == puzzle_id)[0]
-        
-        # For training: epoch = iterate over puzzles, sample one augmentation each
-        # For test: use all samples (no augmentation sampling)
-        self.samples_per_epoch = samples_per_epoch
-        if split == 'train' and samples_per_epoch is None:
-            # Default: one sample per puzzle per epoch (like HRM)
-            self.samples_per_epoch = self.num_puzzles
-        
-        self._epoch_indices = None
-        self._resample_epoch()
-        
-        print(f"[{split}] Loaded {len(self.inputs)} total samples")
-        print(f"  Unique puzzles: {self.num_puzzles}")
-        print(f"  Samples per epoch: {len(self)}")
-    
-    def _resample_epoch(self):
-        """Resample which augmentation to use for each puzzle this epoch."""
-        if self.split == 'train':
-            # Sample one augmentation per puzzle
-            indices = []
-            puzzle_order = np.random.permutation(self.unique_puzzles)
-            for puzzle_id in puzzle_order:
-                aug_indices = self.puzzle_to_samples[puzzle_id]
-                # Randomly pick one augmentation
-                idx = np.random.choice(aug_indices)
-                indices.append(idx)
-            self._epoch_indices = np.array(indices)
-        else:
-            # Test: use all samples
-            self._epoch_indices = np.arange(len(self.inputs))
-    
-    def __len__(self):
-        return len(self._epoch_indices)
-    
-    def __getitem__(self, idx):
-        real_idx = self._epoch_indices[idx]
-        inp = torch.LongTensor(self.inputs[real_idx])
-        label = torch.LongTensor(self.labels[real_idx])
-        # HRM uses puzzle_identifiers=0 for ALL puzzles (single shared embedding)
-        # NOT puzzle_indices (which is unique per puzzle and causes memorization)
-        puzzle_id = torch.tensor(0, dtype=torch.long)
-        
-        return {
-            'input': inp,
-            'label': label,
-            'puzzle_id': puzzle_id,
-        }
-    
-    def on_epoch_end(self):
-        """Call this at the end of each epoch to resample augmentations."""
-        if self.split == 'train':
-            self._resample_epoch()
-
-
-def download_sudoku_dataset(output_dir: str, subsample_size: int = 1000, num_aug: int = 1000):
-    """Download and build Sudoku dataset from HuggingFace."""
-    from huggingface_hub import hf_hub_download
-    
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-    
-    print("Downloading Sudoku-Extreme dataset from HuggingFace...")
-    
-    # Download CSV files
-    for split in ['train', 'test']:
-        csv_file = hf_hub_download(
-            repo_id="sapientinc/sudoku-extreme",
-            filename=f"{split}.csv",
-            repo_type="dataset"
-        )
-        
-        split_dir = output_path / split
-        split_dir.mkdir(exist_ok=True)
-        
-        # Parse CSV and convert to numpy
-        inputs, labels, puzzle_indices = [], [], []
-        
-        with open(csv_file, 'r') as f:
-            reader = csv.reader(f)
-            next(reader)  # Skip header
-            
-            puzzles = list(reader)
-            if subsample_size and split == 'train':
-                puzzles = puzzles[:subsample_size]
-            
-            for puzzle_idx, row in enumerate(tqdm(puzzles, desc=f"Processing {split}")):
-                # CSV format: source, puzzle, solution, rating
-                source, puzzle, solution, rating = row[0], row[1], row[2], row[3]
-                
-                # Convert string to numpy array (replace '.' with '0' for blanks)
-                puzzle = puzzle.replace('.', '0')
-                inp = np.array([int(c) for c in puzzle], dtype=np.uint8)
-                sol = np.array([int(c) for c in solution], dtype=np.uint8)
-                
-                # Add original
-                inputs.append(inp)
-                labels.append(sol)
-                puzzle_indices.append(puzzle_idx)
-                
-                # Add augmentations (only for train)
-                if split == 'train' and num_aug > 0:
-                    for _ in range(num_aug):
-                        aug_inp, aug_sol = shuffle_sudoku(
-                            inp.reshape(9, 9), 
-                            sol.reshape(9, 9)
-                        )
-                        inputs.append(aug_inp.flatten())
-                        labels.append(aug_sol.flatten())
-                        puzzle_indices.append(puzzle_idx)
-        
-        # Save as numpy
-        np.save(split_dir / 'all__inputs.npy', np.array(inputs))
-        np.save(split_dir / 'all__labels.npy', np.array(labels))
-        np.save(split_dir / 'all__puzzle_indices.npy', np.array(puzzle_indices))
-        
-        # Save metadata
-        with open(split_dir / 'dataset.json', 'w') as f:
-            json.dump({
-                'seq_len': 81,
-                'vocab_size': 10,
-                'num_puzzles': len(np.unique(puzzle_indices)),
-                'num_samples': len(inputs),
-            }, f)
-        
-        print(f"  {split}: {len(inputs)} samples from {len(np.unique(puzzle_indices))} puzzles")
-    
-    print(f"✓ Dataset saved to {output_dir}")
-
-
-def shuffle_sudoku(board: np.ndarray, solution: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Augment Sudoku by applying validity-preserving transformations.
-    
-    Transformations:
-    - Digit permutation (1-9 -> random mapping)
-    - Row permutation within bands
-    - Column permutation within stacks
-    - Transpose
-    """
-    # Digit mapping: permute 1-9, keep 0 unchanged
-    digit_map = np.zeros(10, dtype=np.uint8)
-    digit_map[1:] = np.random.permutation(9) + 1
-    
-    # Transpose?
-    transpose = np.random.rand() < 0.5
-    
-    # Row permutation within 3 bands
-    bands = np.random.permutation(3)
-    row_perm = np.concatenate([b * 3 + np.random.permutation(3) for b in bands])
-    
-    # Column permutation within 3 stacks
-    stacks = np.random.permutation(3)
-    col_perm = np.concatenate([s * 3 + np.random.permutation(3) for s in stacks])
-    
-    def transform(x):
-        if transpose:
-            x = x.T
-        x = x[row_perm][:, col_perm]
-        return digit_map[x]
-    
-    return transform(board.copy()), transform(solution.copy())
-
-
-# ============================================================================
-# PoH Sudoku Solver Model
-# ============================================================================
-
-class PoHSudokuSolver(nn.Module):
-    """
-    PoH-based Sudoku solver with HRM-style components.
-    
-    Architecture:
-    - Puzzle embeddings for per-instance specialization
-    - HRM pointer controller for hierarchical routing
-    - Q-halting for adaptive computation
-    - Post-norm transformer layers with SwiGLU
-    """
-    
-    def __init__(
-        self,
-        vocab_size: int = 10,  # 0=blank, 1-9=digits
-        d_model: int = 512,
-        n_heads: int = 8,
-        n_layers: int = 2,
-        d_ff: int = 2048,
-        dropout: float = 0.1,
-        R: int = 8,  # Refinement iterations
-        T: int = 4,  # HRM outer period
-        num_puzzles: int = 1000,
-        puzzle_emb_dim: int = 512,
-        max_halting_steps: int = 16,
-        latent_len: int = 16,
-        latent_k: int = 3,
-    ):
-        super().__init__()
-        
-        self.vocab_size = vocab_size
-        self.d_model = d_model
-        self.R = R
-        self.n_layers = n_layers
-        self.seq_len = 81  # 9x9 Sudoku
-        
-        # Puzzle embeddings
-        self.puzzle_emb = PuzzleEmbedding(num_puzzles, puzzle_emb_dim, init_std=0.02)
-        self.puzzle_emb_len = (puzzle_emb_dim + d_model - 1) // d_model
-        
-        # Latent tokens (TRM-style)
-        self.latent_len = latent_len
-        self.latent_k = latent_k
-        self.latent_init = nn.Parameter(torch.randn(1, latent_len, d_model) * 0.02)
-        
-        # Q-halting
-        self.q_halt_controller = QHaltingController(d_model, max_steps=max_halting_steps)
-        self.max_halting_steps = max_halting_steps
-        
-        # Input embedding
-        self.input_embed = nn.Embedding(vocab_size, d_model)
-        
-        # Position embedding (seq + puzzle + latent)
-        max_len = self.seq_len + self.puzzle_emb_len + latent_len
-        self.pos_embed = nn.Parameter(torch.randn(1, max_len, d_model) * 0.02)
-        self.pre_norm = nn.LayerNorm(d_model)
-        
-        # HRM controller
-        self.hrm_controller = HRMPointerController(
-            d_model=d_model,
-            n_heads=n_heads,
-            T=T,
-            dropout=dropout
-        )
-        
-        # Transformer layers (Post-norm + SwiGLU)
-        self.attn_layers = nn.ModuleList([
-            nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
-            for _ in range(n_layers)
-        ])
-        self.ffn_layers = nn.ModuleList([
-            SwiGLU(d_model, d_ff, dropout) for _ in range(n_layers)
-        ])
-        self.norm1_layers = nn.ModuleList([RMSNorm(d_model) for _ in range(n_layers)])
-        self.norm2_layers = nn.ModuleList([RMSNorm(d_model) for _ in range(n_layers)])
-        self.dropout_layers = nn.ModuleList([nn.Dropout(dropout) for _ in range(n_layers)])
-        
-        # Latent cross-attention
-        self.latent_attn = nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
-        self.latent_ffn = SwiGLU(d_model, d_ff, dropout)
-        self.latent_norm1 = RMSNorm(d_model)
-        self.latent_norm2 = RMSNorm(d_model)
-        self.latent_drop = nn.Dropout(dropout)
-        
-        # Output projection
-        self.output_proj = nn.Linear(d_model, vocab_size)
-    
-    def _encode_once(self, x: torch.Tensor, hrm_state: Optional[HRMState] = None):
-        """Single encoding pass with HRM routing."""
-        B, T, D = x.shape
-        n_heads = self.attn_layers[0].num_heads
-        
-        # Get routing weights
-        route_weights, hrm_state, _ = self.hrm_controller(x, state=hrm_state)
-        
-        # CRITICAL FIX: Scale routing weights by n_heads to preserve magnitude
-        # Softmax weights sum to 1, so without scaling we'd reduce output by n_heads factor
-        route_weights_scaled = route_weights * n_heads  # [B, H] -> sums to n_heads
-        
-        # Apply transformer layers with head routing
-        for attn, ffn, norm1, norm2, drop in zip(
-            self.attn_layers, self.ffn_layers, 
-            self.norm1_layers, self.norm2_layers, self.dropout_layers
-        ):
-            # Attention with head routing
-            attn_out, _ = attn(x, x, x, need_weights=False)
-            d_head = D // attn.num_heads
-            attn_out_heads = attn_out.view(B, T, attn.num_heads, d_head)
-            route_exp = route_weights_scaled.unsqueeze(1).unsqueeze(-1)
-            attn_out_routed = (attn_out_heads * route_exp).view(B, T, D)
-            x = norm1(x + drop(attn_out_routed))
-            
-            # FFN
-            x = norm2(x + drop(ffn(x)))
-        
-        return x, hrm_state
-    
-    def forward(self, input_seq: torch.Tensor, puzzle_ids: torch.Tensor):
-        """
-        Forward pass with iterative refinement.
-        
-        Args:
-            input_seq: (B, 81) - flattened Sudoku grid
-            puzzle_ids: (B,) - puzzle identifiers
-        
-        Returns:
-            logits: (B, 81, vocab_size)
-            q_halt, q_continue: halting Q-values
-            actual_steps: number of refinement steps
-        """
-        B = input_seq.size(0)
-        device = input_seq.device
-        
-        # Puzzle embedding (clamp IDs to valid range, use zeros for unseen puzzles)
-        max_puzzle_id = self.puzzle_emb.num_puzzles - 1
-        valid_mask = puzzle_ids <= max_puzzle_id
-        clamped_ids = puzzle_ids.clamp(0, max_puzzle_id)
-        puzzle_emb = self.puzzle_emb(clamped_ids)
-        # Zero out embeddings for unseen puzzles (test set)
-        puzzle_emb = puzzle_emb * valid_mask.unsqueeze(-1).float()
-        
-        pad_size = self.puzzle_emb_len * self.d_model - puzzle_emb.size(-1)
-        if pad_size > 0:
-            puzzle_emb = F.pad(puzzle_emb, (0, pad_size))
-        puzzle_emb = puzzle_emb.view(B, self.puzzle_emb_len, self.d_model)
-        
-        # Input embedding
-        x_grid_input = self.input_embed(input_seq)  # Original input (constant)
-        
-        # Latent tokens
-        latent_cur = self.latent_init.expand(B, -1, -1)
-        
-        # Persistent hidden state over grid positions (HRM-style)
-        x_grid_hidden = torch.zeros_like(x_grid_input)  # [B, 81, d_model]
-        
-        # Initialize HRM state
-        hrm_state = self.hrm_controller.init_state(B, device)
-        actual_steps = self.max_halting_steps
-        x_out = None
-        
-        # Iterative refinement
-        for step in range(1, self.max_halting_steps + 1):
-            # INPUT INJECTION: add original input to hidden state (key HRM insight)
-            x_grid_step = x_grid_hidden + x_grid_input
-            
-            # Inner latent updates
-            for _ in range(self.latent_k):
-                ctx = torch.cat([puzzle_emb, x_grid_step], dim=1)
-                lat_attn, _ = self.latent_attn(latent_cur, ctx, ctx, need_weights=False)
-                latent_cur = self.latent_norm1(latent_cur + self.latent_drop(lat_attn))
-                latent_cur = self.latent_norm2(latent_cur + self.latent_drop(self.latent_ffn(latent_cur)))
-            
-            # Build sequence
-            x_step = torch.cat([puzzle_emb, latent_cur, x_grid_step], dim=1)
-            x_step = x_step + self.pos_embed[:, :x_step.size(1), :]
-            x_step = self.pre_norm(x_step)
-            
-            # Encode
-            x_out, hrm_state = self._encode_once(x_step, hrm_state)
-            
-            # Check halting
-            q_halt, q_continue = self.q_halt_controller(x_out)
-            should_halt = self.q_halt_controller.should_halt(q_halt, q_continue, step, self.training)
-            
-            if should_halt.all():
-                actual_steps = step
-                break
-            
-            # Update hidden state for next iteration (HRM-style carry)
-            x_grid_hidden = x_out[:, self.puzzle_emb_len + self.latent_len:, :]
-            
-            # Detach for O(1) memory
-            latent_cur = latent_cur.detach()
-            x_out = x_out.detach()
-            x_grid_hidden = x_grid_hidden.detach()
-            if hrm_state is not None:
-                hrm_state = HRMState(
-                    z_L=hrm_state.z_L.detach(),
-                    z_H=hrm_state.z_H.detach(),
-                    step=hrm_state.step
-                )
-        
-        # Extract output (remove puzzle + latent tokens)
-        x = x_out[:, self.puzzle_emb_len + self.latent_len:, :]
-        
-        # RESIDUAL CONNECTION: add input embedding to output for better gradient flow
-        # This ensures the model has direct access to input information
-        x = x + x_grid_input
-        
-        logits = self.output_proj(x)
-        
-        return logits, q_halt, q_continue, actual_steps
-
-
-# ============================================================================
-# Hybrid PoT-HRM Sudoku Solver
-# ============================================================================
-
-class HybridPoHHRMSolver(HybridHRMBase):
-    """
-    Hybrid PoT-HRM Sudoku solver.
-    
-    Extends HybridHRMBase with Sudoku-specific embeddings and output.
-    
-    Architecture (from base class):
-    - z_H, z_L: Persistent hidden states over 81 grid positions
-    - L_level: Fast reasoning, updates every inner step
-    - H_level: Slow reasoning, updates every outer step
-    - Both use PoT head routing for dynamic attention
-    """
-    
-    def __init__(
-        self,
-        vocab_size: int = 10,
-        d_model: int = 512,
-        n_heads: int = 8,
-        H_layers: int = 2,
-        L_layers: int = 2,
-        d_ff: int = 2048,
-        dropout: float = 0.0,
-        H_cycles: int = 2,
-        L_cycles: int = 8,
-        T: int = 4,
-        num_puzzles: int = 1,  # Single shared embedding like HRM
-        puzzle_emb_dim: int = 512,
-    ):
-        # Initialize base class (creates H_level, L_level, q_head, etc.)
-        super().__init__(
-            d_model=d_model,
-            n_heads=n_heads,
-            H_layers=H_layers,
-            L_layers=L_layers,
-            d_ff=d_ff,
-            seq_len=81,  # Sudoku grid
-            H_cycles=H_cycles,
-            L_cycles=L_cycles,
-            dropout=dropout,
-            T=T,
-        )
-        
-        self.vocab_size = vocab_size
-        embed_init_std = 1.0 / self.embed_scale
-        
-        # Sudoku-specific: Input embedding (init with 1/sqrt(d_model) std)
-        self.input_embed = nn.Embedding(vocab_size, d_model)
-        nn.init.normal_(self.input_embed.weight, mean=0, std=embed_init_std)
-        
-        # Sudoku-specific: Puzzle embedding (ZERO initialized like HRM!)
-        self.puzzle_emb = PuzzleEmbedding(num_puzzles, puzzle_emb_dim, init_std=0.0)
-        self.puzzle_emb_proj = nn.Linear(puzzle_emb_dim, d_model) if puzzle_emb_dim != d_model else nn.Identity()
-        
-        # Sudoku-specific: Position embedding (also scaled)
-        self.pos_embed = nn.Parameter(torch.randn(1, self.seq_len, d_model) * embed_init_std)
-        
-        # Sudoku-specific: Output projection
-        self.output_proj = nn.Linear(d_model, vocab_size)
-    
-    def forward(self, input_seq: torch.Tensor, puzzle_ids: torch.Tensor):
-        """Forward pass for Sudoku solving."""
-        # Compute input embedding
-        input_emb = self.input_embed(input_seq) + self.pos_embed
-        
-        # Add puzzle embedding (broadcast to all positions)
-        max_puzzle_id = self.puzzle_emb.num_puzzles - 1
-        valid_mask = puzzle_ids <= max_puzzle_id
-        clamped_ids = puzzle_ids.clamp(0, max_puzzle_id)
-        puzzle_emb = self.puzzle_emb(clamped_ids)
-        puzzle_emb = puzzle_emb * valid_mask.unsqueeze(-1).float()
-        puzzle_emb = self.puzzle_emb_proj(puzzle_emb)  # [B, d_model]
-        input_emb = input_emb + puzzle_emb.unsqueeze(1)  # Broadcast to all 81 positions
-        
-        # CRITICAL: Scale embeddings by sqrt(d_model) like HRM!
-        input_emb = self.embed_scale * input_emb
-        
-        # Run the two-timescale reasoning loop (from base class)
-        hidden, q_halt, q_continue, steps = self.reasoning_loop(input_emb)
-        
-        # Output projection
-        logits = self.output_proj(hidden)
-        
-        return logits, q_halt, q_continue, steps
-
-
-# ============================================================================
-# Baseline Model (Standard Transformer)
-# ============================================================================
-
-class BaselineSudokuSolver(nn.Module):
-    """Standard Transformer baseline for comparison."""
-    
-    def __init__(
-        self,
-        vocab_size: int = 10,
-        d_model: int = 512,
-        n_heads: int = 8,
-        n_layers: int = 6,
-        d_ff: int = 2048,
-        dropout: float = 0.1,
-    ):
-        super().__init__()
-        
-        self.vocab_size = vocab_size
-        self.seq_len = 81
-        
-        self.input_embed = nn.Embedding(vocab_size, d_model)
-        self.pos_embed = nn.Parameter(torch.randn(1, self.seq_len, d_model) * 0.02)
-        
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model, n_heads, d_ff, dropout, batch_first=True, norm_first=True
-        )
-        self.encoder = nn.TransformerEncoder(encoder_layer, n_layers)
-        
-        self.final_norm = nn.LayerNorm(d_model)
-        self.output_proj = nn.Linear(d_model, vocab_size)
-    
-    def forward(self, input_seq: torch.Tensor, puzzle_ids: torch.Tensor = None):
-        x = self.input_embed(input_seq) + self.pos_embed
-        x = self.encoder(x)
-        x = self.final_norm(x)
-        logits = self.output_proj(x)
-        return logits, None, None, 1
-
-
-# ============================================================================
-# Debugging Functions
-# ============================================================================
-
-def debug_gradients(model):
-    """Log gradient norms per layer."""
-    grad_norms = {}
-    for name, param in model.named_parameters():
-        if param.grad is not None:
-            grad_norms[name] = param.grad.norm().item()
-    
-    # Summarize by component
-    components = {}
-    for name, norm in grad_norms.items():
-        component = name.split('.')[0]
-        if component not in components:
-            components[component] = []
-        components[component].append(norm)
-    
-    print("\n📊 Gradient Norms:")
-    for comp, norms in sorted(components.items()):
-        avg = sum(norms) / len(norms)
-        max_norm = max(norms)
-        print(f"  {comp}: avg={avg:.2e}, max={max_norm:.2e}")
-    
-    # Check for zero/vanishing gradients
-    zero_grads = [n for n, v in grad_norms.items() if v < 1e-10]
-    if zero_grads:
-        print(f"  ⚠️ Zero gradients in: {zero_grads[:5]}...")
-
-
-def debug_activations(model, x, puzzle_ids):
-    """Check activation statistics through the model."""
-    model.eval()
-    activations = {}
-    
-    def hook_fn(name):
-        def hook(module, input, output):
-            if isinstance(output, torch.Tensor):
-                activations[name] = {
-                    'mean': output.mean().item(),
-                    'std': output.std().item(),
-                    'max': output.abs().max().item(),
-                    'nan': torch.isnan(output).any().item(),
-                    'inf': torch.isinf(output).any().item(),
-                }
-        return hook
-    
-    hooks = []
-    for name, module in model.named_modules():
-        if isinstance(module, (nn.Linear, nn.LayerNorm, nn.MultiheadAttention)):
-            hooks.append(module.register_forward_hook(hook_fn(name)))
-    
-    with torch.no_grad():
-        model(x, puzzle_ids)
-    
-    for h in hooks:
-        h.remove()
-    
-    print("\n📈 Activation Statistics:")
-    problems = []
-    for name, stats in sorted(activations.items())[:10]:  # Show first 10
-        status = "✓" if not stats['nan'] and not stats['inf'] and stats['max'] < 100 else "⚠️"
-        print(f"  {status} {name}: mean={stats['mean']:.3f}, std={stats['std']:.3f}, max={stats['max']:.3f}")
-        if stats['nan'] or stats['inf']:
-            problems.append(f"{name}: NaN={stats['nan']}, Inf={stats['inf']}")
-    
-    if problems:
-        print(f"  🚨 PROBLEMS: {problems}")
-    
-    model.train()
-
-
-def debug_predictions(model, batch, device, num_samples=2):
-    """Visualize sample predictions vs ground truth."""
-    model.eval()
-    inp = batch['input'][:num_samples].to(device)
-    label = batch['label'][:num_samples].to(device)
-    puzzle_ids = batch['puzzle_id'][:num_samples].to(device)
-    
-    with torch.no_grad():
-        logits, _, _, steps = model(inp, puzzle_ids)
-        preds = logits.argmax(dim=-1)
-        probs = F.softmax(logits, dim=-1)
-    
-    print(f"\n🧩 Sample Predictions (steps={steps}):")
-    for i in range(num_samples):
-        inp_grid = inp[i].view(9, 9).cpu().numpy()
-        pred_grid = preds[i].view(9, 9).cpu().numpy()
-        label_grid = label[i].view(9, 9).cpu().numpy()
-        
-        # Count errors
-        blank_mask = inp_grid == 0
-        errors = (pred_grid != label_grid) & blank_mask
-        total_blanks = blank_mask.sum()
-        correct_blanks = total_blanks - errors.sum()
-        
-        # Check given cells (should be perfect!)
-        given_mask = inp_grid > 0
-        given_correct = (pred_grid == label_grid) & given_mask
-        
-        print(f"\n  Puzzle {i+1}: {correct_blanks}/{total_blanks} blanks correct, {given_correct.sum()}/{given_mask.sum()} given correct")
-        print("  Input:      Prediction:  Label:")
-        for row in range(9):
-            inp_row = ''.join(str(x) if x > 0 else '.' for x in inp_grid[row])
-            pred_row = ''.join(str(x) for x in pred_grid[row])
-            label_row = ''.join(str(x) for x in label_grid[row])
-            # Mark errors
-            err_row = ''.join('X' if pred_grid[row][c] != label_grid[row][c] and inp_grid[row][c] == 0 else ' ' for c in range(9))
-            print(f"  {inp_row}    {pred_row}    {label_row}    {err_row}")
-    
-    # Output distribution analysis
-    print(f"\n📊 Output Distribution:")
-    pred_counts = torch.bincount(preds.view(-1), minlength=10).cpu().numpy()
-    print(f"  Digit counts: {dict(enumerate(pred_counts))}")
-    print(f"  Most common: {pred_counts.argmax()} ({pred_counts.max()}/{pred_counts.sum()} = {100*pred_counts.max()/pred_counts.sum():.1f}%)")
-    
-    # Logit analysis
-    mean_logits = logits.mean(dim=(0, 1)).cpu().numpy()
-    print(f"  Mean logits per digit: {[f'{x:.2f}' for x in mean_logits]}")
-    
-    model.train()
-
-
-def debug_input_injection(model, batch, device):
-    """Verify input injection is working correctly."""
-    model.eval()
-    inp = batch['input'][:1].to(device)
-    puzzle_ids = batch['puzzle_id'][:1].to(device)
-    
-    print(f"\n🔬 Input Injection Analysis:")
-    
-    with torch.no_grad():
-        # Get input embedding
-        x_grid_input = model.input_embed(inp)
-        
-        # Check if embeddings differ for different digits
-        unique_digits = inp[0].unique()
-        print(f"  Unique digits in input: {unique_digits.cpu().tolist()}")
-        
-        emb_by_digit = {}
-        for d in unique_digits:
-            mask = inp[0] == d
-            if mask.any():
-                emb_d = x_grid_input[0, mask].mean(dim=0)
-                emb_by_digit[d.item()] = emb_d
-        
-        # Compare embeddings
-        if 0 in emb_by_digit and len(emb_by_digit) > 1:
-            other_digit = [k for k in emb_by_digit.keys() if k != 0][0]
-            diff = (emb_by_digit[0] - emb_by_digit[other_digit]).abs().mean()
-            print(f"  Embedding diff (0 vs {other_digit}): {diff:.4f}")
-        
-        # Check hidden state evolution
-        x_grid_hidden = torch.zeros_like(x_grid_input)
-        
-        print(f"  Step 0 - hidden norm: {x_grid_hidden.norm():.4f}, input norm: {x_grid_input.norm():.4f}")
-        
-        # Run one step manually (only for models with puzzle_emb_len)
-        if hasattr(model, 'puzzle_emb_len'):
-            puzzle_emb = model.puzzle_emb(puzzle_ids.clamp(0, model.puzzle_emb.num_puzzles - 1))
-            pad_size = model.puzzle_emb_len * model.d_model - puzzle_emb.size(-1)
-            if pad_size > 0:
-                puzzle_emb = F.pad(puzzle_emb, (0, pad_size))
-            puzzle_emb = puzzle_emb.view(1, model.puzzle_emb_len, model.d_model)
-        
-        x_grid_step = x_grid_hidden + x_grid_input
-        print(f"  Step 1 - x_grid_step norm: {x_grid_step.norm():.4f}")
-        
-        # Check if given cells have different values than blank cells
-        given_mask = inp[0] > 0
-        blank_mask = inp[0] == 0
-        
-        given_emb = x_grid_step[0, given_mask]
-        blank_emb = x_grid_step[0, blank_mask]
-        
-        print(f"  Given cells embedding mean: {given_emb.mean():.4f}, std: {given_emb.std():.4f}")
-        print(f"  Blank cells embedding mean: {blank_emb.mean():.4f}, std: {blank_emb.std():.4f}")
-        print(f"  Given-Blank diff: {(given_emb.mean() - blank_emb.mean()).abs():.4f}")
-    
-    model.train()
-
-
-def debug_routing(model, batch, device):
-    """Analyze HRM controller routing weights."""
-    if not hasattr(model, 'hrm_controller'):
-        print("\n🔀 No HRM controller found")
-        return
-    
-    model.eval()
-    inp = batch['input'][:1].to(device)
-    puzzle_ids = batch['puzzle_id'][:1].to(device)
-    
-    # Hook to capture routing weights
-    routing_weights = []
-    
-    def hook_fn(module, input, output):
-        if isinstance(output, tuple) and len(output) >= 1:
-            alphas = output[0]  # [B, n_heads]
-            routing_weights.append(alphas.detach().cpu())
-    
-    hook = model.hrm_controller.register_forward_hook(hook_fn)
-    
-    with torch.no_grad():
-        model(inp, puzzle_ids)
-    
-    hook.remove()
-    
-    if routing_weights:
-        alphas = routing_weights[-1][0]  # Last routing, first sample
-        print(f"\n🔀 Routing Weights (last step):")
-        print(f"  Heads: {[f'{a:.3f}' for a in alphas.numpy()]}")
-        print(f"  Entropy: {-(alphas * alphas.clamp(min=1e-10).log()).sum():.3f}")
-        print(f"  Max head: {alphas.argmax().item()} ({alphas.max():.3f})")
-    
-    model.train()
-
-
-def run_debug(model, dataloader, optimizer, device, epoch):
-    """Run all debug checks."""
-    print(f"\n{'='*60}")
-    print(f"🔍 DEBUG REPORT - Epoch {epoch}")
-    print(f"{'='*60}")
-    
-    # Get a sample batch
-    batch = next(iter(dataloader))
-    inp = batch['input'].to(device)
-    puzzle_ids = batch['puzzle_id'].to(device)
-    
-    # 1. Gradient analysis (after backward)
-    debug_gradients(model)
-    
-    # 2. Activation analysis
-    debug_activations(model, inp, puzzle_ids)
-    
-    # 3. Input injection verification
-    debug_input_injection(model, batch, device)
-    
-    # 4. Prediction visualization
-    debug_predictions(model, batch, device)
-    
-    # 5. Routing analysis
-    debug_routing(model, batch, device)
-    
-    print(f"{'='*60}\n")
-
-
-# ============================================================================
-# Training Functions
-# ============================================================================
-
-def sudoku_constraint_loss(logits: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
-    """
-    Compute auxiliary loss for Sudoku constraint violations.
-    
-    Encourages each row, column, and 3x3 box to have each digit exactly once
-    by penalizing duplicate predictions via soft entropy-like loss.
-    
-    Args:
-        logits: [B, 81, vocab_size] - raw logits (vocab 0-9, but we focus on 1-9)
-        temperature: Softmax temperature for soft constraints
-        
-    Returns:
-        constraint_loss: Scalar loss penalizing constraint violations
-    """
-    B = logits.size(0)
-    # Get probabilities for digits 1-9 only (ignore 0=blank)
-    probs = F.softmax(logits[:, :, 1:10] / temperature, dim=-1)  # [B, 81, 9]
-    probs = probs.view(B, 9, 9, 9)  # [B, row, col, digit]
-    
-    constraint_loss = 0.0
-    
-    # Row constraint: sum of probs for each digit in each row should be ~1
-    row_sums = probs.sum(dim=2)  # [B, 9, 9] - sum over columns
-    row_loss = ((row_sums - 1.0) ** 2).mean()
-    constraint_loss += row_loss
-    
-    # Column constraint: sum of probs for each digit in each column should be ~1
-    col_sums = probs.sum(dim=1)  # [B, 9, 9] - sum over rows
-    col_loss = ((col_sums - 1.0) ** 2).mean()
-    constraint_loss += col_loss
-    
-    # Box constraint: sum of probs for each digit in each 3x3 box should be ~1
-    for box_row in range(3):
-        for box_col in range(3):
-            box = probs[:, box_row*3:(box_row+1)*3, box_col*3:(box_col+1)*3, :]  # [B, 3, 3, 9]
-            box_sums = box.sum(dim=(1, 2))  # [B, 9] - sum over box cells
-            box_loss = ((box_sums - 1.0) ** 2).mean()
-            constraint_loss += box_loss
-    
-    # Normalize by number of constraint groups (9 rows + 9 cols + 9 boxes = 27)
-    return constraint_loss / 27.0
-
-
-def train_epoch(model, dataloader, optimizer, puzzle_optimizer, device, epoch, 
-                use_poh=True, debug=False, scheduler=None, puzzle_scheduler=None,
-                constraint_weight: float = 0.5):
-    """Train for one epoch."""
-    model.train()
-    total_loss = 0
-    correct_cells = 0
-    total_cells = 0
-    correct_grids = 0
-    total_grids = 0
-    total_steps = 0
-    
-    pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
-    for batch in pbar:
-        inp = batch['input'].to(device)
-        label = batch['label'].to(device)
-        puzzle_ids = batch['puzzle_id'].to(device)
-        
-        optimizer.zero_grad()
-        if puzzle_optimizer:
-            puzzle_optimizer.zero_grad()
-        
-        logits, q_halt, q_continue, steps = model(inp, puzzle_ids)
-        
-        # CE loss on ALL cells (HRM-style)
-        lm_loss = F.cross_entropy(
-            logits.view(-1, model.vocab_size),
-            label.view(-1)
-        )
-        
-        # Sudoku constraint loss - helps learn row/col/box uniqueness
-        constraint_loss = sudoku_constraint_loss(logits)
-        
-        # Q-halt loss (if PoH)
-        if use_poh and q_halt is not None:
-            with torch.no_grad():
-                preds = logits.argmax(dim=-1)
-                is_correct = (preds == label).all(dim=1).float()
-            
-            q_halt_loss = F.binary_cross_entropy_with_logits(q_halt, is_correct)
-            loss = lm_loss + constraint_weight * constraint_loss + 0.5 * q_halt_loss
-        else:
-            loss = lm_loss + constraint_weight * constraint_loss
-        
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
-        if puzzle_optimizer:
-            puzzle_optimizer.step()
-        
-        # Step schedulers
-        if scheduler:
-            scheduler.step()
-        if puzzle_scheduler:
-            puzzle_scheduler.step()
-        
-        # Metrics (all cells)
-        total_loss += loss.item()
-        preds = logits.argmax(dim=-1)
-        correct_cells += (preds == label).sum().item()
-        total_cells += label.numel()
-        correct_grids += (preds == label).all(dim=1).sum().item()
-        total_grids += label.size(0)
-        total_steps += steps
-        
-        pbar.set_postfix({
-            'loss': f'{loss.item():.4f}',
-            'cell_acc': f'{100*correct_cells/total_cells:.1f}%',
-            'grid_acc': f'{100*correct_grids/total_grids:.1f}%',
-        })
-    
-    # Run debug at end of epoch if enabled
-    if debug:
-        run_debug(model, dataloader, optimizer, device, epoch)
-    
-    return {
-        'loss': total_loss / len(dataloader),
-        'cell_acc': 100 * correct_cells / total_cells,
-        'grid_acc': 100 * correct_grids / total_grids,
-        'avg_steps': total_steps / len(dataloader),
-    }
-
-
-def evaluate(model, dataloader, device, use_poh=True):
-    """Evaluate model."""
-    model.eval()
-    total_loss = 0
-    correct_cells = 0
-    total_cells = 0
-    correct_grids = 0
-    total_grids = 0
-    
-    with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Evaluating"):
-            inp = batch['input'].to(device)
-            label = batch['label'].to(device)
-            puzzle_ids = batch['puzzle_id'].to(device)
-            
-            logits, _, _, _ = model(inp, puzzle_ids)
-            
-            loss = F.cross_entropy(logits.view(-1, model.vocab_size), label.view(-1))
-            total_loss += loss.item()
-            
-            preds = logits.argmax(dim=-1)
-            correct_cells += (preds == label).sum().item()
-            total_cells += label.numel()
-            correct_grids += (preds == label).all(dim=1).sum().item()
-            total_grids += label.size(0)
-    
-    return {
-        'loss': total_loss / len(dataloader),
-        'cell_acc': 100 * correct_cells / total_cells,
-        'grid_acc': 100 * correct_grids / total_grids,
-    }
-
-
-# ============================================================================
-# Main
-# ============================================================================
 
 def main():
     parser = argparse.ArgumentParser(description='PoT Sudoku Benchmark')
@@ -1053,6 +71,7 @@ def main():
     parser.add_argument('--R', type=int, default=8, help='Refinement iterations')
     parser.add_argument('--T', type=int, default=4, help='HRM outer period')
     parser.add_argument('--max-halt', type=int, default=16, help='Max halting steps')
+    
     # Hybrid model args (balanced for A100 memory)
     parser.add_argument('--H-cycles', type=int, default=2, help='Hybrid H_level outer cycles')
     parser.add_argument('--L-cycles', type=int, default=8, help='Hybrid L_level inner cycles')
@@ -1068,8 +87,8 @@ def main():
     parser.add_argument('--puzzle-weight-decay', type=float, default=0.01, help='Much lower WD')
     parser.add_argument('--warmup-steps', type=int, default=500, help='LR warmup steps')
     parser.add_argument('--eval-interval', type=int, default=100)
-    parser.add_argument('--constraint-weight', type=float, default=0.5, help='Weight for Sudoku constraint loss')
-    # Early stopping removed - train for full epochs like HRM
+    parser.add_argument('--constraint-weight', type=float, default=0.5, 
+                       help='Weight for Sudoku constraint loss')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     parser.add_argument('--debug-interval', type=int, default=10, help='Debug every N epochs')
     
@@ -1079,7 +98,8 @@ def main():
     
     # Evaluation mode
     parser.add_argument('--eval-only', action='store_true', help='Only evaluate, skip training')
-    parser.add_argument('--checkpoint', type=str, default=None, help='Path to checkpoint for evaluation')
+    parser.add_argument('--checkpoint', type=str, default=None, 
+                       help='Path to checkpoint for evaluation')
     
     args = parser.parse_args()
     
@@ -1099,16 +119,18 @@ def main():
     train_dataset = SudokuDataset(args.data_dir, 'train')
     test_dataset = SudokuDataset(args.data_dir, 'test')
     
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
+    train_loader = DataLoader(
+        train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4
+    )
+    test_loader = DataLoader(
+        test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4
+    )
     
-    # HRM uses a SINGLE shared puzzle embedding for ALL puzzles (id=0)
-    # This is a learned bias, NOT puzzle-specific information
-    # Using per-puzzle embeddings causes memorization and prevents generalization
-    num_puzzles = 1  # Single shared embedding like HRM
+    # Single shared puzzle embedding like HRM
+    num_puzzles = 1
     
     # Build model
-    use_poh = args.model in ('poh', 'hybrid')  # Both use puzzle embeddings
+    use_poh = args.model in ('poh', 'hybrid')
     
     if args.model == 'poh':
         model = PoHSudokuSolver(
@@ -1139,7 +161,7 @@ def main():
         model = BaselineSudokuSolver(
             d_model=args.d_model,
             n_heads=args.n_heads,
-            n_layers=6,  # More layers for baseline
+            n_layers=6,
             d_ff=args.d_ff,
         ).to(device)
     
@@ -1170,34 +192,43 @@ def main():
         print(f"\n{'='*60}")
         return
     
-    # Optimizers (HRM style: separate for puzzle embeddings with high weight decay)
+    # Optimizers
     if use_poh:
         puzzle_params = list(model.puzzle_emb.parameters())
         model_params = [p for p in model.parameters() if p not in set(puzzle_params)]
         
-        # HRM uses same weight_decay for both (1.0)
-        optimizer = torch.optim.AdamW(model_params, lr=args.lr, weight_decay=args.weight_decay)
-        puzzle_optimizer = torch.optim.AdamW(puzzle_params, lr=args.puzzle_lr, weight_decay=args.puzzle_weight_decay)
+        optimizer = torch.optim.AdamW(
+            model_params, lr=args.lr, weight_decay=args.weight_decay
+        )
+        puzzle_optimizer = torch.optim.AdamW(
+            puzzle_params, lr=args.puzzle_lr, weight_decay=args.puzzle_weight_decay
+        )
         
         print(f"\nOptimizer: AdamW")
-        print(f"  Model params: {sum(p.numel() for p in model_params):,}, lr={args.lr}, wd={args.weight_decay}")
-        print(f"  Puzzle params: {sum(p.numel() for p in puzzle_params):,}, lr={args.puzzle_lr}, wd={args.puzzle_weight_decay}")
+        print(f"  Model params: {sum(p.numel() for p in model_params):,}, "
+              f"lr={args.lr}, wd={args.weight_decay}")
+        print(f"  Puzzle params: {sum(p.numel() for p in puzzle_params):,}, "
+              f"lr={args.puzzle_lr}, wd={args.puzzle_weight_decay}")
     else:
-        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        optimizer = torch.optim.AdamW(
+            model.parameters(), lr=args.lr, weight_decay=args.weight_decay
+        )
         puzzle_optimizer = None
     
-    # Training loop
-    # Learning rate scheduler with warmup (like HRM)
+    # Learning rate scheduler with warmup
     total_steps = args.epochs * len(train_loader)
     
     def lr_lambda(step):
         if step < args.warmup_steps:
             return float(step) / float(max(1, args.warmup_steps))
         progress = float(step - args.warmup_steps) / float(max(1, total_steps - args.warmup_steps))
-        return 0.5 * (1.0 + math.cos(math.pi * progress))  # Cosine decay
+        return 0.5 * (1.0 + math.cos(math.pi * progress))
     
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-    puzzle_scheduler = torch.optim.lr_scheduler.LambdaLR(puzzle_optimizer, lr_lambda) if puzzle_optimizer else None
+    puzzle_scheduler = (
+        torch.optim.lr_scheduler.LambdaLR(puzzle_optimizer, lr_lambda) 
+        if puzzle_optimizer else None
+    )
     
     print(f"\n{'='*60}")
     print(f"Training {args.model.upper()} Sudoku Solver")
@@ -1214,7 +245,6 @@ def main():
     os.makedirs(args.output, exist_ok=True)
     
     for epoch in range(1, args.epochs + 1):
-        # Debug every N epochs if enabled
         do_debug = args.debug and (epoch == 1 or epoch % args.debug_interval == 0)
         
         train_metrics = train_epoch(
@@ -1224,7 +254,7 @@ def main():
             constraint_weight=args.constraint_weight
         )
         
-        # Resample augmentations for next epoch (HRM-style)
+        # Resample augmentations for next epoch
         train_dataset.on_epoch_end()
         
         # Evaluate periodically
@@ -1257,7 +287,7 @@ def main():
                 }, os.path.join(args.output, f'{args.model}_best.pt'))
                 print(f"  ✓ New best: {best_grid_acc:.2f}%")
             
-            # Check for near-perfect accuracy (HRM target)
+            # Check for near-perfect accuracy
             if train_metrics['grid_acc'] >= 99.5:
                 print(f"\n🎉 Reached 99.5% training accuracy!")
     
@@ -1266,7 +296,7 @@ def main():
     print("FINAL RESULTS")
     print(f"{'='*60}")
     print(f"Best Test Grid Accuracy: {best_grid_acc:.2f}%")
-    print(f"HRM Paper Target: ~100%")
+    print(f"HRM Paper Target: 55%")
     
     # Save results
     with open(os.path.join(args.output, f'{args.model}_results.json'), 'w') as f:
@@ -1283,4 +313,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
