@@ -15,6 +15,7 @@ from .puzzle_embedding import PuzzleEmbedding
 from .hrm_layers import RMSNorm, SwiGLU
 from .adaptive_halting import QHaltingController
 from .sudoku_solver import PoHSudokuSolver, HybridPoHHRMSolver, BaselineSudokuSolver
+from .hybrid_nli import HybridPoHHRMForNLI
 
 __all__ = [
     "PoHGPT",
@@ -28,5 +29,7 @@ __all__ = [
     "PoHSudokuSolver",
     "HybridPoHHRMSolver",
     "BaselineSudokuSolver",
+    # NLI
+    "HybridPoHHRMForNLI",
 ]
 
