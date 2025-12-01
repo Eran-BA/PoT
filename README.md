@@ -123,7 +123,7 @@ flowchart TB
   class SKIP1,SKIP2 skip
 ```
 
-### 2️⃣ HybridHRM — Full Architecture (for Sudoku/Maze)
+### 2️⃣ HybridPoHHRM — Full Architecture (for Sudoku/Maze)
 
 For complex reasoning tasks, we wrap multiple PoH Blocks into a **two-timescale architecture** inspired by the [HRM paper](https://arxiv.org/abs/2506.21734). Each yellow box below contains the PoH Block shown above:
 
@@ -295,7 +295,7 @@ pip install pyyaml datasets  # For NLI benchmarks
 - **Skip Connections**: Residual connections around attention and FFN
 - **Refinement**: Model refines representation R times per forward pass (R=12 optimal)
 
-### Hierarchy (HybridHRM)
+### Hierarchy (HybridPoHHRM)
 
 ```
 HybridHRMBase                    # Two-timescale reasoning wrapper
@@ -340,7 +340,7 @@ Total reasoning steps: H_cycles × L_cycles = 2 × 8 = 16
 
 ## 🚀 Sudoku Benchmark
 
-Train a master-level Sudoku solver using the HybridHRM architecture:
+Train a master-level Sudoku solver using the HybridPoHHRM architecture:
 
 ```bash
 # Download dataset and train
@@ -353,7 +353,7 @@ python experiments/sudoku_poh_benchmark.py --download --model hybrid
 
 **Features:**
 - ✅ 1000 extreme Sudoku puzzles with 1000 augmentations each
-- ✅ HybridHRM two-timescale reasoning (L_level fast + H_level slow)
+- ✅ HybridPoHHRM two-timescale reasoning (L_level fast + H_level slow)
 - ✅ Constraint loss for Sudoku rule enforcement
 - ✅ ~25.8M parameters, trains in ~10 hours on A100
 
@@ -395,7 +395,7 @@ pytest tests/test_poh_modules.py -v
 
 ## 🎛️ Configuration
 
-### HybridHRM (Sudoku/Reasoning Tasks)
+### HybridPoHHRM (Sudoku/Reasoning Tasks)
 
 ```python
 from src.pot.models import HybridPoHHRMSolver
@@ -573,7 +573,7 @@ This work builds upon several foundational papers:
 
 ## 🚀 Status
 
-**v2.0.0** - HybridHRM Focus 🎯
+**v2.0.0** - HybridPoHHRM Focus 🎯
 
 ### Core Architecture ✅
 - [x] HybridHRM two-timescale reasoning (L_level fast + H_level slow)
