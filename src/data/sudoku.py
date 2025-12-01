@@ -169,15 +169,20 @@ class SudokuDataset(Dataset):
 def download_sudoku_dataset(
     output_dir: str, 
     subsample_size: int = 1000, 
-    num_aug: int = 1000
+    num_aug: int = 1000,
+    val_ratio: float = 0.1,
 ) -> None:
     """
     Download and build Sudoku dataset from HuggingFace.
+    
+    Creates train/val/test splits where val uses held-out puzzles from training
+    with different augmentations (proper generalization test).
     
     Args:
         output_dir: Directory to save the dataset
         subsample_size: Number of training puzzles to use
         num_aug: Number of augmentations per puzzle
+        val_ratio: Fraction of puzzles to hold out for validation
     """
     from huggingface_hub import hf_hub_download
     
@@ -186,8 +191,79 @@ def download_sudoku_dataset(
     
     print("Downloading Sudoku-Extreme dataset from HuggingFace...")
     
-    # Download CSV files
-    for split in ['train', 'test']:
+    # Download train CSV and create train/val split
+    csv_file = hf_hub_download(
+        repo_id="sapientinc/sudoku-extreme",
+        filename="train.csv",
+        repo_type="dataset"
+    )
+    
+    # Parse all training puzzles
+    all_puzzles = []
+    with open(csv_file, 'r') as f:
+        reader = csv.reader(f)
+        next(reader)  # Skip header
+        for row in reader:
+            all_puzzles.append(row)
+    
+    # Subsample
+    if subsample_size and subsample_size < len(all_puzzles):
+        np.random.shuffle(all_puzzles)
+        all_puzzles = all_puzzles[:subsample_size]
+    
+    # Split into train and val
+    n_val = max(1, int(len(all_puzzles) * val_ratio))
+    n_train = len(all_puzzles) - n_val
+    train_puzzles = all_puzzles[:n_train]
+    val_puzzles = all_puzzles[n_train:]
+    
+    print(f"  Train puzzles: {len(train_puzzles)}, Val puzzles: {len(val_puzzles)}")
+    
+    # Process train and val splits
+    for split, puzzles in [('train', train_puzzles), ('val', val_puzzles)]:
+        split_dir = output_path / split
+        split_dir.mkdir(exist_ok=True)
+        
+        inputs, labels, puzzle_indices = [], [], []
+        
+        for puzzle_idx, row in enumerate(tqdm(puzzles, desc=f"Processing {split}")):
+            source, puzzle, solution, rating = row[0], row[1], row[2], row[3]
+            puzzle = puzzle.replace('.', '0')
+            inp = np.array([int(c) for c in puzzle], dtype=np.uint8)
+            sol = np.array([int(c) for c in solution], dtype=np.uint8)
+            
+            # Add original
+            inputs.append(inp)
+            labels.append(sol)
+            puzzle_indices.append(puzzle_idx)
+            
+            # Add augmentations
+            if num_aug > 0:
+                for _ in range(num_aug):
+                    aug_inp, aug_sol = shuffle_sudoku(
+                        inp.reshape(9, 9), 
+                        sol.reshape(9, 9)
+                    )
+                    inputs.append(aug_inp.flatten())
+                    labels.append(aug_sol.flatten())
+                    puzzle_indices.append(puzzle_idx)
+        
+        np.save(split_dir / 'all__inputs.npy', np.array(inputs))
+        np.save(split_dir / 'all__labels.npy', np.array(labels))
+        np.save(split_dir / 'all__puzzle_indices.npy', np.array(puzzle_indices))
+        
+        with open(split_dir / 'dataset.json', 'w') as f:
+            json.dump({
+                'seq_len': 81,
+                'vocab_size': 10,
+                'num_puzzles': len(np.unique(puzzle_indices)),
+                'num_samples': len(inputs),
+            }, f)
+        
+        print(f"  {split}: {len(inputs)} samples from {len(np.unique(puzzle_indices))} puzzles")
+    
+    # Also download test set (original 422k puzzles for final evaluation)
+    for split in ['test']:
         csv_file = hf_hub_download(
             repo_id="sapientinc/sudoku-extreme",
             filename=f"{split}.csv",

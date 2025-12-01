@@ -117,13 +117,21 @@ def main():
     
     # Load data
     train_dataset = SudokuDataset(args.data_dir, 'train')
-    test_dataset = SudokuDataset(args.data_dir, 'test')
+    
+    # Try to load val split (held-out puzzles from training distribution)
+    # Fall back to test if val doesn't exist
+    try:
+        val_dataset = SudokuDataset(args.data_dir, 'val')
+        print("Using VAL split (held-out training puzzles) for evaluation")
+    except FileNotFoundError:
+        val_dataset = SudokuDataset(args.data_dir, 'test')
+        print("Using TEST split (422k new puzzles) for evaluation")
     
     train_loader = DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4
     )
-    test_loader = DataLoader(
-        test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4
+    val_loader = DataLoader(
+        val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4
     )
     
     # Single shared puzzle embedding like HRM
@@ -183,12 +191,12 @@ def main():
         print("EVALUATION MODE")
         print(f"{'='*60}")
         
-        test_metrics = evaluate(model, test_loader, device, use_poh=use_poh)
+        val_metrics = evaluate(model, val_loader, device, use_poh=use_poh)
         
         print(f"\nTest Results:")
-        print(f"  Loss: {test_metrics['loss']:.4f}")
-        print(f"  Cell Accuracy: {test_metrics['cell_acc']:.2f}%")
-        print(f"  Grid Accuracy: {test_metrics['grid_acc']:.2f}%")
+        print(f"  Loss: {val_metrics['loss']:.4f}")
+        print(f"  Cell Accuracy: {val_metrics['cell_acc']:.2f}%")
+        print(f"  Grid Accuracy: {val_metrics['grid_acc']:.2f}%")
         print(f"\n{'='*60}")
         return
     
@@ -259,27 +267,27 @@ def main():
         
         # Evaluate periodically
         if epoch % args.eval_interval == 0 or epoch == 1:
-            test_metrics = evaluate(model, test_loader, device, use_poh=use_poh)
+            val_metrics = evaluate(model, val_loader, device, use_poh=use_poh)
             
             print(f"\nEpoch {epoch}/{args.epochs}")
             print(f"  Train: Loss={train_metrics['loss']:.4f}, "
                   f"Cell={train_metrics['cell_acc']:.2f}%, Grid={train_metrics['grid_acc']:.2f}%")
-            print(f"  Test:  Loss={test_metrics['loss']:.4f}, "
-                  f"Cell={test_metrics['cell_acc']:.2f}%, Grid={test_metrics['grid_acc']:.2f}%")
+            print(f"  Test:  Loss={val_metrics['loss']:.4f}, "
+                  f"Cell={val_metrics['cell_acc']:.2f}%, Grid={val_metrics['grid_acc']:.2f}%")
             
             results.append({
                 'epoch': epoch,
                 'train_loss': train_metrics['loss'],
                 'train_cell_acc': train_metrics['cell_acc'],
                 'train_grid_acc': train_metrics['grid_acc'],
-                'test_loss': test_metrics['loss'],
-                'test_cell_acc': test_metrics['cell_acc'],
-                'test_grid_acc': test_metrics['grid_acc'],
+                'test_loss': val_metrics['loss'],
+                'test_cell_acc': val_metrics['cell_acc'],
+                'test_grid_acc': val_metrics['grid_acc'],
             })
             
             # Save best model
-            if test_metrics['grid_acc'] > best_grid_acc:
-                best_grid_acc = test_metrics['grid_acc']
+            if val_metrics['grid_acc'] > best_grid_acc:
+                best_grid_acc = val_metrics['grid_acc']
                 torch.save({
                     'epoch': epoch,
                     'model_state_dict': model.state_dict(),
