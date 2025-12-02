@@ -64,25 +64,31 @@ def shuffle_sudoku(board: np.ndarray, solution: np.ndarray) -> Tuple[np.ndarray,
 
 class SudokuDataset(Dataset):
     """
-    Sudoku dataset loader for HRM-format data.
+    Sudoku dataset loader with ON-THE-FLY augmentation.
     
-    Key insight from HRM: iterate over PUZZLES (1000), not samples (1M).
-    Each epoch visits each puzzle once, sampling one augmentation per puzzle.
+    Key insight: Generate fresh random augmentations every access to prevent
+    memorization. The model can never memorize specific augmentations.
+    
+    Training: iterate over puzzles, apply random augmentation each time
+    Test/Val: no augmentation, use original puzzles
     
     Args:
         data_dir: Path to dataset directory
-        split: 'train' or 'test'
-        samples_per_epoch: If set, sample this many per epoch
+        split: 'train', 'val', or 'test'
+        augment: Whether to apply on-the-fly augmentation (default: True for train)
     """
     
     def __init__(
         self, 
         data_dir: str, 
         split: str = 'train',
-        samples_per_epoch: Optional[int] = None,
+        augment: Optional[bool] = None,
     ):
         self.data_dir = Path(data_dir) / split
         self.split = split
+        
+        # Default: augment only for training
+        self.augment = augment if augment is not None else (split == 'train')
         
         # Load numpy format
         inputs_path = self.data_dir / 'all__inputs.npy'
@@ -91,97 +97,83 @@ class SudokuDataset(Dataset):
         if inputs_path.exists():
             self.inputs = np.load(inputs_path)
             self.labels = np.load(labels_path)
-            
-            # Load puzzle indices for proper ID mapping
-            puzzle_idx_path = self.data_dir / 'all__puzzle_indices.npy'
-            if puzzle_idx_path.exists():
-                self.puzzle_indices = np.load(puzzle_idx_path)
-            else:
-                self.puzzle_indices = np.arange(len(self.inputs))
         else:
             raise FileNotFoundError(
                 f"Dataset not found at {self.data_dir}. "
                 f"Run with --download flag to fetch from HuggingFace."
             )
         
-        # Build puzzle -> sample indices mapping
-        self.unique_puzzles = np.unique(self.puzzle_indices)
-        self.num_puzzles = len(self.unique_puzzles)
-        
-        # For each puzzle, store indices of its augmentations
-        self.puzzle_to_samples = {}
-        for puzzle_id in self.unique_puzzles:
-            self.puzzle_to_samples[puzzle_id] = np.where(self.puzzle_indices == puzzle_id)[0]
-        
-        # For training: epoch = iterate over puzzles, sample one augmentation each
-        # For test: use all samples (no augmentation sampling)
-        self.samples_per_epoch = samples_per_epoch
-        if split == 'train' and samples_per_epoch is None:
-            # Default: one sample per puzzle per epoch (like HRM)
-            self.samples_per_epoch = self.num_puzzles
-        
-        self._epoch_indices = None
-        self._resample_epoch()
-        
-        print(f"[{split}] Loaded {len(self.inputs)} total samples")
-        print(f"  Unique puzzles: {self.num_puzzles}")
-        print(f"  Samples per epoch: {len(self)}")
-    
-    def _resample_epoch(self):
-        """Resample which augmentation to use for each puzzle this epoch."""
-        if self.split == 'train':
-            # Sample one augmentation per puzzle
-            indices = []
-            puzzle_order = np.random.permutation(self.unique_puzzles)
-            for puzzle_id in puzzle_order:
-                aug_indices = self.puzzle_to_samples[puzzle_id]
-                # Randomly pick one augmentation
-                idx = np.random.choice(aug_indices)
-                indices.append(idx)
-            self._epoch_indices = np.array(indices)
+        # For training: we need unique puzzles only (no pre-computed augmentations)
+        # Check if we have puzzle indices (old format with pre-computed augs)
+        puzzle_idx_path = self.data_dir / 'all__puzzle_indices.npy'
+        if puzzle_idx_path.exists():
+            puzzle_indices = np.load(puzzle_idx_path)
+            # Extract unique puzzles (first occurrence of each)
+            unique_puzzles, first_idx = np.unique(puzzle_indices, return_index=True)
+            self.num_puzzles = len(unique_puzzles)
+            
+            if split == 'train':
+                # Use only original puzzles, ignore pre-computed augmentations
+                self.inputs = self.inputs[first_idx]
+                self.labels = self.labels[first_idx]
         else:
-            # Test: use all samples
-            self._epoch_indices = np.arange(len(self.inputs))
+            self.num_puzzles = len(self.inputs)
+        
+        # Epoch indices for shuffling
+        self._epoch_indices = np.arange(len(self.inputs))
+        if split == 'train':
+            np.random.shuffle(self._epoch_indices)
+        
+        print(f"[{split}] Loaded {len(self.inputs)} puzzles")
+        print(f"  Augmentation: {'ON-THE-FLY' if self.augment else 'OFF'}")
     
     def __len__(self):
         return len(self._epoch_indices)
     
     def __getitem__(self, idx):
         real_idx = self._epoch_indices[idx]
-        inp = torch.LongTensor(self.inputs[real_idx])
-        label = torch.LongTensor(self.labels[real_idx])
+        inp = self.inputs[real_idx].copy()
+        label = self.labels[real_idx].copy()
+        
+        # Apply ON-THE-FLY augmentation for training
+        if self.augment:
+            inp_2d = inp.reshape(9, 9)
+            label_2d = label.reshape(9, 9)
+            inp, label = shuffle_sudoku(inp_2d, label_2d)
+            inp = inp.flatten()
+            label = label.flatten()
+        
         # HRM uses puzzle_identifiers=0 for ALL puzzles (single shared embedding)
-        # NOT puzzle_indices (which is unique per puzzle and causes memorization)
         puzzle_id = torch.tensor(0, dtype=torch.long)
         
         return {
-            'input': inp,
-            'label': label,
+            'input': torch.LongTensor(inp),
+            'label': torch.LongTensor(label),
             'puzzle_id': puzzle_id,
         }
     
     def on_epoch_end(self):
-        """Call this at the end of each epoch to resample augmentations."""
+        """Shuffle puzzle order for next epoch."""
         if self.split == 'train':
-            self._resample_epoch()
+            np.random.shuffle(self._epoch_indices)
 
 
 def download_sudoku_dataset(
     output_dir: str, 
-    subsample_size: int = 1000, 
-    num_aug: int = 1000,
+    subsample_size: int = 10000, 
+    num_aug: int = 100,  # Ignored - augmentation is now on-the-fly
     val_ratio: float = 0.1,
 ) -> None:
     """
     Download and build Sudoku dataset from HuggingFace.
     
-    Creates train/val/test splits where val uses held-out puzzles from training
-    with different augmentations (proper generalization test).
+    Creates train/val/test splits. Augmentation is done ON-THE-FLY during
+    training (not pre-computed) to prevent memorization.
     
     Args:
         output_dir: Directory to save the dataset
         subsample_size: Number of training puzzles to use
-        num_aug: Number of augmentations per puzzle
+        num_aug: IGNORED - kept for backward compatibility
         val_ratio: Fraction of puzzles to hold out for validation
     """
     from huggingface_hub import hf_hub_download
@@ -190,6 +182,7 @@ def download_sudoku_dataset(
     output_path.mkdir(parents=True, exist_ok=True)
     
     print("Downloading Sudoku-Extreme dataset from HuggingFace...")
+    print("Note: Augmentation is now ON-THE-FLY (not pre-computed)")
     
     # Download train CSV and create train/val split
     csv_file = hf_hub_download(
@@ -219,111 +212,70 @@ def download_sudoku_dataset(
     
     print(f"  Train puzzles: {len(train_puzzles)}, Val puzzles: {len(val_puzzles)}")
     
-    # Process train and val splits
+    # Process train and val splits (NO pre-computed augmentations)
     for split, puzzles in [('train', train_puzzles), ('val', val_puzzles)]:
         split_dir = output_path / split
         split_dir.mkdir(exist_ok=True)
         
-        inputs, labels, puzzle_indices = [], [], []
+        inputs, labels = [], []
         
-        for puzzle_idx, row in enumerate(tqdm(puzzles, desc=f"Processing {split}")):
+        for row in tqdm(puzzles, desc=f"Processing {split}"):
             source, puzzle, solution, rating = row[0], row[1], row[2], row[3]
             puzzle = puzzle.replace('.', '0')
             inp = np.array([int(c) for c in puzzle], dtype=np.uint8)
             sol = np.array([int(c) for c in solution], dtype=np.uint8)
             
-            # Add original
+            # Store ONLY original puzzles (augmentation is on-the-fly)
             inputs.append(inp)
             labels.append(sol)
-            puzzle_indices.append(puzzle_idx)
-            
-            # Add augmentations
-            if num_aug > 0:
-                for _ in range(num_aug):
-                    aug_inp, aug_sol = shuffle_sudoku(
-                        inp.reshape(9, 9), 
-                        sol.reshape(9, 9)
-                    )
-                    inputs.append(aug_inp.flatten())
-                    labels.append(aug_sol.flatten())
-                    puzzle_indices.append(puzzle_idx)
         
         np.save(split_dir / 'all__inputs.npy', np.array(inputs))
         np.save(split_dir / 'all__labels.npy', np.array(labels))
-        np.save(split_dir / 'all__puzzle_indices.npy', np.array(puzzle_indices))
         
         with open(split_dir / 'dataset.json', 'w') as f:
             json.dump({
                 'seq_len': 81,
                 'vocab_size': 10,
-                'num_puzzles': len(np.unique(puzzle_indices)),
-                'num_samples': len(inputs),
+                'num_puzzles': len(inputs),
             }, f)
         
-        print(f"  {split}: {len(inputs)} samples from {len(np.unique(puzzle_indices))} puzzles")
+        print(f"  {split}: {len(inputs)} puzzles (augmentation: on-the-fly)")
     
     # Also download test set (original 422k puzzles for final evaluation)
-    for split in ['test']:
-        csv_file = hf_hub_download(
-            repo_id="sapientinc/sudoku-extreme",
-            filename=f"{split}.csv",
-            repo_type="dataset"
-        )
-        
-        split_dir = output_path / split
-        split_dir.mkdir(exist_ok=True)
-        
-        # Parse CSV and convert to numpy
-        inputs, labels, puzzle_indices = [], [], []
-        
-        with open(csv_file, 'r') as f:
-            reader = csv.reader(f)
-            next(reader)  # Skip header
-            
-            puzzles = list(reader)
-            if subsample_size and split == 'train':
-                puzzles = puzzles[:subsample_size]
-            
-            for puzzle_idx, row in enumerate(tqdm(puzzles, desc=f"Processing {split}")):
-                # CSV format: source, puzzle, solution, rating
-                source, puzzle, solution, rating = row[0], row[1], row[2], row[3]
-                
-                # Convert string to numpy array (replace '.' with '0' for blanks)
-                puzzle = puzzle.replace('.', '0')
-                inp = np.array([int(c) for c in puzzle], dtype=np.uint8)
-                sol = np.array([int(c) for c in solution], dtype=np.uint8)
-                
-                # Add original
-                inputs.append(inp)
-                labels.append(sol)
-                puzzle_indices.append(puzzle_idx)
-                
-                # Add augmentations (only for train)
-                if split == 'train' and num_aug > 0:
-                    for _ in range(num_aug):
-                        aug_inp, aug_sol = shuffle_sudoku(
-                            inp.reshape(9, 9), 
-                            sol.reshape(9, 9)
-                        )
-                        inputs.append(aug_inp.flatten())
-                        labels.append(aug_sol.flatten())
-                        puzzle_indices.append(puzzle_idx)
-        
-        # Save as numpy
-        np.save(split_dir / 'all__inputs.npy', np.array(inputs))
-        np.save(split_dir / 'all__labels.npy', np.array(labels))
-        np.save(split_dir / 'all__puzzle_indices.npy', np.array(puzzle_indices))
-        
-        # Save metadata
-        with open(split_dir / 'dataset.json', 'w') as f:
-            json.dump({
-                'seq_len': 81,
-                'vocab_size': 10,
-                'num_puzzles': len(np.unique(puzzle_indices)),
-                'num_samples': len(inputs),
-            }, f)
-        
-        print(f"  {split}: {len(inputs)} samples from {len(np.unique(puzzle_indices))} puzzles")
+    csv_file = hf_hub_download(
+        repo_id="sapientinc/sudoku-extreme",
+        filename="test.csv",
+        repo_type="dataset"
+    )
     
+    split_dir = output_path / 'test'
+    split_dir.mkdir(exist_ok=True)
+    
+    inputs, labels = [], []
+    
+    with open(csv_file, 'r') as f:
+        reader = csv.reader(f)
+        next(reader)  # Skip header
+        
+        for row in tqdm(reader, desc="Processing test"):
+            source, puzzle, solution, rating = row[0], row[1], row[2], row[3]
+            puzzle = puzzle.replace('.', '0')
+            inp = np.array([int(c) for c in puzzle], dtype=np.uint8)
+            sol = np.array([int(c) for c in solution], dtype=np.uint8)
+            
+            inputs.append(inp)
+            labels.append(sol)
+    
+    np.save(split_dir / 'all__inputs.npy', np.array(inputs))
+    np.save(split_dir / 'all__labels.npy', np.array(labels))
+    
+    with open(split_dir / 'dataset.json', 'w') as f:
+        json.dump({
+            'seq_len': 81,
+            'vocab_size': 10,
+            'num_puzzles': len(inputs),
+        }, f)
+    
+    print(f"  test: {len(inputs)} puzzles")
     print(f"✓ Dataset saved to {output_dir}")
 
