@@ -4,7 +4,7 @@ PoT Sudoku Benchmark - Master-Level Sudoku Solver
 ==================================================
 
 Replicates the HRM paper's Sudoku demo using PoT architecture.
-Train a master-level Sudoku solver with 1000 extreme puzzles in ~10 hours.
+Train a master-level Sudoku solver with 10000 extreme puzzles.
 
 Based on: https://github.com/sapientinc/HRM
 
@@ -53,13 +53,13 @@ def main():
     parser = argparse.ArgumentParser(description='PoT Sudoku Benchmark')
     
     # Data
-    parser.add_argument('--data-dir', type=str, default='data/sudoku-extreme-1k-aug-1000',
+    parser.add_argument('--data-dir', type=str, default='data/sudoku-extreme-10k-aug-100',
                        help='Path to Sudoku dataset')
     parser.add_argument('--download', action='store_true',
                        help='Download and build dataset from HuggingFace')
-    parser.add_argument('--subsample', type=int, default=1000,
+    parser.add_argument('--subsample', type=int, default=10000,
                        help='Number of puzzles to use (for download)')
-    parser.add_argument('--num-aug', type=int, default=1000,
+    parser.add_argument('--num-aug', type=int, default=100,
                        help='Augmentations per puzzle (for download)')
     
     # Model
