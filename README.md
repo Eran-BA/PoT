@@ -1,4 +1,4 @@
-# Pointer-over-Heads (PoH) Transformer
+# Pointer-over-Heads Transformer (PoT)
 
 **Dynamic-Routing Transformer with Iterative Refinement**
 
