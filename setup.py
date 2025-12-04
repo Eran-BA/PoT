@@ -20,7 +20,7 @@ with open("requirements.txt", "r", encoding="utf-8") as f:
 
 setup(
     name="pot-parser",
-    version="0.1.1",
+    version="0.2.1",
     author="Eran Ben Artzy",
     description="Pointer-over-Heads Transformer for dependency parsing with adaptive routing",
     long_description=long_description,

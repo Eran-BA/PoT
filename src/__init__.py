@@ -8,7 +8,7 @@ Year: 2025
 License: Apache 2.0
 """
 
-__version__ = "0.1.1"
+__version__ = "0.2.1"
 __author__ = "Eran Ben Artzy"
 
 # Lazy imports to avoid requiring transformers for basic PoH usage

@@ -5,7 +5,7 @@ Dynamic Routing Architecture for Structured NLP
 A task-agnostic framework for iterative refinement via learned attention routing.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 __author__ = "Eran Ben Artzy"
 
 from .core.hrm_controller import HRMPointerController, HRMState
