@@ -8,7 +8,7 @@ This module implements the Hybrid PoT-HRM architecture that combines:
 
 The architecture uses:
 - z_H, z_L: Persistent hidden states
-- L_level: Fast reasoning, updates every inner step  
+- L_level: Fast reasoning, updates every inner step
 - H_level: Slow reasoning, updates every outer step
 - Both use PoT head routing for dynamic attention
 - ACT wrapper: Adaptive outer steps via Q-learning (like HRM)

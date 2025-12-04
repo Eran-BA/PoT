@@ -68,7 +68,13 @@ def train_epoch(
         if puzzle_optimizer:
             puzzle_optimizer.zero_grad()
         
-        logits, q_halt, q_continue, steps = model(inp, puzzle_ids)
+        # Handle variable output length (ACT returns 5 values, non-ACT returns 4)
+        model_out = model(inp, puzzle_ids)
+        if len(model_out) == 5:
+            logits, q_halt, q_continue, steps, target_q_continue = model_out
+        else:
+            logits, q_halt, q_continue, steps = model_out
+            target_q_continue = None
         
         # CE loss on ALL cells (HRM-style)
         lm_loss = F.cross_entropy(
@@ -87,6 +93,11 @@ def train_epoch(
             
             q_halt_loss = F.binary_cross_entropy_with_logits(q_halt, is_correct)
             loss = lm_loss + constraint_weight * constraint_loss + 0.5 * q_halt_loss
+            
+            # ACT Q-learning loss (if target available)
+            if target_q_continue is not None:
+                q_continue_loss = F.mse_loss(torch.sigmoid(q_continue), target_q_continue)
+                loss = loss + 0.5 * q_continue_loss
         else:
             loss = lm_loss + constraint_weight * constraint_loss
         
@@ -160,7 +171,9 @@ def evaluate(
             label = batch['label'].to(device)
             puzzle_ids = batch['puzzle_id'].to(device)
             
-            logits, _, _, _ = model(inp, puzzle_ids)
+            # Handle variable output length (ACT returns 5 values, non-ACT returns 4)
+            model_out = model(inp, puzzle_ids)
+            logits = model_out[0]
             
             loss = F.cross_entropy(logits.view(-1, model.vocab_size), label.view(-1))
             total_loss += loss.item()
@@ -259,7 +272,9 @@ def debug_predictions(model: nn.Module, batch: Dict, device: torch.device, num_s
     puzzle_ids = batch['puzzle_id'][:num_samples].to(device)
     
     with torch.no_grad():
-        logits, _, _, steps = model(inp, puzzle_ids)
+        model_out = model(inp, puzzle_ids)
+        logits = model_out[0]
+        steps = model_out[3]
         preds = logits.argmax(dim=-1)
     
     print(f"\n🧩 Sample Predictions (steps={steps}):")
