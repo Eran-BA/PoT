@@ -251,16 +251,17 @@ class PoHSudokuSolver(nn.Module):
 
 class HybridPoHHRMSolver(HybridHRMBase):
     """
-    Hybrid PoT-HRM Sudoku solver.
+    Hybrid PoT-HRM Sudoku solver with ACT wrapper.
     
     Extends HybridHRMBase with Sudoku-specific embeddings and output.
     This is the closest architecture to the original HRM paper.
     
     Architecture (from base class):
     - z_H, z_L: Persistent hidden states over 81 grid positions
-    - L_level: Fast reasoning, updates every inner step
-    - H_level: Slow reasoning, updates every outer step
+    - L_level: Fast reasoning, updates every inner step (fixed L_cycles)
+    - H_level: Slow reasoning, updates every outer step (fixed H_cycles)
     - Both use PoT head routing for dynamic attention
+    - ACT: Adaptive outer steps via Q-learning (like HRM)
     
     Args:
         vocab_size: Vocabulary size (0=blank, 1-9=digits)
@@ -270,12 +271,14 @@ class HybridPoHHRMSolver(HybridHRMBase):
         L_layers: Layers in L_level module
         d_ff: Feedforward dimension
         dropout: Dropout rate
-        H_cycles: Outer loop iterations
-        L_cycles: Inner loop iterations
+        H_cycles: Fixed outer loop iterations per ACT step
+        L_cycles: Fixed inner loop iterations per H_cycle
         T: HRM period for pointer controller
         num_puzzles: Number of puzzle embeddings (1 for shared)
         puzzle_emb_dim: Puzzle embedding dimension
-        hrm_grad_style: If True, only last L+H get gradients. If False (default), all calls in last H_cycle.
+        hrm_grad_style: If True, only last L+H get gradients.
+        halt_max_steps: Maximum ACT outer steps (1 = no ACT, like original)
+        halt_exploration_prob: Exploration probability for Q-learning
     """
     
     def __init__(
@@ -293,8 +296,10 @@ class HybridPoHHRMSolver(HybridHRMBase):
         num_puzzles: int = 1,  # Single shared embedding like HRM
         puzzle_emb_dim: int = 512,
         hrm_grad_style: bool = False,  # Default: all calls in last H_cycle get gradients
+        halt_max_steps: int = 1,  # 1 = no ACT (original behavior), >1 = ACT enabled
+        halt_exploration_prob: float = 0.1,
     ):
-        # Initialize base class
+        # Initialize base class with ACT parameters
         super().__init__(
             d_model=d_model,
             n_heads=n_heads,
@@ -307,6 +312,8 @@ class HybridPoHHRMSolver(HybridHRMBase):
             dropout=dropout,
             T=T,
             hrm_grad_style=hrm_grad_style,
+            halt_max_steps=halt_max_steps,
+            halt_exploration_prob=halt_exploration_prob,
         )
         
         self.vocab_size = vocab_size
@@ -326,8 +333,8 @@ class HybridPoHHRMSolver(HybridHRMBase):
         # Sudoku-specific: Output projection
         self.output_proj = nn.Linear(d_model, vocab_size)
     
-    def forward(self, input_seq: torch.Tensor, puzzle_ids: torch.Tensor):
-        """Forward pass for Sudoku solving."""
+    def _compute_input_embedding(self, input_seq: torch.Tensor, puzzle_ids: torch.Tensor) -> torch.Tensor:
+        """Compute scaled input embedding."""
         # Compute input embedding
         input_emb = self.input_embed(input_seq) + self.pos_embed
         
@@ -341,15 +348,41 @@ class HybridPoHHRMSolver(HybridHRMBase):
         input_emb = input_emb + puzzle_emb.unsqueeze(1)
         
         # Scale embeddings by sqrt(d_model) like HRM
-        input_emb = self.embed_scale * input_emb
+        return self.embed_scale * input_emb
+    
+    def forward(self, input_seq: torch.Tensor, puzzle_ids: torch.Tensor):
+        """
+        Forward pass for Sudoku solving.
         
-        # Run the two-timescale reasoning loop
-        hidden, q_halt, q_continue, steps = self.reasoning_loop(input_emb)
+        Uses ACT wrapper if halt_max_steps > 1, otherwise uses simple reasoning_loop.
         
-        # Output projection
-        logits = self.output_proj(hidden)
+        Returns:
+            logits: Output logits [B, 81, vocab_size]
+            q_halt: Q-values for halting [B]
+            q_continue: Q-values for continuing [B]
+            steps: Number of reasoning steps
+            target_q_continue: Q-learning target (only if ACT enabled and training)
+        """
+        input_emb = self._compute_input_embedding(input_seq, puzzle_ids)
         
-        return logits, q_halt, q_continue, steps
+        if self.halt_max_steps > 1:
+            # Use ACT wrapper (like HRM)
+            act_out = self.act_forward(input_emb)
+            hidden = act_out['hidden']
+            q_halt = act_out['q_halt']
+            q_continue = act_out['q_continue']
+            steps = act_out['steps']
+            target_q_continue = act_out.get('target_q_continue')
+            
+            # Output projection
+            logits = self.output_proj(hidden)
+            
+            return logits, q_halt, q_continue, steps, target_q_continue
+        else:
+            # Original behavior (no ACT)
+            hidden, q_halt, q_continue, steps = self.reasoning_loop(input_emb)
+            logits = self.output_proj(hidden)
+            return logits, q_halt, q_continue, steps
 
 
 class BaselineSudokuSolver(nn.Module):

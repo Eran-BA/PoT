@@ -73,12 +73,18 @@ def main():
     parser.add_argument('--max-halt', type=int, default=16, help='Max halting steps')
     
     # Hybrid model args (balanced for A100 memory)
-    parser.add_argument('--H-cycles', type=int, default=2, help='Hybrid H_level outer cycles')
-    parser.add_argument('--L-cycles', type=int, default=8, help='Hybrid L_level inner cycles')
+    parser.add_argument('--H-cycles', type=int, default=2, help='Hybrid H_level outer cycles (fixed per ACT step)')
+    parser.add_argument('--L-cycles', type=int, default=8, help='Hybrid L_level inner cycles (fixed per H_cycle)')
     parser.add_argument('--H-layers', type=int, default=2, help='Layers in H_level module')
     parser.add_argument('--L-layers', type=int, default=2, help='Layers in L_level module')
     parser.add_argument('--hrm-grad-style', action='store_true',
                        help='Use HRM-style gradients (only last L+H call). Default: all calls in last H_cycle.')
+    
+    # ACT (Adaptive Computation Time) - like HRM's adaptive outer steps
+    parser.add_argument('--halt-max-steps', type=int, default=1,
+                       help='Max ACT outer steps (1=no ACT, >1=ACT enabled like HRM). HRM uses 8 or 16.')
+    parser.add_argument('--halt-exploration-prob', type=float, default=0.1,
+                       help='Exploration probability for Q-learning halting')
     
     # Training (adjusted from HRM defaults for better convergence)
     parser.add_argument('--epochs', type=int, default=20000)
@@ -165,10 +171,16 @@ def main():
             T=args.T,
             num_puzzles=num_puzzles,
             hrm_grad_style=args.hrm_grad_style,
+            halt_max_steps=args.halt_max_steps,
+            halt_exploration_prob=args.halt_exploration_prob,
         ).to(device)
         print(f"Hybrid model: H_cycles={args.H_cycles}, L_cycles={args.L_cycles}")
         print(f"H_layers={args.H_layers}, L_layers={args.L_layers}")
         print(f"Gradient style: {'HRM (last L+H only)' if args.hrm_grad_style else 'Full (last H_cycle)'}")
+        if args.halt_max_steps > 1:
+            print(f"ACT enabled: halt_max_steps={args.halt_max_steps}, exploration={args.halt_exploration_prob}")
+        else:
+            print(f"ACT disabled (halt_max_steps=1)")
     else:
         model = BaselineSudokuSolver(
             d_model=args.d_model,
