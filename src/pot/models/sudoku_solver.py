@@ -373,16 +373,16 @@ class HybridPoHHRMSolver(HybridHRMBase):
             q_continue = act_out['q_continue']
             steps = act_out['steps']
             target_q_continue = act_out.get('target_q_continue')
-        
-        # Output projection
-        logits = self.output_proj(hidden)
-        
+            
+            # Output projection
+            logits = self.output_proj(hidden)
+            
             return logits, q_halt, q_continue, steps, target_q_continue
         else:
             # Original behavior (no ACT)
             hidden, q_halt, q_continue, steps = self.reasoning_loop(input_emb)
             logits = self.output_proj(hidden)
-        return logits, q_halt, q_continue, steps
+            return logits, q_halt, q_continue, steps
 
 
 class BaselineSudokuSolver(nn.Module):
