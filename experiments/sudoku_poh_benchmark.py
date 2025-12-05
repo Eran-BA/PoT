@@ -77,6 +77,7 @@ def main():
     parser.add_argument('--L-cycles', type=int, default=8, help='Hybrid L_level inner cycles (fixed per H_cycle)')
     parser.add_argument('--H-layers', type=int, default=2, help='Layers in H_level module')
     parser.add_argument('--L-layers', type=int, default=2, help='Layers in L_level module')
+    parser.add_argument('--dropout', type=float, default=0.0, help='Dropout rate for regularization (HRM default: 0.0)')
     parser.add_argument('--hrm-grad-style', action='store_true',
                        help='Use HRM-style gradients (only last L+H call). Default: all calls in last H_cycle.')
     
@@ -154,6 +155,7 @@ def main():
             n_heads=args.n_heads,
             n_layers=args.n_layers,
             d_ff=args.d_ff,
+            dropout=args.dropout,
             R=args.R,
             T=args.T,
             num_puzzles=num_puzzles,
@@ -166,6 +168,7 @@ def main():
             H_layers=args.H_layers,
             L_layers=args.L_layers,
             d_ff=args.d_ff,
+            dropout=args.dropout,
             H_cycles=args.H_cycles,
             L_cycles=args.L_cycles,
             T=args.T,
@@ -175,7 +178,7 @@ def main():
             halt_exploration_prob=args.halt_exploration_prob,
         ).to(device)
         print(f"Hybrid model: H_cycles={args.H_cycles}, L_cycles={args.L_cycles}")
-        print(f"H_layers={args.H_layers}, L_layers={args.L_layers}")
+        print(f"H_layers={args.H_layers}, L_layers={args.L_layers}, dropout={args.dropout}")
         print(f"Gradient style: {'HRM (last L+H only)' if args.hrm_grad_style else 'Full (last H_cycle)'}")
         if args.halt_max_steps > 1:
             print(f"ACT enabled: halt_max_steps={args.halt_max_steps}, exploration={args.halt_exploration_prob}")
@@ -187,6 +190,7 @@ def main():
             n_heads=args.n_heads,
             n_layers=6,
             d_ff=args.d_ff,
+            dropout=args.dropout,
         ).to(device)
     
     param_count = sum(p.numel() for p in model.parameters())
