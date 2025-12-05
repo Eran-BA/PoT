@@ -31,7 +31,7 @@ class ReasoningModule(nn.Module):
     - PoT head routing: dynamically weight attention heads
     - Post-norm architecture with RMSNorm
     - SwiGLU feedforward layers
-    - No dropout (to match HRM)
+    - Configurable dropout for regularization
     
     Args:
         d_model: Hidden dimension size
@@ -64,13 +64,13 @@ class ReasoningModule(nn.Module):
             dropout=dropout
         )
         
-        # Transformer layers (no dropout to match HRM)
+        # Transformer layers with configurable dropout
         self.attn_layers = nn.ModuleList([
-            nn.MultiheadAttention(d_model, n_heads, dropout=0.0, batch_first=True)
+            nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
             for _ in range(n_layers)
         ])
         self.ffn_layers = nn.ModuleList([
-            SwiGLU(d_model, d_ff, dropout=0.0) for _ in range(n_layers)
+            SwiGLU(d_model, d_ff, dropout=dropout) for _ in range(n_layers)
         ])
         self.norm1_layers = nn.ModuleList([RMSNorm(d_model) for _ in range(n_layers)])
         self.norm2_layers = nn.ModuleList([RMSNorm(d_model) for _ in range(n_layers)])
