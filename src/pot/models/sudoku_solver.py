@@ -383,6 +383,78 @@ class HybridPoHHRMSolver(HybridHRMBase):
             hidden, q_halt, q_continue, steps = self.reasoning_loop(input_emb)
             logits = self.output_proj(hidden)
             return logits, q_halt, q_continue, steps
+    
+    # ========== Async Batching Methods (HRM-style) ==========
+    
+    def create_async_carry(self, batch_size: int, device: torch.device):
+        """
+        Create initial async carry for HRM-style async batching.
+        
+        All samples start as 'halted' so they will receive data on first forward call.
+        
+        Args:
+            batch_size: Number of samples in batch
+            device: Device to create tensors on
+            
+        Returns:
+            Initial PoTAsyncCarry with all samples marked as halted
+        """
+        return self.initial_async_carry(batch_size, device)
+    
+    def async_forward(
+        self,
+        carry,  # PoTAsyncCarry
+        new_batch: dict,  # {'input': [B, 81], 'label': [B, 81], 'puzzle_id': [B]}
+    ):
+        """
+        Async-compatible forward for HRM-style batching.
+        
+        This method:
+        1. Replaces halted samples' data with new batch data
+        2. Computes input embeddings
+        3. Runs one ACT step (H_cycles x L_cycles inner iterations)
+        4. Returns new carry + outputs
+        
+        Args:
+            carry: Current PoTAsyncCarry state
+            new_batch: Dict with 'input', 'label', 'puzzle_id' for new samples
+            
+        Returns:
+            new_carry: Updated carry state
+            outputs: Dict with 'logits', 'q_halt_logits', 'q_continue_logits', 
+                    'target_q_continue', 'labels'
+        """
+        device = carry.z_H.device
+        
+        # Get new data from batch
+        new_input = new_batch['input'].to(device)
+        new_labels = new_batch['label'].to(device)
+        new_puzzle_ids = new_batch['puzzle_id'].to(device)
+        
+        # Reset carry for halted samples, replacing their data
+        carry = self.reset_async_carry(
+            carry, 
+            carry.halted,
+            new_input,
+            new_labels,
+            device,
+        )
+        
+        # Compute input embedding for current samples
+        # Use carry.current_input which now has correct data for each sample
+        input_emb = self._compute_input_embedding(carry.current_input, new_puzzle_ids)
+        
+        # Run one ACT step
+        new_carry, outputs = self.forward_single_step_async(carry, input_emb)
+        
+        # Compute logits from hidden state
+        logits = self.output_proj(outputs['hidden'])
+        
+        # Add logits and labels to outputs
+        outputs['logits'] = logits
+        outputs['labels'] = new_carry.current_labels
+        
+        return new_carry, outputs
 
 
 class BaselineSudokuSolver(nn.Module):

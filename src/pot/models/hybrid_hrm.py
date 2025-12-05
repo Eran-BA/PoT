@@ -46,6 +46,34 @@ class ACTCarry:
     H_ptr_state: Any
 
 
+@dataclass
+class PoTAsyncCarry:
+    """
+    Carry state for HRM-style async batching.
+    
+    Enables samples that halt early to be immediately replaced with new puzzles,
+    improving GPU utilization during ACT training.
+    
+    Fields:
+        z_H: H-level hidden states [B, seq_len, d_model]
+        z_L: L-level hidden states [B, seq_len, d_model]
+        L_ptr_state: Pointer controller state for L-level
+        H_ptr_state: Pointer controller state for H-level
+        steps: Current ACT step count per sample [B]
+        halted: Which samples have halted [B]
+        current_input: Current input embedding per sample [B, seq_len, d_model]
+        current_labels: Current target labels per sample [B, seq_len]
+    """
+    z_H: torch.Tensor           # [B, seq_len, d_model]
+    z_L: torch.Tensor           # [B, seq_len, d_model]
+    L_ptr_state: Any
+    H_ptr_state: Any
+    steps: torch.Tensor         # [B] int32
+    halted: torch.Tensor        # [B] bool
+    current_input: torch.Tensor # [B, seq_len] or [B, seq_len, d_model]
+    current_labels: torch.Tensor # [B, seq_len]
+
+
 class HybridHRMBase(nn.Module):
     """
     Base class for Hybrid PoT-HRM models with ACT wrapper.
@@ -408,4 +436,226 @@ class HybridHRMBase(nn.Module):
             'steps': int(steps.float().mean().item()),
             'target_q_continue': target_q_continue,
         }
+    
+    # ========== Async Batching Methods (HRM-style) ==========
+    
+    def initial_async_carry(self, batch_size: int, device: torch.device) -> PoTAsyncCarry:
+        """
+        Create initial carry state for async batching.
+        
+        All samples start as 'halted' so they will be replaced with actual data
+        on the first forward call.
+        
+        Args:
+            batch_size: Number of samples in batch
+            device: Device to create tensors on
+            
+        Returns:
+            Initial carry with all samples marked as halted
+        """
+        return PoTAsyncCarry(
+            z_H=self.H_init.view(1, 1, -1).expand(batch_size, self.seq_len, -1).clone(),
+            z_L=self.L_init.view(1, 1, -1).expand(batch_size, self.seq_len, -1).clone(),
+            L_ptr_state=self.L_level.pointer_controller.init_state(batch_size, device),
+            H_ptr_state=self.H_level.pointer_controller.init_state(batch_size, device),
+            steps=torch.zeros(batch_size, dtype=torch.int32, device=device),
+            halted=torch.ones(batch_size, dtype=torch.bool, device=device),  # All halted initially
+            current_input=torch.zeros(batch_size, self.seq_len, dtype=torch.long, device=device),
+            current_labels=torch.zeros(batch_size, self.seq_len, dtype=torch.long, device=device),
+        )
+    
+    def reset_async_carry(
+        self, 
+        carry: PoTAsyncCarry, 
+        halted_mask: torch.Tensor,
+        new_input: torch.Tensor,
+        new_labels: torch.Tensor,
+        device: torch.device,
+    ) -> PoTAsyncCarry:
+        """
+        Reset hidden states for halted samples and replace their data.
+        
+        For samples where halted_mask=True:
+        - Reset z_H, z_L to initial values
+        - Reset pointer states
+        - Reset step counter to 0
+        - Replace input/labels with new data
+        
+        Args:
+            carry: Current carry state
+            halted_mask: [B] bool tensor indicating which samples halted
+            new_input: [B, seq_len] new input data for halted samples
+            new_labels: [B, seq_len] new labels for halted samples
+            device: Device
+            
+        Returns:
+            Updated carry with halted samples reset
+        """
+        B = carry.z_H.size(0)
+        
+        # Reset hidden states for halted samples
+        fresh_z_H = self.H_init.view(1, 1, -1).expand(B, self.seq_len, -1)
+        fresh_z_L = self.L_init.view(1, 1, -1).expand(B, self.seq_len, -1)
+        
+        # Expand mask for broadcasting
+        mask_expanded = halted_mask.view(B, 1, 1)
+        
+        new_z_H = torch.where(mask_expanded, fresh_z_H, carry.z_H)
+        new_z_L = torch.where(mask_expanded, fresh_z_L, carry.z_L)
+        
+        # Reset steps for halted samples
+        new_steps = torch.where(halted_mask, torch.zeros_like(carry.steps), carry.steps)
+        
+        # Replace input/labels for halted samples
+        mask_seq = halted_mask.view(B, 1)
+        new_current_input = torch.where(mask_seq, new_input, carry.current_input)
+        new_current_labels = torch.where(mask_seq, new_labels, carry.current_labels)
+        
+        # Reset pointer states for halted samples (reinitialize fresh)
+        # Note: This is a simplification - we reinit all states and selectively use them
+        fresh_L_ptr = self.L_level.pointer_controller.init_state(B, device)
+        fresh_H_ptr = self.H_level.pointer_controller.init_state(B, device)
+        
+        # For pointer states, we need to handle per-sample reset
+        # The pointer state is typically a tensor, so we can use where
+        if isinstance(carry.L_ptr_state, torch.Tensor):
+            new_L_ptr = torch.where(
+                halted_mask.view(-1, *([1] * (carry.L_ptr_state.dim() - 1))),
+                fresh_L_ptr,
+                carry.L_ptr_state
+            )
+            new_H_ptr = torch.where(
+                halted_mask.view(-1, *([1] * (carry.H_ptr_state.dim() - 1))),
+                fresh_H_ptr,
+                carry.H_ptr_state
+            )
+        else:
+            # Fallback: just use fresh states if format is unclear
+            new_L_ptr = fresh_L_ptr
+            new_H_ptr = fresh_H_ptr
+        
+        return PoTAsyncCarry(
+            z_H=new_z_H,
+            z_L=new_z_L,
+            L_ptr_state=new_L_ptr,
+            H_ptr_state=new_H_ptr,
+            steps=new_steps,
+            halted=torch.zeros(B, dtype=torch.bool, device=device),  # Reset halted flag
+            current_input=new_current_input,
+            current_labels=new_current_labels,
+        )
+    
+    def forward_single_step_async(
+        self,
+        carry: PoTAsyncCarry,
+        input_emb: torch.Tensor,
+    ) -> Tuple[PoTAsyncCarry, Dict[str, torch.Tensor]]:
+        """
+        Run one ACT step for async batching (HRM-style).
+        
+        Each call does H_cycles x L_cycles inner iterations, then:
+        - Increments step counter
+        - Computes halting decision
+        - Returns new carry + outputs
+        
+        Args:
+            carry: Current carry state
+            input_emb: Scaled input embedding [B, seq_len, d_model]
+            
+        Returns:
+            new_carry: Updated carry state
+            outputs: Dict with logits, q_halt, q_continue, target_q_continue
+        """
+        B = input_emb.size(0)
+        device = input_emb.device
+        
+        z_H, z_L = carry.z_H, carry.z_L
+        L_ptr_state, H_ptr_state = carry.L_ptr_state, carry.H_ptr_state
+        
+        # Run H_cycles x L_cycles inner iterations with HRM-style gradients
+        # Only the final L and H calls get gradients
+        with torch.no_grad():
+            for H_step in range(self.H_cycles):
+                for L_step in range(self.L_cycles):
+                    is_last = (H_step == self.H_cycles - 1) and (L_step == self.L_cycles - 1)
+                    if not is_last:
+                        z_L, L_ptr_state = self.L_level(z_L, z_H + input_emb, L_ptr_state)
+                
+                if H_step < self.H_cycles - 1:
+                    z_H, H_ptr_state = self.H_level(z_H, z_L, H_ptr_state)
+        
+        # Detach before final calls with grad
+        z_H = z_H.detach()
+        z_L = z_L.detach()
+        
+        # Final calls WITH gradients (these are the only ones that backprop)
+        z_L, L_ptr_state = self.L_level(z_L, z_H + input_emb, L_ptr_state)
+        z_H, H_ptr_state = self.H_level(z_H, z_L, H_ptr_state)
+        
+        # Normalize and compute Q-values
+        hidden = self.final_norm(z_H)
+        q_logits = self.q_head(z_H[:, 0])
+        q_halt_logits = q_logits[:, 0]
+        q_continue_logits = q_logits[:, 1]
+        
+        # Increment step counter
+        new_steps = carry.steps + 1
+        is_last_step = new_steps >= self.halt_max_steps
+        
+        # Halting decision
+        halted = is_last_step.clone()
+        target_q_continue = None
+        
+        if self.training and self.halt_max_steps > 1:
+            with torch.no_grad():
+                # Halt when q_halt > q_continue
+                halted = halted | (q_halt_logits > q_continue_logits)
+                
+                # Exploration: random continuation
+                explore_mask = torch.rand(B, device=device) < self.halt_exploration_prob
+                min_halt_steps = torch.randint(2, self.halt_max_steps + 1, (B,), device=device)
+                halted = halted & (~explore_mask | (new_steps >= min_halt_steps))
+                
+                # Compute target Q for Q-learning (like HRM)
+                # Look ahead one step to get target
+                with torch.no_grad():
+                    temp_z_L = z_L.detach()
+                    temp_z_H = z_H.detach()
+                    temp_L_ptr = L_ptr_state
+                    temp_H_ptr = H_ptr_state
+                    
+                    # One more reasoning step (without grad)
+                    for H_step in range(self.H_cycles):
+                        for L_step in range(self.L_cycles):
+                            temp_z_L, temp_L_ptr = self.L_level(temp_z_L, temp_z_H + input_emb, temp_L_ptr)
+                        temp_z_H, temp_H_ptr = self.H_level(temp_z_H, temp_z_L, temp_H_ptr)
+                    
+                    next_q_logits = self.q_head(temp_z_H[:, 0])
+                    next_q_halt = next_q_logits[:, 0]
+                    next_q_continue = next_q_logits[:, 1]
+                    
+                    target_q_continue = torch.sigmoid(
+                        torch.where(is_last_step, next_q_halt, torch.maximum(next_q_halt, next_q_continue))
+                    )
+        
+        # Build new carry (detached z_H, z_L for O(1) memory)
+        new_carry = PoTAsyncCarry(
+            z_H=z_H.detach(),
+            z_L=z_L.detach(),
+            L_ptr_state=L_ptr_state,
+            H_ptr_state=H_ptr_state,
+            steps=new_steps,
+            halted=halted,
+            current_input=carry.current_input,
+            current_labels=carry.current_labels,
+        )
+        
+        outputs = {
+            'hidden': hidden,
+            'q_halt_logits': q_halt_logits,
+            'q_continue_logits': q_continue_logits,
+            'target_q_continue': target_q_continue,
+        }
+        
+        return new_carry, outputs
 

@@ -7,6 +7,7 @@ Year: 2025
 
 from .sudoku_trainer import (
     train_epoch,
+    train_epoch_async,
     evaluate,
     debug_gradients,
     debug_activations,
@@ -16,6 +17,7 @@ from .sudoku_trainer import (
 
 __all__ = [
     "train_epoch",
+    "train_epoch_async",
     "evaluate",
     "debug_gradients",
     "debug_activations",

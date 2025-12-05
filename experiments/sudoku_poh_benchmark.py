@@ -47,7 +47,7 @@ from src.pot.models import (
     HybridPoHHRMSolver,
     BaselineSudokuSolver,
 )
-from src.training import train_epoch, evaluate
+from src.training import train_epoch, train_epoch_async, evaluate
 
 # Try to import adam_atan2 (HRM's optimizer)
 try:
@@ -141,6 +141,8 @@ def main():
                        help='Max ACT outer steps (1=no ACT, >1=ACT enabled like HRM). HRM uses 8 or 16.')
     parser.add_argument('--halt-exploration-prob', type=float, default=0.1,
                        help='Exploration probability for Q-learning halting')
+    parser.add_argument('--async-batch', action='store_true',
+                       help='Use HRM-style async batching: halted samples are immediately replaced with new puzzles')
     
     # Training (adjusted from HRM defaults for better convergence)
     parser.add_argument('--epochs', type=int, default=20000)
@@ -250,8 +252,12 @@ def main():
         print(f"Gradient style: {'HRM (last L+H only)' if args.hrm_grad_style else 'Full (last H_cycle)'}")
         if args.halt_max_steps > 1:
             print(f"ACT enabled: halt_max_steps={args.halt_max_steps}, exploration={args.halt_exploration_prob}")
+            if args.async_batch:
+                print(f"Async batching enabled (HRM-style)")
         else:
             print(f"ACT disabled (halt_max_steps=1)")
+            if args.async_batch:
+                print(f"WARNING: --async-batch requires --halt-max-steps > 1. Disabling async batching.")
     else:
         model = BaselineSudokuSolver(
             d_model=args.d_model,
@@ -365,15 +371,34 @@ def main():
     
     os.makedirs(args.output, exist_ok=True)
     
+    # Check if async batching is valid
+    use_async = args.async_batch and args.halt_max_steps > 1 and args.model == 'hybrid'
+    if args.async_batch and not use_async:
+        if args.halt_max_steps <= 1:
+            print("Note: Async batching disabled because halt_max_steps <= 1")
+        if args.model != 'hybrid':
+            print("Note: Async batching only supported for hybrid model")
+    
     for epoch in range(1, args.epochs + 1):
         do_debug = args.debug and (epoch == 1 or epoch % args.debug_interval == 0)
         
-        train_metrics = train_epoch(
-            model, train_loader, optimizer, puzzle_optimizer, 
-            device, epoch, use_poh=use_poh, debug=do_debug,
-            scheduler=scheduler, puzzle_scheduler=puzzle_scheduler,
-            constraint_weight=args.constraint_weight
-        )
+        if use_async:
+            # HRM-style async batching: halted samples replaced immediately
+            train_metrics = train_epoch_async(
+                model, train_loader, optimizer, puzzle_optimizer, 
+                device, epoch, use_poh=use_poh, debug=do_debug,
+                scheduler=scheduler, puzzle_scheduler=puzzle_scheduler,
+                constraint_weight=args.constraint_weight,
+                samples_per_epoch=len(train_loader) * args.batch_size,
+            )
+        else:
+            # Standard mini-batch training
+            train_metrics = train_epoch(
+                model, train_loader, optimizer, puzzle_optimizer, 
+                device, epoch, use_poh=use_poh, debug=do_debug,
+                scheduler=scheduler, puzzle_scheduler=puzzle_scheduler,
+                constraint_weight=args.constraint_weight
+            )
         
         # Resample augmentations for next epoch
         train_dataset.on_epoch_end()

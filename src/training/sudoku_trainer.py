@@ -18,6 +18,211 @@ from tqdm import tqdm
 from src.pot.core.sudoku_loss import sudoku_constraint_loss
 
 
+class InfiniteDataLoader:
+    """
+    Wrapper around DataLoader that cycles infinitely.
+    
+    Used for async batching where we need to replace halted samples
+    with new ones from the dataset continuously.
+    """
+    
+    def __init__(self, dataloader):
+        self.dataloader = dataloader
+        self.iterator = iter(dataloader)
+        self.total_samples = 0
+    
+    def get_next(self, num_needed: int):
+        """
+        Get the next batch, cycling if needed.
+        
+        Args:
+            num_needed: Number of samples needed (for tracking only)
+            
+        Returns:
+            Next batch from dataloader
+        """
+        try:
+            batch = next(self.iterator)
+        except StopIteration:
+            self.iterator = iter(self.dataloader)
+            batch = next(self.iterator)
+        
+        self.total_samples += batch['input'].size(0)
+        return batch
+    
+    def reset(self):
+        """Reset the iterator and sample counter."""
+        self.iterator = iter(self.dataloader)
+        self.total_samples = 0
+
+
+def train_epoch_async(
+    model: nn.Module,
+    dataloader,
+    optimizer,
+    puzzle_optimizer: Optional[torch.optim.Optimizer],
+    device: torch.device,
+    epoch: int,
+    use_poh: bool = True,
+    debug: bool = False,
+    scheduler: Optional[Any] = None,
+    puzzle_scheduler: Optional[Any] = None,
+    constraint_weight: float = 0.5,
+    samples_per_epoch: Optional[int] = None,
+) -> Dict[str, float]:
+    """
+    Train for one epoch using HRM-style async batching.
+    
+    Each forward call runs one ACT step. Samples that halt are immediately
+    replaced with new puzzles, maximizing GPU utilization.
+    
+    Args:
+        model: The Sudoku solver model (must be HybridPoHHRMSolver with async support)
+        dataloader: Training data loader
+        optimizer: Main optimizer
+        puzzle_optimizer: Optimizer for puzzle embeddings (optional)
+        device: Device to train on
+        epoch: Current epoch number
+        use_poh: Whether model uses PoH/puzzle embeddings
+        debug: Enable debug logging
+        scheduler: Learning rate scheduler
+        puzzle_scheduler: LR scheduler for puzzle optimizer
+        constraint_weight: Weight for Sudoku constraint loss
+        samples_per_epoch: Total samples to process per epoch (default: len(dataloader) * batch_size)
+        
+    Returns:
+        Dictionary with loss, cell_acc, grid_acc, avg_steps
+    """
+    model.train()
+    
+    # Determine batch size from first batch
+    first_batch = next(iter(dataloader))
+    batch_size = first_batch['input'].size(0)
+    
+    # Default samples per epoch = one pass through data
+    if samples_per_epoch is None:
+        samples_per_epoch = len(dataloader) * batch_size
+    
+    # Initialize infinite data loader
+    inf_loader = InfiniteDataLoader(dataloader)
+    
+    # Initialize carry state (all halted, so first batch loads data)
+    carry = model.create_async_carry(batch_size, device)
+    
+    # Metrics tracking
+    total_loss = 0
+    correct_cells = 0
+    total_cells = 0
+    correct_grids = 0
+    total_grids = 0
+    total_steps = 0
+    completed_samples = 0
+    forward_calls = 0
+    
+    pbar = tqdm(total=samples_per_epoch, desc=f"Epoch {epoch} (async)")
+    
+    while completed_samples < samples_per_epoch:
+        # Get new batch for replacing halted samples
+        new_batch = inf_loader.get_next(carry.halted.sum().item())
+        
+        optimizer.zero_grad()
+        if puzzle_optimizer:
+            puzzle_optimizer.zero_grad()
+        
+        # Record which samples were halted before this step (these just completed)
+        was_halted = carry.halted.clone()
+        
+        # Forward: one ACT step
+        new_carry, outputs = model.async_forward(carry, new_batch)
+        
+        logits = outputs['logits']
+        labels = outputs['labels']
+        q_halt = outputs['q_halt_logits']
+        q_continue = outputs['q_continue_logits']
+        target_q_continue = outputs.get('target_q_continue')
+        
+        # Compute loss for ALL samples (gradient flows for all)
+        # Note: HRM also computes loss for all, the async nature is just about data replacement
+        lm_loss = F.cross_entropy(
+            logits.view(-1, model.vocab_size),
+            labels.view(-1)
+        )
+        
+        # Sudoku constraint loss
+        constraint_loss = sudoku_constraint_loss(logits)
+        
+        # Q-halt loss
+        if use_poh and q_halt is not None:
+            with torch.no_grad():
+                preds = logits.argmax(dim=-1)
+                is_correct = (preds == labels).all(dim=1).float()
+            
+            q_halt_loss = F.binary_cross_entropy_with_logits(q_halt, is_correct)
+            loss = lm_loss + constraint_weight * constraint_loss + 0.5 * q_halt_loss
+            
+            # ACT Q-learning loss (if target available)
+            if target_q_continue is not None:
+                q_continue_loss = F.mse_loss(torch.sigmoid(q_continue), target_q_continue)
+                loss = loss + 0.5 * q_continue_loss
+        else:
+            loss = lm_loss + constraint_weight * constraint_loss
+        
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
+        if puzzle_optimizer:
+            puzzle_optimizer.step()
+        
+        # Step schedulers
+        if scheduler:
+            scheduler.step()
+        if puzzle_scheduler:
+            puzzle_scheduler.step()
+        
+        # Count newly halted samples (these are completing now)
+        newly_halted = new_carry.halted & ~was_halted
+        # Also count samples that were already halted (just got replaced and will complete eventually)
+        # For simplicity, count halted samples as completed
+        num_completed = new_carry.halted.sum().item()
+        
+        # Accumulate metrics for ALL samples (they all contribute to loss)
+        total_loss += loss.item()
+        preds = logits.argmax(dim=-1)
+        correct_cells += (preds == labels).sum().item()
+        total_cells += labels.numel()
+        correct_grids += (preds == labels).all(dim=1).sum().item()
+        total_grids += labels.size(0)
+        total_steps += 1  # Each forward is one ACT step
+        forward_calls += 1
+        
+        # Track completed samples (halted samples that will be replaced next step)
+        completed_samples += num_completed
+        pbar.update(num_completed)
+        
+        pbar.set_postfix({
+            'loss': f'{loss.item():.4f}',
+            'cell_acc': f'{100*correct_cells/total_cells:.1f}%',
+            'grid_acc': f'{100*correct_grids/total_grids:.1f}%',
+        })
+        
+        # Update carry for next step
+        carry = new_carry
+    
+    pbar.close()
+    
+    # Run debug at end of epoch if enabled
+    if debug:
+        run_debug(model, dataloader, optimizer, device, epoch)
+    
+    return {
+        'loss': total_loss / max(1, forward_calls),
+        'cell_acc': 100 * correct_cells / max(1, total_cells),
+        'grid_acc': 100 * correct_grids / max(1, total_grids),
+        'avg_steps': total_steps / max(1, forward_calls),
+        'forward_calls': forward_calls,
+    }
+
+
 def train_epoch(
     model: nn.Module,
     dataloader,
