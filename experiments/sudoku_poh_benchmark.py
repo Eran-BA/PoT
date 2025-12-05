@@ -38,6 +38,7 @@ import json
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+from torch.optim.optimizer import Optimizer
 
 # Import from refactored modules
 from src.data import SudokuDataset, download_sudoku_dataset
@@ -47,6 +48,60 @@ from src.pot.models import (
     BaselineSudokuSolver,
 )
 from src.training import train_epoch, evaluate
+
+# Try to import adam_atan2 (HRM's optimizer)
+try:
+    from adam_atan2 import AdamATan2
+    HAS_ADAM_ATAN2 = True
+except ImportError:
+    HAS_ADAM_ATAN2 = False
+    AdamATan2 = None
+
+
+class SignSGD(Optimizer):
+    """
+    SignSGD optimizer with decoupled weight decay (HRM-style for puzzle embeddings).
+    
+    Updates weights using only the sign of gradients, which can be more stable
+    for sparse updates like puzzle embeddings.
+    
+    Args:
+        params: Parameters to optimize
+        lr: Learning rate
+        weight_decay: Decoupled weight decay coefficient
+    """
+    def __init__(self, params, lr=1e-3, weight_decay=0.0):
+        if lr < 0.0:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        if weight_decay < 0.0:
+            raise ValueError(f"Invalid weight_decay value: {weight_decay}")
+        
+        defaults = dict(lr=lr, weight_decay=weight_decay)
+        super().__init__(params, defaults)
+    
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+        
+        for group in self.param_groups:
+            lr = group['lr']
+            weight_decay = group['weight_decay']
+            
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                
+                # Decoupled weight decay (apply before gradient step)
+                if weight_decay != 0:
+                    p.mul_(1.0 - lr * weight_decay)
+                
+                # SignSGD update: p = p - lr * sign(grad)
+                p.add_(torch.sign(p.grad), alpha=-lr)
+        
+        return loss
 
 
 def main():
@@ -90,6 +145,10 @@ def main():
     # Training (adjusted from HRM defaults for better convergence)
     parser.add_argument('--epochs', type=int, default=20000)
     parser.add_argument('--batch-size', type=int, default=128)
+    parser.add_argument('--optimizer', type=str, default='adamw', choices=['adamw', 'adam_atan2'],
+                       help='Main optimizer. HRM uses adam_atan2 (pip install adam-atan2)')
+    parser.add_argument('--puzzle-optimizer', type=str, default='adamw', choices=['adamw', 'signsgd'],
+                       help='Puzzle embedding optimizer. HRM uses signsgd')
     parser.add_argument('--lr', type=float, default=3e-4, help='Learning rate')
     parser.add_argument('--puzzle-lr-multiplier', type=float, default=1.0,
                        help='Puzzle emb LR = lr * multiplier. HRM uses 100x (set to 100.0)')
@@ -233,25 +292,43 @@ def main():
     puzzle_lr = args.lr * args.puzzle_lr_multiplier
     betas = (args.beta1, args.beta2)
     
+    # Validate optimizer choices
+    if args.optimizer == 'adam_atan2' and not HAS_ADAM_ATAN2:
+        print("⚠️  adam_atan2 not installed. Install with: pip install adam-atan2")
+        print("    Falling back to AdamW")
+        args.optimizer = 'adamw'
+    
+    def create_optimizer(params, lr, wd, opt_type, is_puzzle=False):
+        """Create optimizer based on type."""
+        if opt_type == 'adam_atan2':
+            return AdamATan2(params, lr=lr, weight_decay=wd, betas=betas)
+        elif opt_type == 'signsgd':
+            return SignSGD(params, lr=lr, weight_decay=wd)
+        else:  # adamw
+            return torch.optim.AdamW(params, lr=lr, weight_decay=wd, betas=betas)
+    
     if use_poh:
         puzzle_params = list(model.puzzle_emb.parameters())
         model_params = [p for p in model.parameters() if p not in set(puzzle_params)]
         
-        optimizer = torch.optim.AdamW(
-            model_params, lr=args.lr, weight_decay=args.weight_decay, betas=betas
+        optimizer = create_optimizer(
+            model_params, args.lr, args.weight_decay, args.optimizer
         )
-        puzzle_optimizer = torch.optim.AdamW(
-            puzzle_params, lr=puzzle_lr, weight_decay=args.puzzle_weight_decay, betas=betas
+        puzzle_optimizer = create_optimizer(
+            puzzle_params, puzzle_lr, args.puzzle_weight_decay, args.puzzle_optimizer, is_puzzle=True
         )
         
-        print(f"\nOptimizer: AdamW (betas={betas})")
+        opt_name = args.optimizer.upper()
+        puzzle_opt_name = args.puzzle_optimizer.upper()
+        print(f"\nOptimizer: {opt_name} (betas={betas})")
         print(f"  Model params: {sum(p.numel() for p in model_params):,}, "
               f"lr={args.lr}, wd={args.weight_decay}")
+        print(f"Puzzle Optimizer: {puzzle_opt_name}")
         print(f"  Puzzle params: {sum(p.numel() for p in puzzle_params):,}, "
               f"lr={puzzle_lr} ({args.puzzle_lr_multiplier}x), wd={args.puzzle_weight_decay}")
     else:
-        optimizer = torch.optim.AdamW(
-            model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=betas
+        optimizer = create_optimizer(
+            model.parameters(), args.lr, args.weight_decay, args.optimizer
         )
         puzzle_optimizer = None
     
@@ -276,6 +353,7 @@ def main():
     print(f"Training {args.model.upper()} Sudoku Solver")
     print(f"{'='*60}")
     print(f"Epochs: {args.epochs}, Batch size: {args.batch_size}")
+    print(f"Optimizer: {args.optimizer}, Puzzle optimizer: {args.puzzle_optimizer}")
     print(f"LR: {args.lr}, Weight decay: {args.weight_decay}, Betas: {betas}")
     print(f"Warmup: {args.warmup_steps} steps, LR min ratio: {args.lr_min_ratio}")
     print(f"Total steps: {total_steps}")
