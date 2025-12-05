@@ -409,16 +409,30 @@ model = HybridPoHHRMSolver(
     H_layers=2,           # Layers in H_level module
     L_layers=2,           # Layers in L_level module
     T=4,                  # HRM period for pointer controller
+    dropout=0.0,          # Dropout rate (HRM uses 0)
+    hrm_grad_style=True,  # Only last L+H calls get gradients
+    halt_max_steps=4,     # ACT outer steps (1=disabled)
+    num_puzzles=1,        # Number of puzzle embeddings
 )
 ```
 
-**Or via CLI:**
+**Or via CLI (HRM-aligned configuration):**
 
 ```bash
 python experiments/sudoku_poh_benchmark.py \
+    --download \
     --model hybrid \
-    --H-cycles 2 --L-cycles 8 \
-    --d-model 512 --n-heads 8
+    --hrm-grad-style \
+    --halt-max-steps 4 \
+    --async-batch \
+    --lr 1e-4 \
+    --batch-size 768 \
+    --weight-decay 1.0 \
+    --puzzle-optimizer signsgd \
+    --beta2 0.95 \
+    --warmup-steps 2000 \
+    --lr-min-ratio 0.1 \
+    --constraint-weight 0
 ```
 
 **Key parameters:**
