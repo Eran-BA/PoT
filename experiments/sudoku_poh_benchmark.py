@@ -206,8 +206,13 @@ def main():
         val_dataset = SudokuDataset(args.data_dir, 'test')
         print("Using TEST split (422k new puzzles) for evaluation")
     
+    # For async batching, drop_last=True ensures consistent batch sizes
+    # (required because carry state has fixed batch dimension)
+    drop_last = args.async_batch and args.halt_max_steps > 1 and args.model == 'hybrid'
+    
     train_loader = DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4
+        train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4,
+        drop_last=drop_last
     )
     val_loader = DataLoader(
         val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4
