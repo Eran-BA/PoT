@@ -90,14 +90,23 @@ def main():
     # Training (adjusted from HRM defaults for better convergence)
     parser.add_argument('--epochs', type=int, default=20000)
     parser.add_argument('--batch-size', type=int, default=128)
-    parser.add_argument('--lr', type=float, default=3e-4, help='Higher LR for faster learning')
-    parser.add_argument('--puzzle-lr', type=float, default=3e-4, help='Same as main LR')
-    parser.add_argument('--weight-decay', type=float, default=0.01, help='Much lower WD')
-    parser.add_argument('--puzzle-weight-decay', type=float, default=0.01, help='Much lower WD')
-    parser.add_argument('--warmup-steps', type=int, default=500, help='LR warmup steps')
+    parser.add_argument('--lr', type=float, default=3e-4, help='Learning rate')
+    parser.add_argument('--puzzle-lr-multiplier', type=float, default=1.0,
+                       help='Puzzle emb LR = lr * multiplier. HRM uses 100x (set to 100.0)')
+    parser.add_argument('--weight-decay', type=float, default=0.01, 
+                       help='Weight decay. HRM uses 0.1-1.0')
+    parser.add_argument('--puzzle-weight-decay', type=float, default=0.01, 
+                       help='Puzzle embedding weight decay. HRM uses 0.1-1.0')
+    parser.add_argument('--beta1', type=float, default=0.9, help='Adam beta1')
+    parser.add_argument('--beta2', type=float, default=0.999, 
+                       help='Adam beta2. HRM uses 0.95 (Llama-style)')
+    parser.add_argument('--warmup-steps', type=int, default=500, 
+                       help='LR warmup steps. HRM uses 2000')
+    parser.add_argument('--lr-min-ratio', type=float, default=0.0,
+                       help='Min LR ratio for cosine schedule. HRM uses 0.1 or 1.0')
     parser.add_argument('--eval-interval', type=int, default=100)
     parser.add_argument('--constraint-weight', type=float, default=0.5, 
-                       help='Weight for Sudoku constraint loss')
+                       help='Weight for Sudoku constraint loss (not in HRM)')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     parser.add_argument('--debug-interval', type=int, default=10, help='Debug every N epochs')
     
@@ -221,36 +230,41 @@ def main():
         return
     
     # Optimizers
+    puzzle_lr = args.lr * args.puzzle_lr_multiplier
+    betas = (args.beta1, args.beta2)
+    
     if use_poh:
         puzzle_params = list(model.puzzle_emb.parameters())
         model_params = [p for p in model.parameters() if p not in set(puzzle_params)]
         
         optimizer = torch.optim.AdamW(
-            model_params, lr=args.lr, weight_decay=args.weight_decay
+            model_params, lr=args.lr, weight_decay=args.weight_decay, betas=betas
         )
         puzzle_optimizer = torch.optim.AdamW(
-            puzzle_params, lr=args.puzzle_lr, weight_decay=args.puzzle_weight_decay
+            puzzle_params, lr=puzzle_lr, weight_decay=args.puzzle_weight_decay, betas=betas
         )
         
-        print(f"\nOptimizer: AdamW")
+        print(f"\nOptimizer: AdamW (betas={betas})")
         print(f"  Model params: {sum(p.numel() for p in model_params):,}, "
               f"lr={args.lr}, wd={args.weight_decay}")
         print(f"  Puzzle params: {sum(p.numel() for p in puzzle_params):,}, "
-              f"lr={args.puzzle_lr}, wd={args.puzzle_weight_decay}")
+              f"lr={puzzle_lr} ({args.puzzle_lr_multiplier}x), wd={args.puzzle_weight_decay}")
     else:
         optimizer = torch.optim.AdamW(
-            model.parameters(), lr=args.lr, weight_decay=args.weight_decay
+            model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=betas
         )
         puzzle_optimizer = None
     
-    # Learning rate scheduler with warmup
+    # Learning rate scheduler with warmup (HRM-style cosine with min ratio)
     total_steps = args.epochs * len(train_loader)
+    min_ratio = args.lr_min_ratio
     
     def lr_lambda(step):
         if step < args.warmup_steps:
             return float(step) / float(max(1, args.warmup_steps))
         progress = float(step - args.warmup_steps) / float(max(1, total_steps - args.warmup_steps))
-        return 0.5 * (1.0 + math.cos(math.pi * progress))
+        # Cosine decay from 1.0 to min_ratio (HRM uses 0.1 or 1.0)
+        return min_ratio + (1.0 - min_ratio) * 0.5 * (1.0 + math.cos(math.pi * progress))
     
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     puzzle_scheduler = (
@@ -262,8 +276,9 @@ def main():
     print(f"Training {args.model.upper()} Sudoku Solver")
     print(f"{'='*60}")
     print(f"Epochs: {args.epochs}, Batch size: {args.batch_size}")
-    print(f"LR: {args.lr}, Weight decay: {args.weight_decay}")
-    print(f"Warmup: {args.warmup_steps} steps, Total: {total_steps} steps")
+    print(f"LR: {args.lr}, Weight decay: {args.weight_decay}, Betas: {betas}")
+    print(f"Warmup: {args.warmup_steps} steps, LR min ratio: {args.lr_min_ratio}")
+    print(f"Total steps: {total_steps}")
     if use_poh:
         print(f"R={args.R}, T={args.T}, max_halt={args.max_halt}")
     
