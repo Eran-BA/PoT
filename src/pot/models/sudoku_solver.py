@@ -279,6 +279,7 @@ class HybridPoHHRMSolver(HybridHRMBase):
         hrm_grad_style: If True, only last L+H get gradients.
         halt_max_steps: Maximum ACT outer steps (1 = no ACT, like original)
         halt_exploration_prob: Exploration probability for Q-learning
+        allow_early_halt_eval: If True, enable Q-learning based early halting during eval
     """
     
     def __init__(
@@ -298,6 +299,7 @@ class HybridPoHHRMSolver(HybridHRMBase):
         hrm_grad_style: bool = False,  # Default: all calls in last H_cycle get gradients
         halt_max_steps: int = 1,  # 1 = no ACT (original behavior), >1 = ACT enabled
         halt_exploration_prob: float = 0.1,
+        allow_early_halt_eval: bool = False,  # Enable early halting during eval
     ):
         # Initialize base class with ACT parameters
         super().__init__(
@@ -314,6 +316,7 @@ class HybridPoHHRMSolver(HybridHRMBase):
             hrm_grad_style=hrm_grad_style,
             halt_max_steps=halt_max_steps,
             halt_exploration_prob=halt_exploration_prob,
+            allow_early_halt_eval=allow_early_halt_eval,
         )
         
         self.vocab_size = vocab_size

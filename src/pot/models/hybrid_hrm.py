@@ -92,7 +92,7 @@ class HybridHRMBase(nn.Module):
     Like HRM:
     - Fixed inner cycles (H_cycles x L_cycles) per ACT step
     - Adaptive outer steps (halt_max_steps) via Q-learning during training
-    - During evaluation: always runs halt_max_steps
+    - During evaluation: runs halt_max_steps unless allow_early_halt_eval=True
     
     Args:
         d_model: Hidden dimension size
@@ -108,6 +108,7 @@ class HybridHRMBase(nn.Module):
         hrm_grad_style: If True, only last L+H calls get gradients (HRM-style).
         halt_max_steps: Maximum ACT outer steps (default 1 = no ACT)
         halt_exploration_prob: Exploration probability for Q-learning
+        allow_early_halt_eval: If True, enable Q-learning based early halting during eval
     """
     
     def __init__(
@@ -125,6 +126,7 @@ class HybridHRMBase(nn.Module):
         hrm_grad_style: bool = False,
         halt_max_steps: int = 1,
         halt_exploration_prob: float = 0.1,
+        allow_early_halt_eval: bool = False,
     ):
         super().__init__()
         
@@ -135,6 +137,7 @@ class HybridHRMBase(nn.Module):
         self.hrm_grad_style = hrm_grad_style
         self.halt_max_steps = halt_max_steps
         self.halt_exploration_prob = halt_exploration_prob
+        self.allow_early_halt_eval = allow_early_halt_eval
         
         # Embedding scaling factor (CRITICAL: HRM uses this!)
         self.embed_scale = d_model ** 0.5  # sqrt(512) ≈ 22.6
@@ -396,8 +399,8 @@ class HybridHRMBase(nn.Module):
             final_q_halt = q_halt
             final_q_continue = q_continue
             
-            # Halting logic (only during training with ACT enabled)
-            if self.training and self.halt_max_steps > 1 and not is_last_step:
+            # Halting logic (during training, or eval with allow_early_halt_eval)
+            if (self.training or self.allow_early_halt_eval) and self.halt_max_steps > 1 and not is_last_step:
                 with torch.no_grad():
                     # Halt when q_halt > q_continue
                     should_halt = (q_halt > q_continue)
