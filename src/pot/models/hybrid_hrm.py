@@ -35,6 +35,7 @@ from dataclasses import dataclass
 
 from src.pot.models.reasoning_module import ReasoningModule
 from src.pot.models.hrm_layers import RMSNorm
+from src.pot.core.hrm_controller import HRMState
 
 
 @dataclass
@@ -479,7 +480,6 @@ class HybridHRMBase(nn.Module):
             return torch.where(mask, fresh_state, old_state)
         elif hasattr(old_state, 'z_L') and hasattr(old_state, 'z_H') and hasattr(old_state, 'step'):
             # HRMState dataclass - reset each field for halted samples
-            from src.pot.core.hrm_controller import HRMState
             mask_2d = halted_mask.view(-1, 1)  # [B, 1] for broadcasting to [B, d_ctrl]
             new_z_L = torch.where(mask_2d, fresh_state.z_L, old_state.z_L)
             new_z_H = torch.where(mask_2d, fresh_state.z_H, old_state.z_H)
