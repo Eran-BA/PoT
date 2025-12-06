@@ -464,6 +464,31 @@ class HybridHRMBase(nn.Module):
             current_labels=torch.zeros(batch_size, self.seq_len, dtype=torch.long, device=device),
         )
     
+    def _reset_ptr_state(self, old_state, fresh_state, halted_mask: torch.Tensor):
+        """
+        Reset pointer state for halted samples only.
+        
+        Handles different state formats:
+        - Tensor: use torch.where
+        - HRMState (dataclass with z_L, z_H, step): reset each field
+        - Other: return fresh state (fallback)
+        """
+        if isinstance(old_state, torch.Tensor):
+            # Simple tensor state
+            mask = halted_mask.view(-1, *([1] * (old_state.dim() - 1)))
+            return torch.where(mask, fresh_state, old_state)
+        elif hasattr(old_state, 'z_L') and hasattr(old_state, 'z_H') and hasattr(old_state, 'step'):
+            # HRMState dataclass - reset each field for halted samples
+            from src.pot.core.hrm_controller import HRMState
+            mask_2d = halted_mask.view(-1, 1)  # [B, 1] for broadcasting to [B, d_ctrl]
+            new_z_L = torch.where(mask_2d, fresh_state.z_L, old_state.z_L)
+            new_z_H = torch.where(mask_2d, fresh_state.z_H, old_state.z_H)
+            new_step = torch.where(halted_mask, fresh_state.step, old_state.step)
+            return HRMState(z_L=new_z_L, z_H=new_z_H, step=new_step)
+        else:
+            # Unknown format - fallback to fresh (logs warning in debug)
+            return fresh_state
+    
     def reset_async_carry(
         self, 
         carry: PoTAsyncCarry, 
@@ -511,28 +536,13 @@ class HybridHRMBase(nn.Module):
         new_current_input = torch.where(mask_seq, new_input, carry.current_input)
         new_current_labels = torch.where(mask_seq, new_labels, carry.current_labels)
         
-        # Reset pointer states for halted samples (reinitialize fresh)
-        # Note: This is a simplification - we reinit all states and selectively use them
+        # Reset pointer states for halted samples
         fresh_L_ptr = self.L_level.pointer_controller.init_state(B, device)
         fresh_H_ptr = self.H_level.pointer_controller.init_state(B, device)
         
-        # For pointer states, we need to handle per-sample reset
-        # The pointer state is typically a tensor, so we can use where
-        if isinstance(carry.L_ptr_state, torch.Tensor):
-            new_L_ptr = torch.where(
-                halted_mask.view(-1, *([1] * (carry.L_ptr_state.dim() - 1))),
-                fresh_L_ptr,
-                carry.L_ptr_state
-            )
-            new_H_ptr = torch.where(
-                halted_mask.view(-1, *([1] * (carry.H_ptr_state.dim() - 1))),
-                fresh_H_ptr,
-                carry.H_ptr_state
-            )
-        else:
-            # Fallback: just use fresh states if format is unclear
-            new_L_ptr = fresh_L_ptr
-            new_H_ptr = fresh_H_ptr
+        # Handle different pointer state formats
+        new_L_ptr = self._reset_ptr_state(carry.L_ptr_state, fresh_L_ptr, halted_mask)
+        new_H_ptr = self._reset_ptr_state(carry.H_ptr_state, fresh_H_ptr, halted_mask)
         
         return PoTAsyncCarry(
             z_H=new_z_H,
