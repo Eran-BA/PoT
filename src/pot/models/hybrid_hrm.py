@@ -62,8 +62,9 @@ class PoTAsyncCarry:
         H_ptr_state: Pointer controller state for H-level
         steps: Current ACT step count per sample [B]
         halted: Which samples have halted [B]
-        current_input: Current input embedding per sample [B, seq_len, d_model]
+        current_input: Current input embedding per sample [B, seq_len]
         current_labels: Current target labels per sample [B, seq_len]
+        current_puzzle_ids: Current puzzle IDs per sample [B]
     """
     z_H: torch.Tensor           # [B, seq_len, d_model]
     z_L: torch.Tensor           # [B, seq_len, d_model]
@@ -71,8 +72,9 @@ class PoTAsyncCarry:
     H_ptr_state: Any
     steps: torch.Tensor         # [B] int32
     halted: torch.Tensor        # [B] bool
-    current_input: torch.Tensor # [B, seq_len] or [B, seq_len, d_model]
+    current_input: torch.Tensor # [B, seq_len]
     current_labels: torch.Tensor # [B, seq_len]
+    current_puzzle_ids: torch.Tensor  # [B]
 
 
 class HybridHRMBase(nn.Module):
@@ -466,6 +468,7 @@ class HybridHRMBase(nn.Module):
             halted=torch.ones(batch_size, dtype=torch.bool, device=device),  # All halted initially
             current_input=torch.zeros(batch_size, self.seq_len, dtype=torch.long, device=device),
             current_labels=torch.zeros(batch_size, self.seq_len, dtype=torch.long, device=device),
+            current_puzzle_ids=torch.zeros(batch_size, dtype=torch.long, device=device),
         )
     
     def _reset_ptr_state(self, old_state, fresh_state, halted_mask: torch.Tensor):
@@ -498,6 +501,7 @@ class HybridHRMBase(nn.Module):
         halted_mask: torch.Tensor,
         new_input: torch.Tensor,
         new_labels: torch.Tensor,
+        new_puzzle_ids: torch.Tensor,
         device: torch.device,
     ) -> PoTAsyncCarry:
         """
@@ -507,7 +511,7 @@ class HybridHRMBase(nn.Module):
         - Reset z_H, z_L to initial values
         - Reset pointer states
         - Reset step counter to 0
-        - Replace input/labels with new data
+        - Replace input/labels/puzzle_ids with new data
         
         Handles partial batches: if new_input has fewer samples than halted,
         only the first N halted samples are replaced, rest stay halted.
@@ -517,6 +521,7 @@ class HybridHRMBase(nn.Module):
             halted_mask: [B] bool tensor indicating which samples halted
             new_input: [N, seq_len] new input data (N <= num_halted)
             new_labels: [N, seq_len] new labels (N <= num_halted)
+            new_puzzle_ids: [N] new puzzle IDs (N <= num_halted)
             device: Device
             
         Returns:
@@ -554,14 +559,16 @@ class HybridHRMBase(nn.Module):
         # Reset steps for replaced samples
         new_steps = torch.where(replace_mask, torch.zeros_like(carry.steps), carry.steps)
         
-        # Replace input/labels for replaced samples
-        # new_input/new_labels are [N, seq_len], need to scatter into [B, seq_len]
+        # Replace input/labels/puzzle_ids for replaced samples
+        # new_input/new_labels are [N, seq_len], new_puzzle_ids is [N]
         new_current_input = carry.current_input.clone()
         new_current_labels = carry.current_labels.clone()
+        new_current_puzzle_ids = carry.current_puzzle_ids.clone()
         if num_to_replace > 0:
             replace_indices = halted_indices[:num_to_replace]
             new_current_input[replace_indices] = new_input[:num_to_replace]
             new_current_labels[replace_indices] = new_labels[:num_to_replace]
+            new_current_puzzle_ids[replace_indices] = new_puzzle_ids[:num_to_replace]
         
         # Reset pointer states for replaced samples
         fresh_L_ptr = self.L_level.pointer_controller.init_state(B, device)
@@ -580,6 +587,7 @@ class HybridHRMBase(nn.Module):
             halted=still_halted_mask,  # Samples that are still halted (waiting for data)
             current_input=new_current_input,
             current_labels=new_current_labels,
+            current_puzzle_ids=new_current_puzzle_ids,
         )
     
     def forward_single_step_async(
@@ -685,6 +693,7 @@ class HybridHRMBase(nn.Module):
             halted=halted,
             current_input=carry.current_input,
             current_labels=carry.current_labels,
+            current_puzzle_ids=carry.current_puzzle_ids,
         )
         
         outputs = {

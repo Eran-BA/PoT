@@ -434,18 +434,19 @@ class HybridPoHHRMSolver(HybridHRMBase):
         new_labels = new_batch['label'].to(device)
         new_puzzle_ids = new_batch['puzzle_id'].to(device)
         
-        # Reset carry for halted samples, replacing their data
+        # Reset carry for halted samples, replacing their data (including puzzle_ids)
         carry = self.reset_async_carry(
             carry, 
             carry.halted,
             new_input,
             new_labels,
+            new_puzzle_ids,
             device,
         )
         
         # Compute input embedding for current samples
-        # Use carry.current_input which now has correct data for each sample
-        input_emb = self._compute_input_embedding(carry.current_input, new_puzzle_ids)
+        # Use carry.current_input and carry.current_puzzle_ids which now have correct data
+        input_emb = self._compute_input_embedding(carry.current_input, carry.current_puzzle_ids)
         
         # Run one ACT step
         new_carry, outputs = self.forward_single_step_async(carry, input_emb)
