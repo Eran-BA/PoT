@@ -63,7 +63,7 @@ except ImportError:
 # Project imports
 from src.data import SudokuDataset, download_sudoku_dataset
 from src.pot.models import HybridPoHHRMSolver
-from src.training import train_epoch, evaluate
+from src.training import train_epoch, train_epoch_async, evaluate
 
 
 # ============================================================================
@@ -344,15 +344,23 @@ def train_trial(config: Dict[str, Any]) -> None:
     
     best_grid_acc = 0.0
     eval_interval = config.get("eval_interval", 50)
+    use_async = config.get("async_batch", False)
     
     for epoch in range(1, epochs_per_trial + 1):
-        # Train
-        train_metrics = train_epoch(
-            model, train_loader, optimizer, puzzle_optimizer,
-            device, epoch, use_poh=True,
-            scheduler=scheduler, puzzle_scheduler=puzzle_scheduler,
-            constraint_weight=0.0,
-        )
+        # Train (async or regular)
+        if use_async:
+            train_metrics = train_epoch_async(
+                model, train_loader, optimizer, puzzle_optimizer,
+                device, epoch, use_poh=True,
+                scheduler=scheduler, puzzle_scheduler=puzzle_scheduler,
+            )
+        else:
+            train_metrics = train_epoch(
+                model, train_loader, optimizer, puzzle_optimizer,
+                device, epoch, use_poh=True,
+                scheduler=scheduler, puzzle_scheduler=puzzle_scheduler,
+                constraint_weight=0.0,
+            )
         
         train_dataset.on_epoch_end()
         
@@ -416,6 +424,7 @@ def run_hpo(args):
         "batch_size": args.batch_size,
         "epochs_per_trial": args.epochs_per_trial,
         "eval_interval": args.eval_interval,
+        "async_batch": args.async_batch,
         "d_model": 512,
         "n_heads": 8,
         "H_layers": 2,
@@ -424,6 +433,8 @@ def run_hpo(args):
         "T": 4,
         "hrm_grad_style": True,
     })
+    
+    print(f"Async batching: {'ON' if args.async_batch else 'OFF'}")
     
     # Optuna search
     optuna_search = OptunaSearch(
@@ -531,6 +542,10 @@ def main():
     # Eval
     parser.add_argument('--eval-interval', type=int, default=50,
                        help='Evaluate every N epochs')
+    
+    # Training mode
+    parser.add_argument('--async-batch', action='store_true',
+                       help='Use async batching (HRM-style)')
     
     # Study
     parser.add_argument('--study-name', type=str, 
