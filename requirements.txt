@@ -25,6 +25,11 @@ tqdm==4.65.0
 # Maze generation (for maze-solving benchmarks)
 maze-dataset>=1.0.0
 
+# HPO (Hyperparameter Optimization)
+optuna>=3.3.0
+ray[tune]>=2.7.0
+wandb>=0.15.0
+
 # Development
 pytest==7.4.0
 pytest-cov==4.1.0
