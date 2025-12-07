@@ -49,8 +49,9 @@ from ray import tune
 from ray.tune.search.optuna import OptunaSearch
 from ray.tune.schedulers import ASHAScheduler
 from ray.tune import Trainable
-from ray.air import session
+from ray.train import Checkpoint
 from ray.air.integrations.wandb import WandbLoggerCallback
+import tempfile
 
 # W&B
 try:
@@ -289,6 +290,8 @@ def train_trial(config: Dict[str, Any]) -> None:
     
     This is used when running with OptunaSearch directly.
     """
+    from ray import train
+    
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # Load data
@@ -353,6 +356,7 @@ def train_trial(config: Dict[str, Any]) -> None:
     best_grid_acc = 0.0
     eval_interval = config.get("eval_interval", 50)
     use_async = config.get("async_batch", False)
+    checkpoint_interval = config.get("checkpoint_interval", eval_interval)
     
     for epoch in range(1, epochs_per_trial + 1):
         # Train (async or regular)
@@ -372,15 +376,14 @@ def train_trial(config: Dict[str, Any]) -> None:
         
         train_dataset.on_epoch_end()
         
-        # Evaluate
+        # Evaluate and save checkpoint at eval intervals
         if epoch % eval_interval == 0 or epoch == 1:
             val_metrics = evaluate(model, val_loader, device, use_poh=True)
             
             if val_metrics["grid_acc"] > best_grid_acc:
                 best_grid_acc = val_metrics["grid_acc"]
             
-            # Report to Ray Tune
-            session.report({
+            metrics = {
                 "train_loss": train_metrics["loss"],
                 "train_cell_acc": train_metrics["cell_acc"],
                 "train_grid_acc": train_metrics["grid_acc"],
@@ -389,9 +392,23 @@ def train_trial(config: Dict[str, Any]) -> None:
                 "val_grid_acc": val_metrics["grid_acc"],
                 "best_grid_acc": best_grid_acc,
                 "epoch": epoch,
-            })
+            }
+            
+            # Save checkpoint at checkpoint intervals
+            if epoch % checkpoint_interval == 0:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    checkpoint_path = os.path.join(tmpdir, "checkpoint.pt")
+                    torch.save({
+                        "epoch": epoch,
+                        "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "best_grid_acc": best_grid_acc,
+                    }, checkpoint_path)
+                    train.report(metrics, checkpoint=Checkpoint.from_directory(tmpdir))
+            else:
+                train.report(metrics)
         else:
-            session.report({
+            train.report({
                 "train_loss": train_metrics["loss"],
                 "train_cell_acc": train_metrics["cell_acc"],
                 "train_grid_acc": train_metrics["grid_acc"],
@@ -432,6 +449,7 @@ def run_hpo(args):
         "batch_size": args.batch_size,
         "epochs_per_trial": args.epochs_per_trial,
         "eval_interval": args.eval_interval,
+        "checkpoint_interval": args.eval_interval,  # Save checkpoint at eval intervals
         "d_model": 512,
         "n_heads": 8,
         "H_layers": 2,
@@ -493,8 +511,7 @@ def run_hpo(args):
             callbacks=callbacks,
             stop={"epoch": args.epochs_per_trial},
             checkpoint_config=ray.air.CheckpointConfig(
-                checkpoint_frequency=args.eval_interval,
-                num_to_keep=2,
+                num_to_keep=2,  # Keep 2 most recent checkpoints per trial
             ),
         ),
     )
