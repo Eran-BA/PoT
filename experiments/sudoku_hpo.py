@@ -90,7 +90,7 @@ def get_search_space(trial: Trial) -> Dict[str, Any]:
         "L_cycles": trial.suggest_categorical("L_cycles", [4, 8]),
         
         # ACT halting
-        "halt_max_steps": trial.suggest_categorical("halt_max_steps", [2, 4]),
+        "halt_max_steps": trial.suggest_categorical("halt_max_steps", [2, 3, 4]),
         "halt_exploration": trial.suggest_float("halt_exploration", 0.05, 0.15),
         
         # Regularization
@@ -116,7 +116,7 @@ def get_ray_search_space() -> Dict[str, Any]:
         "puzzle_weight_decay": tune.uniform(0.01, 2.0),
         "H_cycles": 2,  # Fixed at 2
         "L_cycles": tune.choice([4, 8]),
-        "halt_max_steps": tune.choice([2, 4]),
+        "halt_max_steps": tune.choice([2, 3, 4]),
         "halt_exploration": tune.uniform(0.05, 0.15),
         "dropout": tune.uniform(0.0, 0.3),
         "beta2": tune.uniform(0.9, 0.999),
