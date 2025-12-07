@@ -115,7 +115,7 @@ def get_ray_search_space() -> Dict[str, Any]:
         "halt_max_steps": tune.randint(1, 5),  # 1-4
         "dropout": tune.uniform(0.0, 0.3),
         "beta2": tune.uniform(0.9, 0.999),
-        "warmup_steps": tune.randint(1, 9) * 500,  # 500-4000 step 500
+        "warmup_steps": tune.choice([500, 1000, 1500, 2000, 2500, 3000, 3500, 4000]),
     }
 
 
