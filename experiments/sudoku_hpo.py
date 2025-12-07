@@ -476,6 +476,8 @@ def run_hpo(args):
     # ASHA scheduler for early stopping
     scheduler = ASHAScheduler(
         time_attr="epoch",
+        metric="best_grid_acc",
+        mode="max",
         max_t=args.epochs_per_trial,
         grace_period=args.grace_period,
         reduction_factor=2,
