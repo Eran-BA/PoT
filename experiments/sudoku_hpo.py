@@ -76,8 +76,8 @@ def get_search_space(trial: Trial) -> Dict[str, Any]:
         # Learning rate (log scale)
         "lr": trial.suggest_float("lr", 1e-5, 1e-3, log=True),
         
-        # Weight decay
-        "weight_decay": trial.suggest_float("weight_decay", 0.01, 2.0),
+        # Weight decay (HRM uses 0.1)
+        "weight_decay": trial.suggest_float("weight_decay", 0.05, 0.5),
         
         # Puzzle embedding learning rate multiplier
         "puzzle_lr_multiplier": trial.suggest_float("puzzle_lr_multiplier", 10.0, 200.0),
@@ -90,7 +90,8 @@ def get_search_space(trial: Trial) -> Dict[str, Any]:
         "L_cycles": trial.suggest_categorical("L_cycles", [4, 8]),
         
         # ACT halting
-        "halt_max_steps": trial.suggest_int("halt_max_steps", 1, 4),
+        "halt_max_steps": trial.suggest_categorical("halt_max_steps", [2, 4]),
+        "halt_exploration": trial.suggest_float("halt_exploration", 0.05, 0.15),
         
         # Regularization
         "dropout": trial.suggest_float("dropout", 0.0, 0.3),
@@ -110,12 +111,13 @@ def get_ray_search_space() -> Dict[str, Any]:
     """Define search space for Ray Tune format."""
     return {
         "lr": tune.loguniform(1e-5, 1e-3),
-        "weight_decay": tune.uniform(0.01, 2.0),
+        "weight_decay": tune.uniform(0.05, 0.5),
         "puzzle_lr_multiplier": tune.uniform(10.0, 200.0),
         "puzzle_weight_decay": tune.uniform(0.01, 2.0),
         "H_cycles": 2,  # Fixed at 2
         "L_cycles": tune.choice([4, 8]),
-        "halt_max_steps": tune.randint(1, 5),  # 1-4
+        "halt_max_steps": tune.choice([2, 4]),
+        "halt_exploration": tune.uniform(0.05, 0.15),
         "dropout": tune.uniform(0.0, 0.3),
         "beta2": tune.uniform(0.9, 0.999),
         "warmup_steps": tune.choice([500, 1000, 1500, 2000, 2500, 3000, 3500, 4000]),
@@ -173,6 +175,7 @@ class SudokuTrainable(Trainable):
             num_puzzles=1,
             hrm_grad_style=config.get("hrm_grad_style", True),
             halt_max_steps=config.get("halt_max_steps", 4),
+            halt_exploration_prob=config.get("halt_exploration", 0.1),
         ).to(self.device)
         
         # Optimizers
@@ -316,6 +319,7 @@ def train_trial(config: Dict[str, Any]) -> None:
         num_puzzles=1,
         hrm_grad_style=config.get("hrm_grad_style", True),
         halt_max_steps=config.get("halt_max_steps", 4),
+        halt_exploration_prob=config.get("halt_exploration", 0.1),
     ).to(device)
     
     # Optimizers
