@@ -493,8 +493,8 @@ class HybridHRMBase(nn.Module):
             return fresh_state
     
     def reset_async_carry(
-        self, 
-        carry: PoTAsyncCarry, 
+        self,
+        carry: PoTAsyncCarry,
         halted_mask: torch.Tensor,
         new_input: torch.Tensor,
         new_labels: torch.Tensor,
@@ -509,43 +509,67 @@ class HybridHRMBase(nn.Module):
         - Reset step counter to 0
         - Replace input/labels with new data
         
+        Handles partial batches: if new_input has fewer samples than halted,
+        only the first N halted samples are replaced, rest stay halted.
+        
         Args:
             carry: Current carry state
             halted_mask: [B] bool tensor indicating which samples halted
-            new_input: [B, seq_len] new input data for halted samples
-            new_labels: [B, seq_len] new labels for halted samples
+            new_input: [N, seq_len] new input data (N <= num_halted)
+            new_labels: [N, seq_len] new labels (N <= num_halted)
             device: Device
             
         Returns:
             Updated carry with halted samples reset
         """
         B = carry.z_H.size(0)
+        N = new_input.size(0)  # Number of new samples available
         
-        # Reset hidden states for halted samples
+        # Get indices of halted samples
+        halted_indices = halted_mask.nonzero(as_tuple=True)[0]
+        num_halted = halted_indices.size(0)
+        
+        # Only replace up to N samples (handle partial batches)
+        num_to_replace = min(N, num_halted)
+        
+        # Create mask for samples that will be replaced (subset of halted)
+        replace_mask = torch.zeros(B, dtype=torch.bool, device=device)
+        if num_to_replace > 0:
+            replace_indices = halted_indices[:num_to_replace]
+            replace_mask[replace_indices] = True
+        
+        # Samples that stay halted (halted but not enough new data to replace)
+        still_halted_mask = halted_mask & ~replace_mask
+        
+        # Reset hidden states for replaced samples
         fresh_z_H = self.H_init.view(1, 1, -1).expand(B, self.seq_len, -1)
         fresh_z_L = self.L_init.view(1, 1, -1).expand(B, self.seq_len, -1)
         
         # Expand mask for broadcasting
-        mask_expanded = halted_mask.view(B, 1, 1)
+        mask_expanded = replace_mask.view(B, 1, 1)
         
         new_z_H = torch.where(mask_expanded, fresh_z_H, carry.z_H)
         new_z_L = torch.where(mask_expanded, fresh_z_L, carry.z_L)
         
-        # Reset steps for halted samples
-        new_steps = torch.where(halted_mask, torch.zeros_like(carry.steps), carry.steps)
+        # Reset steps for replaced samples
+        new_steps = torch.where(replace_mask, torch.zeros_like(carry.steps), carry.steps)
         
-        # Replace input/labels for halted samples
-        mask_seq = halted_mask.view(B, 1)
-        new_current_input = torch.where(mask_seq, new_input, carry.current_input)
-        new_current_labels = torch.where(mask_seq, new_labels, carry.current_labels)
+        # Replace input/labels for replaced samples
+        # new_input/new_labels are [N, seq_len], need to scatter into [B, seq_len]
+        new_current_input = carry.current_input.clone()
+        new_current_labels = carry.current_labels.clone()
+        if num_to_replace > 0:
+            replace_indices = halted_indices[:num_to_replace]
+            new_current_input[replace_indices] = new_input[:num_to_replace]
+            new_current_labels[replace_indices] = new_labels[:num_to_replace]
         
-        # Reset pointer states for halted samples
+        # Reset pointer states for replaced samples
         fresh_L_ptr = self.L_level.pointer_controller.init_state(B, device)
         fresh_H_ptr = self.H_level.pointer_controller.init_state(B, device)
         
         # Handle different pointer state formats
-        new_L_ptr = self._reset_ptr_state(carry.L_ptr_state, fresh_L_ptr, halted_mask)
-        new_H_ptr = self._reset_ptr_state(carry.H_ptr_state, fresh_H_ptr, halted_mask)
+        new_L_ptr = self._reset_ptr_state(carry.L_ptr_state, fresh_L_ptr, replace_mask)
+        new_H_ptr = self._reset_ptr_state(carry.H_ptr_state, fresh_H_ptr, replace_mask)
         
         return PoTAsyncCarry(
             z_H=new_z_H,
@@ -553,7 +577,7 @@ class HybridHRMBase(nn.Module):
             L_ptr_state=new_L_ptr,
             H_ptr_state=new_H_ptr,
             steps=new_steps,
-            halted=torch.zeros(B, dtype=torch.bool, device=device),  # Reset halted flag
+            halted=still_halted_mask,  # Samples that are still halted (waiting for data)
             current_input=new_current_input,
             current_labels=new_current_labels,
         )
