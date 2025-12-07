@@ -308,24 +308,40 @@ def train_trial(config: Dict[str, Any]) -> None:
     from src.pot.models import HybridPoHHRMSolver
     from src.training import train_epoch, train_epoch_async, evaluate
     
+    # Create trial name for logging
+    trial_name = f"trial_lr{config['lr']:.2e}_L{config['L_cycles']}_async{config.get('async_batch', False)}"
+    
+    # Setup CSV logging (always works, fallback if wandb fails)
+    import csv
+    from datetime import datetime
+    log_dir = config.get("checkpoint_dir", "/tmp/sudoku_hpo_checkpoints")
+    os.makedirs(log_dir, exist_ok=True)
+    csv_path = os.path.join(log_dir, f"{trial_name}_metrics.csv")
+    csv_file = open(csv_path, "w", newline="")
+    csv_writer = csv.DictWriter(csv_file, fieldnames=[
+        "epoch", "train_loss", "train_cell_acc", "train_grid_acc",
+        "val_loss", "val_cell_acc", "val_grid_acc", "best_grid_acc", "timestamp"
+    ])
+    csv_writer.writeheader()
+    print(f"📊 CSV logging to: {csv_path}")
+    
     # Initialize wandb for this trial (explicit logging)
     import wandb
     wandb_project = config.get("wandb_project", "sudoku-hpo")
     wandb_run = None
     if wandb_project:
         try:
-            # Create a unique run name based on config
-            run_name = f"trial_lr{config['lr']:.2e}_L{config['L_cycles']}"
             wandb_run = wandb.init(
                 project=wandb_project,
                 group=config.get("wandb_group", "hpo"),
-                name=run_name,
+                name=trial_name,
                 config={k: v for k, v in config.items() 
                        if not k.endswith("_ref") and k not in ["project_root"]},
                 reinit=True,
             )
+            print(f"✓ W&B initialized: {wandb_project}/{trial_name}")
         except Exception as e:
-            print(f"Warning: Could not initialize wandb: {e}")
+            print(f"⚠️ W&B init failed (using CSV only): {e}")
             wandb_run = None
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -419,10 +435,7 @@ def train_trial(config: Dict[str, Any]) -> None:
                 best_grid_acc = val_metrics["grid_acc"]
                 
                 # Save best model checkpoint
-                checkpoint_dir = config.get("checkpoint_dir", "/tmp/sudoku_hpo_checkpoints")
-                os.makedirs(checkpoint_dir, exist_ok=True)
-                trial_name = f"trial_lr{config['lr']:.2e}_L{config['L_cycles']}"
-                checkpoint_path = os.path.join(checkpoint_dir, f"{trial_name}_best.pt")
+                checkpoint_path = os.path.join(log_dir, f"{trial_name}_best.pt")
                 
                 torch.save({
                     "epoch": epoch,
@@ -457,6 +470,11 @@ def train_trial(config: Dict[str, Any]) -> None:
             # Report metrics to Ray Tune
             session.report(metrics)
             
+            # Log to CSV (always works)
+            csv_row = {**metrics, "timestamp": datetime.now().isoformat()}
+            csv_writer.writerow(csv_row)
+            csv_file.flush()
+            
             # Log to wandb explicitly
             if wandb_run is not None:
                 wandb.log(metrics)
@@ -471,11 +489,19 @@ def train_trial(config: Dict[str, Any]) -> None:
             }
             session.report(metrics)
             
+            # Log to CSV (always works)
+            csv_row = {**metrics, "val_loss": "", "val_cell_acc": "", "val_grid_acc": "", "timestamp": datetime.now().isoformat()}
+            csv_writer.writerow(csv_row)
+            csv_file.flush()
+            
             # Log to wandb explicitly
             if wandb_run is not None:
                 wandb.log(metrics)
     
-    # Finish wandb run
+    # Cleanup
+    csv_file.close()
+    print(f"✓ Trial complete. Metrics saved to: {csv_path}")
+    
     if wandb_run is not None:
         wandb.finish()
 
