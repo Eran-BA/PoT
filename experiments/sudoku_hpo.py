@@ -61,10 +61,9 @@ except ImportError:
     HAS_WANDB = False
     print("Warning: wandb not installed. Install with: pip install wandb")
 
-# Project imports
-from src.data import SudokuDataset, download_sudoku_dataset
-from src.pot.models import HybridPoHHRMSolver
-from src.training import train_epoch, train_epoch_async, evaluate
+# Project imports - only download_sudoku_dataset at top level
+# Other imports happen inside train_trial for Ray workers
+from src.data import download_sudoku_dataset
 
 
 # ============================================================================
@@ -290,7 +289,27 @@ def train_trial(config: Dict[str, Any]) -> None:
     
     This is used when running with OptunaSearch directly.
     """
+    # Import everything inside the function for Ray workers
+    import os
+    import sys
+    import math
+    import tempfile
+    
+    import torch
+    import torch.nn.functional as F
+    from torch.utils.data import DataLoader
     from ray import train
+    from ray.train import Checkpoint
+    
+    # Add project root to path
+    project_root = config.get("project_root")
+    if project_root and project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    
+    # Now import project modules
+    from src.data import SudokuDataset
+    from src.pot.models import HybridPoHHRMSolver
+    from src.training import train_epoch, train_epoch_async, evaluate
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
