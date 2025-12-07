@@ -445,16 +445,6 @@ def train_trial(config: Dict[str, Any]) -> None:
                     "config": {k: v for k, v in config.items() 
                              if not k.endswith("_ref") and k not in ["project_root"]},
                 }, checkpoint_path)
-                
-                # Upload best model to wandb as artifact
-                if wandb_run is not None:
-                    artifact = wandb.Artifact(
-                        name=f"best-model-{trial_name}",
-                        type="model",
-                        description=f"Best model checkpoint at epoch {epoch} with grid_acc={best_grid_acc:.2f}%",
-                    )
-                    artifact.add_file(checkpoint_path)
-                    wandb.log_artifact(artifact)
             
             metrics = {
                 "train_loss": train_metrics["loss"],
@@ -502,7 +492,18 @@ def train_trial(config: Dict[str, Any]) -> None:
     csv_file.close()
     print(f"✓ Trial complete. Metrics saved to: {csv_path}")
     
+    # Upload final best model to wandb as artifact (only once at end)
     if wandb_run is not None:
+        checkpoint_path = os.path.join(log_dir, f"{trial_name}_best.pt")
+        if os.path.exists(checkpoint_path):
+            artifact = wandb.Artifact(
+                name=f"best-model-{trial_name}",
+                type="model",
+                description=f"Final best model with grid_acc={best_grid_acc:.2f}%",
+            )
+            artifact.add_file(checkpoint_path)
+            wandb.log_artifact(artifact)
+            print(f"✓ Uploaded best model artifact to W&B: {best_grid_acc:.2f}%")
         wandb.finish()
 
 
