@@ -527,6 +527,40 @@ def run_hpo(args):
         }, f, indent=2)
     print(f"\nBest config saved to: {best_config_path}")
     
+    # Upload best checkpoint to W&B
+    if HAS_WANDB and args.wandb_project:
+        try:
+            # Find the best checkpoint
+            best_checkpoint_dir = best_result.checkpoint
+            if best_checkpoint_dir:
+                checkpoint_path = best_checkpoint_dir.to_directory()
+                
+                # Initialize W&B run for artifact upload
+                run = wandb.init(
+                    project=args.wandb_project,
+                    name=f"{args.study_name}_best_model",
+                    job_type="model-upload",
+                )
+                
+                # Create and log artifact
+                artifact = wandb.Artifact(
+                    name=f"sudoku-hpo-best-{args.study_name}",
+                    type="model",
+                    description=f"Best model from HPO study {args.study_name}",
+                    metadata={
+                        "best_grid_acc": best_result.metrics["best_grid_acc"],
+                        "config": {k: v for k, v in best_result.config.items() 
+                                  if not k.startswith("_") and k not in ["data_dir"]},
+                    }
+                )
+                artifact.add_dir(checkpoint_path)
+                run.log_artifact(artifact)
+                wandb.finish()
+                
+                print(f"✓ Best model uploaded to W&B: {args.wandb_project}/{args.study_name}_best_model")
+        except Exception as e:
+            print(f"Warning: Could not upload checkpoint to W&B: {e}")
+    
     return results
 
 
