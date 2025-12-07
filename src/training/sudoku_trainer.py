@@ -9,6 +9,7 @@ Year: 2025
 License: Apache 2.0
 """
 
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -16,6 +17,12 @@ from typing import Dict, Any, Optional
 from tqdm import tqdm
 
 from src.pot.core.sudoku_loss import sudoku_constraint_loss
+
+
+def _is_main_process() -> bool:
+    """Check if this is the main process (rank 0 or non-distributed)."""
+    rank = int(os.environ.get('RANK', 0))
+    return rank == 0
 
 
 class InfiniteDataLoader:
@@ -122,7 +129,8 @@ def train_epoch_async(
     completed_samples = 0
     forward_calls = 0
     
-    pbar = tqdm(total=samples_per_epoch, desc=f"Epoch {epoch} (async)")
+    pbar = tqdm(total=samples_per_epoch, desc=f"Epoch {epoch} (async)", 
+                 disable=not _is_main_process())
     
     while completed_samples < samples_per_epoch:
         # Get new batch for replacing halted samples
@@ -270,7 +278,7 @@ def train_epoch(
     total_grids = 0
     total_steps = 0
     
-    pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
+    pbar = tqdm(dataloader, desc=f"Epoch {epoch}", disable=not _is_main_process())
     for batch in pbar:
         inp = batch['input'].to(device)
         label = batch['label'].to(device)
@@ -382,7 +390,7 @@ def evaluate(
     total_grids = 0
     
     with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Evaluating"):
+        for batch in tqdm(dataloader, desc="Evaluating", disable=not _is_main_process()):
             inp = batch['input'].to(device)
             label = batch['label'].to(device)
             puzzle_ids = batch['puzzle_id'].to(device)

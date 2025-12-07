@@ -440,7 +440,13 @@ def main():
         puzzle_optimizer = None
     
     # Learning rate scheduler with warmup (HRM-style cosine with min ratio)
-    total_steps = args.epochs * len(train_loader)
+    # In DDP, we want same total steps as single GPU training
+    if distributed:
+        # Use full dataset size / batch_size, not divided by world_size
+        steps_per_epoch = (len(train_dataset) + args.batch_size - 1) // args.batch_size
+    else:
+        steps_per_epoch = len(train_loader)
+    total_steps = args.epochs * steps_per_epoch
     min_ratio = args.lr_min_ratio
     
     def lr_lambda(step):
@@ -483,6 +489,13 @@ def main():
         if args.model != 'hybrid':
             print_rank0("Note: Async batching only supported for hybrid model")
     
+    # For async batching, use FULL dataset size (not divided by world_size)
+    # This ensures each GPU processes the same effective samples as single GPU
+    if distributed:
+        full_dataset_size = len(train_dataset)
+    else:
+        full_dataset_size = len(train_loader) * args.batch_size
+    
     for epoch in range(1, args.epochs + 1):
         # Set epoch for distributed sampler (ensures proper shuffling)
         if train_sampler is not None:
@@ -492,12 +505,13 @@ def main():
         
         if use_async:
             # HRM-style async batching: halted samples replaced immediately
+            # Use full dataset size so DDP trains same amount as single GPU
             train_metrics = train_epoch_async(
                 model, train_loader, optimizer, puzzle_optimizer, 
                 device, epoch, use_poh=use_poh, debug=do_debug,
                 scheduler=scheduler, puzzle_scheduler=puzzle_scheduler,
                 constraint_weight=args.constraint_weight,
-                samples_per_epoch=len(train_loader) * args.batch_size,
+                samples_per_epoch=full_dataset_size,
             )
         else:
             # Standard mini-batch training
