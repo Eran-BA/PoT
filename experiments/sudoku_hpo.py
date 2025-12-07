@@ -596,7 +596,8 @@ def main():
     # Study
     parser.add_argument('--study-name', type=str, 
                        default=f'sudoku_hpo_{datetime.now().strftime("%Y%m%d_%H%M%S")}')
-    parser.add_argument('--output-dir', type=str, default='experiments/hpo_results')
+    parser.add_argument('--output-dir', type=str, default=None,
+                       help='Output directory (default: <workspace>/experiments/hpo_results)')
     parser.add_argument('--resume', action='store_true',
                        help='Resume existing study')
     parser.add_argument('--seed', type=int, default=42)
@@ -606,6 +607,13 @@ def main():
                        help='W&B project name (empty to disable)')
     
     args = parser.parse_args()
+    
+    # Set default output dir to absolute path
+    if args.output_dir is None:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        args.output_dir = os.path.join(script_dir, 'hpo_results')
+    else:
+        args.output_dir = os.path.abspath(args.output_dir)
     
     # Create output dir
     os.makedirs(args.output_dir, exist_ok=True)
