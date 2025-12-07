@@ -37,8 +37,58 @@ import argparse
 import json
 import numpy as np
 import torch
+import torch.distributed as dist
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim.optimizer import Optimizer
+
+
+# ========== Distributed Training Utilities ==========
+
+def is_distributed() -> bool:
+    """Check if running in distributed mode (launched with torchrun)."""
+    return 'RANK' in os.environ and 'WORLD_SIZE' in os.environ
+
+def get_rank() -> int:
+    """Get global rank (0 if not distributed)."""
+    if is_distributed():
+        return int(os.environ['RANK'])
+    return 0
+
+def get_local_rank() -> int:
+    """Get local rank for device assignment (0 if not distributed)."""
+    if is_distributed():
+        return int(os.environ['LOCAL_RANK'])
+    return 0
+
+def get_world_size() -> int:
+    """Get world size (1 if not distributed)."""
+    if is_distributed():
+        return int(os.environ['WORLD_SIZE'])
+    return 1
+
+def is_main_process() -> bool:
+    """Check if this is the main process (rank 0)."""
+    return get_rank() == 0
+
+def setup_distributed():
+    """Initialize distributed training."""
+    if not is_distributed():
+        return
+    
+    dist.init_process_group(backend='nccl')
+    torch.cuda.set_device(get_local_rank())
+
+def cleanup_distributed():
+    """Clean up distributed training."""
+    if is_distributed():
+        dist.destroy_process_group()
+
+def print_rank0(*args, **kwargs):
+    """Print only from rank 0."""
+    if is_main_process():
+        print(*args, **kwargs)
 
 # Import from refactored modules
 from src.data import SudokuDataset, download_sudoku_dataset
@@ -182,17 +232,36 @@ def main():
     
     args = parser.parse_args()
     
-    # Setup
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Device: {device}")
-    if torch.cuda.is_available():
-        print(f"GPU: {torch.cuda.get_device_name(0)}")
+    # Setup distributed training (if launched with torchrun)
+    setup_distributed()
+    distributed = is_distributed()
+    local_rank = get_local_rank()
+    world_size = get_world_size()
     
-    # Download dataset if needed
+    # Setup device
+    if distributed:
+        device = torch.device(f'cuda:{local_rank}')
+        torch.cuda.set_device(device)
+    else:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # Set seed (different per rank for proper shuffling, but reproducible)
+    seed = args.seed + get_rank()
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    
+    print_rank0(f"Device: {device}")
+    if distributed:
+        print_rank0(f"Distributed training: {world_size} GPUs")
+    if torch.cuda.is_available():
+        print_rank0(f"GPU: {torch.cuda.get_device_name(local_rank)}")
+    
+    # Download dataset if needed (only rank 0, then sync)
     if args.download:
-        download_sudoku_dataset(args.data_dir, args.subsample, args.num_aug)
+        if is_main_process():
+            download_sudoku_dataset(args.data_dir, args.subsample, args.num_aug)
+        if distributed:
+            dist.barrier()  # Wait for rank 0 to finish downloading
     
     # Load data
     train_dataset = SudokuDataset(args.data_dir, 'train')
@@ -201,21 +270,35 @@ def main():
     # Fall back to test if val doesn't exist
     try:
         val_dataset = SudokuDataset(args.data_dir, 'val')
-        print("Using VAL split (held-out training puzzles) for evaluation")
+        print_rank0("Using VAL split (held-out training puzzles) for evaluation")
     except FileNotFoundError:
         val_dataset = SudokuDataset(args.data_dir, 'test')
-        print("Using TEST split (422k new puzzles) for evaluation")
+        print_rank0("Using TEST split (422k new puzzles) for evaluation")
     
     # For async batching, drop_last=True ensures consistent batch sizes
     # (required because carry state has fixed batch dimension)
     drop_last = args.async_batch and args.halt_max_steps > 1 and args.model == 'hybrid'
     
+    # Use DistributedSampler for multi-GPU training
+    train_sampler = DistributedSampler(train_dataset, shuffle=True) if distributed else None
+    val_sampler = DistributedSampler(val_dataset, shuffle=False) if distributed else None
+    
     train_loader = DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4,
-        drop_last=drop_last
+        train_dataset, 
+        batch_size=args.batch_size, 
+        shuffle=(train_sampler is None),  # Only shuffle if not using sampler
+        sampler=train_sampler,
+        num_workers=4,
+        drop_last=drop_last,
+        pin_memory=True,
     )
     val_loader = DataLoader(
-        val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4
+        val_dataset, 
+        batch_size=args.batch_size, 
+        shuffle=False, 
+        sampler=val_sampler,
+        num_workers=4,
+        pin_memory=True,
     )
     
     # Single shared puzzle embedding like HRM
@@ -252,17 +335,17 @@ def main():
             halt_max_steps=args.halt_max_steps,
             halt_exploration_prob=args.halt_exploration_prob,
         ).to(device)
-        print(f"Hybrid model: H_cycles={args.H_cycles}, L_cycles={args.L_cycles}")
-        print(f"H_layers={args.H_layers}, L_layers={args.L_layers}, dropout={args.dropout}")
-        print(f"Gradient style: {'HRM (last L+H only)' if args.hrm_grad_style else 'Full (last H_cycle)'}")
+        print_rank0(f"Hybrid model: H_cycles={args.H_cycles}, L_cycles={args.L_cycles}")
+        print_rank0(f"H_layers={args.H_layers}, L_layers={args.L_layers}, dropout={args.dropout}")
+        print_rank0(f"Gradient style: {'HRM (last L+H only)' if args.hrm_grad_style else 'Full (last H_cycle)'}")
         if args.halt_max_steps > 1:
-            print(f"ACT enabled: halt_max_steps={args.halt_max_steps}, exploration={args.halt_exploration_prob}")
+            print_rank0(f"ACT enabled: halt_max_steps={args.halt_max_steps}, exploration={args.halt_exploration_prob}")
             if args.async_batch:
-                print(f"Async batching enabled (HRM-style)")
+                print_rank0(f"Async batching enabled (HRM-style)")
         else:
-            print(f"ACT disabled (halt_max_steps=1)")
+            print_rank0(f"ACT disabled (halt_max_steps=1)")
             if args.async_batch:
-                print(f"WARNING: --async-batch requires --halt-max-steps > 1. Disabling async batching.")
+                print_rank0(f"WARNING: --async-batch requires --halt-max-steps > 1. Disabling async batching.")
     else:
         model = BaselineSudokuSolver(
             d_model=args.d_model,
@@ -272,31 +355,41 @@ def main():
             dropout=args.dropout,
         ).to(device)
     
+    # Wrap model in DDP for distributed training
+    if distributed:
+        model = DDP(model, device_ids=[local_rank], find_unused_parameters=False)
+    
     param_count = sum(p.numel() for p in model.parameters())
-    print(f"\nModel: {args.model.upper()}")
-    print(f"Parameters: {param_count:,} ({param_count/1e6:.2f}M)")
+    print_rank0(f"\nModel: {args.model.upper()}")
+    print_rank0(f"Parameters: {param_count:,} ({param_count/1e6:.2f}M)")
     
     # Load checkpoint if specified
     if args.checkpoint:
-        print(f"\nLoading checkpoint: {args.checkpoint}")
+        print_rank0(f"\nLoading checkpoint: {args.checkpoint}")
         checkpoint = torch.load(args.checkpoint, map_location=device)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        print(f"  Loaded from epoch {checkpoint.get('epoch', '?')}")
-        print(f"  Previous accuracy: {checkpoint.get('test_grid_acc', '?')}%")
+        # Handle DDP wrapped model
+        state_dict = checkpoint['model_state_dict']
+        if distributed:
+            model.module.load_state_dict(state_dict)
+        else:
+            model.load_state_dict(state_dict)
+        print_rank0(f"  Loaded from epoch {checkpoint.get('epoch', '?')}")
+        print_rank0(f"  Previous accuracy: {checkpoint.get('test_grid_acc', '?')}%")
     
     # Eval-only mode
     if args.eval_only:
-        print(f"\n{'='*60}")
-        print("EVALUATION MODE")
-        print(f"{'='*60}")
+        print_rank0(f"\n{'='*60}")
+        print_rank0("EVALUATION MODE")
+        print_rank0(f"{'='*60}")
         
         val_metrics = evaluate(model, val_loader, device, use_poh=use_poh)
         
-        print(f"\nTest Results:")
-        print(f"  Loss: {val_metrics['loss']:.4f}")
-        print(f"  Cell Accuracy: {val_metrics['cell_acc']:.2f}%")
-        print(f"  Grid Accuracy: {val_metrics['grid_acc']:.2f}%")
-        print(f"\n{'='*60}")
+        print_rank0(f"\nTest Results:")
+        print_rank0(f"  Loss: {val_metrics['loss']:.4f}")
+        print_rank0(f"  Cell Accuracy: {val_metrics['cell_acc']:.2f}%")
+        print_rank0(f"  Grid Accuracy: {val_metrics['grid_acc']:.2f}%")
+        print_rank0(f"\n{'='*60}")
+        cleanup_distributed()
         return
     
     # Optimizers
@@ -305,8 +398,8 @@ def main():
     
     # Validate optimizer choices
     if args.optimizer == 'adam_atan2' and not HAS_ADAM_ATAN2:
-        print("⚠️  adam_atan2 not installed. Install with: pip install adam-atan2")
-        print("    Falling back to AdamW")
+        print_rank0("⚠️  adam_atan2 not installed. Install with: pip install adam-atan2")
+        print_rank0("    Falling back to AdamW")
         args.optimizer = 'adamw'
     
     def create_optimizer(params, lr, wd, opt_type, is_puzzle=False):
@@ -318,8 +411,11 @@ def main():
         else:  # adamw
             return torch.optim.AdamW(params, lr=lr, weight_decay=wd, betas=betas)
     
+    # Get underlying model for parameter access (handles DDP wrapping)
+    base_model = model.module if distributed else model
+    
     if use_poh:
-        puzzle_params = list(model.puzzle_emb.parameters())
+        puzzle_params = list(base_model.puzzle_emb.parameters())
         model_params = [p for p in model.parameters() if p not in set(puzzle_params)]
         
         optimizer = create_optimizer(
@@ -331,11 +427,11 @@ def main():
         
         opt_name = args.optimizer.upper()
         puzzle_opt_name = args.puzzle_optimizer.upper()
-        print(f"\nOptimizer: {opt_name} (betas={betas})")
-        print(f"  Model params: {sum(p.numel() for p in model_params):,}, "
+        print_rank0(f"\nOptimizer: {opt_name} (betas={betas})")
+        print_rank0(f"  Model params: {sum(p.numel() for p in model_params):,}, "
               f"lr={args.lr}, wd={args.weight_decay}")
-        print(f"Puzzle Optimizer: {puzzle_opt_name}")
-        print(f"  Puzzle params: {sum(p.numel() for p in puzzle_params):,}, "
+        print_rank0(f"Puzzle Optimizer: {puzzle_opt_name}")
+        print_rank0(f"  Puzzle params: {sum(p.numel() for p in puzzle_params):,}, "
               f"lr={puzzle_lr} ({args.puzzle_lr_multiplier}x), wd={args.puzzle_weight_decay}")
     else:
         optimizer = create_optimizer(
@@ -360,31 +456,38 @@ def main():
         if puzzle_optimizer else None
     )
     
-    print(f"\n{'='*60}")
-    print(f"Training {args.model.upper()} Sudoku Solver")
-    print(f"{'='*60}")
-    print(f"Epochs: {args.epochs}, Batch size: {args.batch_size}")
-    print(f"Optimizer: {args.optimizer}, Puzzle optimizer: {args.puzzle_optimizer}")
-    print(f"LR: {args.lr}, Weight decay: {args.weight_decay}, Betas: {betas}")
-    print(f"Warmup: {args.warmup_steps} steps, LR min ratio: {args.lr_min_ratio}")
-    print(f"Total steps: {total_steps}")
+    print_rank0(f"\n{'='*60}")
+    print_rank0(f"Training {args.model.upper()} Sudoku Solver")
+    print_rank0(f"{'='*60}")
+    print_rank0(f"Epochs: {args.epochs}, Batch size: {args.batch_size}")
+    if distributed:
+        print_rank0(f"Distributed: {world_size} GPUs, effective batch size: {args.batch_size * world_size}")
+    print_rank0(f"Optimizer: {args.optimizer}, Puzzle optimizer: {args.puzzle_optimizer}")
+    print_rank0(f"LR: {args.lr}, Weight decay: {args.weight_decay}, Betas: {betas}")
+    print_rank0(f"Warmup: {args.warmup_steps} steps, LR min ratio: {args.lr_min_ratio}")
+    print_rank0(f"Total steps: {total_steps}")
     if use_poh:
-        print(f"R={args.R}, T={args.T}, max_halt={args.max_halt}")
+        print_rank0(f"R={args.R}, T={args.T}, max_halt={args.max_halt}")
     
     best_grid_acc = 0
     results = []
     
-    os.makedirs(args.output, exist_ok=True)
+    if is_main_process():
+        os.makedirs(args.output, exist_ok=True)
     
     # Check if async batching is valid
     use_async = args.async_batch and args.halt_max_steps > 1 and args.model == 'hybrid'
     if args.async_batch and not use_async:
         if args.halt_max_steps <= 1:
-            print("Note: Async batching disabled because halt_max_steps <= 1")
+            print_rank0("Note: Async batching disabled because halt_max_steps <= 1")
         if args.model != 'hybrid':
-            print("Note: Async batching only supported for hybrid model")
+            print_rank0("Note: Async batching only supported for hybrid model")
     
     for epoch in range(1, args.epochs + 1):
+        # Set epoch for distributed sampler (ensures proper shuffling)
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
+        
         do_debug = args.debug and (epoch == 1 or epoch % args.debug_interval == 0)
         
         if use_async:
@@ -412,10 +515,10 @@ def main():
         if epoch % args.eval_interval == 0 or epoch == 1:
             val_metrics = evaluate(model, val_loader, device, use_poh=use_poh)
             
-            print(f"\nEpoch {epoch}/{args.epochs}")
-            print(f"  Train: Loss={train_metrics['loss']:.4f}, "
+            print_rank0(f"\nEpoch {epoch}/{args.epochs}")
+            print_rank0(f"  Train: Loss={train_metrics['loss']:.4f}, "
                   f"Cell={train_metrics['cell_acc']:.2f}%, Grid={train_metrics['grid_acc']:.2f}%")
-            print(f"  Test:  Loss={val_metrics['loss']:.4f}, "
+            print_rank0(f"  Test:  Loss={val_metrics['loss']:.4f}, "
                   f"Cell={val_metrics['cell_acc']:.2f}%, Grid={val_metrics['grid_acc']:.2f}%")
             
             results.append({
@@ -428,38 +531,45 @@ def main():
                 'test_grid_acc': val_metrics['grid_acc'],
             })
             
-            # Save best model
+            # Save best model (only rank 0)
             if val_metrics['grid_acc'] > best_grid_acc:
                 best_grid_acc = val_metrics['grid_acc']
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    'test_grid_acc': best_grid_acc,
-                }, os.path.join(args.output, f'{args.model}_best.pt'))
-                print(f"  ✓ New best: {best_grid_acc:.2f}%")
+                if is_main_process():
+                    # Get state dict from underlying model (handles DDP)
+                    state_dict = base_model.state_dict()
+                    torch.save({
+                        'epoch': epoch,
+                        'model_state_dict': state_dict,
+                        'test_grid_acc': best_grid_acc,
+                    }, os.path.join(args.output, f'{args.model}_best.pt'))
+                print_rank0(f"  ✓ New best: {best_grid_acc:.2f}%")
             
             # Check for near-perfect accuracy
             if train_metrics['grid_acc'] >= 99.5:
-                print(f"\n🎉 Reached 99.5% training accuracy!")
+                print_rank0(f"\n🎉 Reached 99.5% training accuracy!")
     
     # Final results
-    print(f"\n{'='*60}")
-    print("FINAL RESULTS")
-    print(f"{'='*60}")
-    print(f"Best Test Grid Accuracy: {best_grid_acc:.2f}%")
-    print(f"HRM Paper Target: 55%")
+    print_rank0(f"\n{'='*60}")
+    print_rank0("FINAL RESULTS")
+    print_rank0(f"{'='*60}")
+    print_rank0(f"Best Test Grid Accuracy: {best_grid_acc:.2f}%")
+    print_rank0(f"HRM Paper Target: 55%")
     
-    # Save results
-    with open(os.path.join(args.output, f'{args.model}_results.json'), 'w') as f:
-        json.dump({
-            'model': args.model,
-            'parameters': param_count,
-            'best_grid_acc': best_grid_acc,
-            'config': vars(args),
-            'history': results,
-        }, f, indent=2)
+    # Save results (only rank 0)
+    if is_main_process():
+        with open(os.path.join(args.output, f'{args.model}_results.json'), 'w') as f:
+            json.dump({
+                'model': args.model,
+                'parameters': param_count,
+                'best_grid_acc': best_grid_acc,
+                'config': vars(args),
+                'history': results,
+            }, f, indent=2)
     
-    print(f"\n💾 Results saved to: {args.output}")
+    print_rank0(f"\n💾 Results saved to: {args.output}")
+    
+    # Clean up distributed training
+    cleanup_distributed()
 
 
 if __name__ == '__main__':
