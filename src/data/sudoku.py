@@ -155,7 +155,9 @@ class SudokuDataset(Dataset):
     def on_epoch_end(self):
         """Shuffle puzzle order for next epoch."""
         if self.split == 'train':
-            np.random.shuffle(self._epoch_indices)
+            # Use permutation instead of shuffle to handle read-only arrays
+            # (e.g., when dataset is shared via Ray object store)
+            self._epoch_indices = np.random.permutation(self._epoch_indices)
 
 
 def download_sudoku_dataset(
