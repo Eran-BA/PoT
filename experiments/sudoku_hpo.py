@@ -614,6 +614,72 @@ def run_hpo(args):
     
     # Callbacks
     callbacks = []
+    
+    # Local HPO progress logger (always enabled)
+    from ray.tune import Callback
+    
+    class HPOProgressCallback(Callback):
+        """Logs HPO progress locally every N trial updates."""
+        
+        def __init__(self, output_dir: str, log_interval: int = 10):
+            self.output_dir = output_dir
+            self.log_interval = log_interval
+            self.update_count = 0
+        
+        def on_trial_result(self, iteration, trials, trial, result, **info):
+            self.update_count += 1
+            
+            if self.update_count % self.log_interval != 0:
+                return
+            
+            # Collect all trial results
+            trial_data = []
+            for t in trials:
+                if t.last_result:
+                    trial_data.append({
+                        "trial_id": t.trial_id[:10],
+                        "status": t.status,
+                        "epoch": t.last_result.get("epoch", 0),
+                        "best_grid_acc": t.last_result.get("best_grid_acc", 0),
+                        "val_grid_acc": t.last_result.get("val_grid_acc", 0),
+                        "lr": t.config.get("lr", 0),
+                        "L_cycles": t.config.get("L_cycles", 0),
+                    })
+            
+            if not trial_data:
+                return
+            
+            # Sort by best_grid_acc
+            trial_data.sort(key=lambda x: x["best_grid_acc"], reverse=True)
+            
+            # Print summary
+            print(f"\n{'='*70}")
+            print(f"HPO PROGRESS (update {self.update_count})")
+            print(f"{'='*70}")
+            print(f"{'Trial':<12} {'Status':<12} {'Epoch':<8} {'Best%':<10} {'Val%':<10} {'LR':<12} {'L_cyc':<6}")
+            print("-" * 70)
+            for td in trial_data[:8]:
+                print(f"{td['trial_id']:<12} {td['status']:<12} {td['epoch']:<8} "
+                      f"{td['best_grid_acc']:<10.2f} {td['val_grid_acc']:<10.2f} "
+                      f"{td['lr']:<12.2e} {td['L_cycles']:<6}")
+            
+            if trial_data:
+                best = trial_data[0]
+                print(f"\n🏆 BEST: {best['best_grid_acc']:.2f}% | lr={best['lr']:.2e}, L_cycles={best['L_cycles']}")
+            print(f"{'='*70}\n")
+            
+            # Save to JSON
+            import json
+            progress_path = os.path.join(self.output_dir, "hpo_progress.json")
+            with open(progress_path, "w") as f:
+                json.dump({
+                    "update_count": self.update_count,
+                    "best_grid_acc": trial_data[0]["best_grid_acc"] if trial_data else 0,
+                    "trials": trial_data,
+                }, f, indent=2)
+    
+    callbacks.append(HPOProgressCallback(args.output_dir, log_interval=10))
+    
     if HAS_WANDB and args.wandb_project:
         callbacks.append(
             WandbLoggerCallback(
