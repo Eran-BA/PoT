@@ -297,7 +297,7 @@ def train_trial(config: Dict[str, Any]) -> None:
     import torch
     import torch.nn.functional as F
     from torch.utils.data import DataLoader
-    from ray.tune import session
+    from ray.air import session
     
     # Add project root to path
     project_root = config.get("project_root")
