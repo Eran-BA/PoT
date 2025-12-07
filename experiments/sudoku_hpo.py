@@ -87,7 +87,7 @@ def get_search_space(trial: Trial) -> Dict[str, Any]:
         
         # Architecture: H and L cycles
         "H_cycles": 2,  # Fixed at 2
-        "L_cycles": trial.suggest_categorical("L_cycles", [4, 8, 12, 16]),
+        "L_cycles": trial.suggest_categorical("L_cycles", [4, 8]),
         
         # Regularization
         "dropout": trial.suggest_float("dropout", 0.0, 0.3),
@@ -108,7 +108,7 @@ def get_ray_search_space() -> Dict[str, Any]:
         "puzzle_lr_multiplier": tune.uniform(10.0, 200.0),
         "puzzle_weight_decay": tune.uniform(0.01, 2.0),
         "H_cycles": 2,  # Fixed at 2
-        "L_cycles": tune.choice([4, 8, 12, 16]),
+        "L_cycles": tune.choice([4, 8]),
         "dropout": tune.uniform(0.0, 0.3),
         "beta2": tune.uniform(0.9, 0.999),
         "warmup_steps": tune.randint(1, 9) * 500,  # 500-4000 step 500
