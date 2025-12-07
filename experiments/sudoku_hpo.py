@@ -675,39 +675,65 @@ def run_hpo(args):
         }, f, indent=2)
     print(f"\nBest config saved to: {best_config_path}")
     
-    # Upload best checkpoint to W&B
+    # Upload HPO summary and best checkpoint to W&B
     if HAS_WANDB and args.wandb_project:
         try:
-            # Find the best checkpoint
+            import pandas as pd
+            
+            # Initialize W&B run for HPO summary
+            run = wandb.init(
+                project=args.wandb_project,
+                name=f"{args.study_name}_summary",
+                job_type="hpo-summary",
+            )
+            
+            # Log best config
+            best_config_clean = {k: v for k, v in best_result.config.items() 
+                                if not k.startswith("_") and not k.endswith("_ref") 
+                                and k not in ["project_root", "checkpoint_dir"]}
+            wandb.config.update(best_config_clean)
+            
+            # Log best metrics
+            wandb.log({
+                "best_grid_acc": best_result.metrics["best_grid_acc"],
+                "best_val_cell_acc": best_result.metrics.get("val_cell_acc", 0),
+                "best_train_loss": best_result.metrics.get("train_loss", 0),
+            })
+            
+            # Log all trials as a table
+            try:
+                df = results.get_dataframe()
+                # Select relevant columns
+                cols_to_keep = [c for c in df.columns if any(x in c for x in 
+                    ["grid_acc", "cell_acc", "loss", "lr", "L_cycles", "dropout", "async"])]
+                if cols_to_keep:
+                    wandb.log({"trials_table": wandb.Table(dataframe=df[cols_to_keep])})
+                    print(f"✓ Logged {len(df)} trials to W&B table")
+            except Exception as e:
+                print(f"Warning: Could not log trials table: {e}")
+            
+            # Upload best model artifact
             best_checkpoint_dir = best_result.checkpoint
             if best_checkpoint_dir:
                 checkpoint_path = best_checkpoint_dir.to_directory()
-                
-                # Initialize W&B run for artifact upload
-                run = wandb.init(
-                    project=args.wandb_project,
-                    name=f"{args.study_name}_best_model",
-                    job_type="model-upload",
-                )
-                
-                # Create and log artifact
                 artifact = wandb.Artifact(
                     name=f"sudoku-hpo-best-{args.study_name}",
                     type="model",
                     description=f"Best model from HPO study {args.study_name}",
                     metadata={
                         "best_grid_acc": best_result.metrics["best_grid_acc"],
-                        "config": {k: v for k, v in best_result.config.items() 
-                                  if not k.startswith("_") and k not in ["data_dir"]},
+                        "config": best_config_clean,
                     }
                 )
                 artifact.add_dir(checkpoint_path)
-                run.log_artifact(artifact)
-                wandb.finish()
-                
-                print(f"✓ Best model uploaded to W&B: {args.wandb_project}/{args.study_name}_best_model")
+                wandb.log_artifact(artifact)
+                print(f"✓ Best model artifact uploaded")
+            
+            wandb.finish()
+            print(f"✓ HPO summary uploaded to W&B: {args.wandb_project}/{args.study_name}_summary")
+            
         except Exception as e:
-            print(f"Warning: Could not upload checkpoint to W&B: {e}")
+            print(f"Warning: Could not upload to W&B: {e}")
     
     return results
 
