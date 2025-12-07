@@ -307,15 +307,19 @@ def train_trial(config: Dict[str, Any]) -> None:
         sys.path.insert(0, project_root)
     
     # Now import project modules
-    from src.data import SudokuDataset
+    from src.data import SudokuDataset, download_sudoku_dataset
     from src.pot.models import HybridPoHHRMSolver
     from src.training import train_epoch, train_epoch_async, evaluate
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # Load data
+    # Load data - download if not exists (workers may be in different containers)
     data_dir = config.get("data_dir", "data/sudoku-extreme-10k-aug-100")
     batch_size = config.get("batch_size", 128)
+    
+    # Check if data exists, download if needed
+    if not os.path.exists(os.path.join(data_dir, 'train')):
+        download_sudoku_dataset(data_dir, subsample=10000, num_aug=100)
     
     train_dataset = SudokuDataset(data_dir, 'train')
     val_dataset = SudokuDataset(data_dir, 'val')
