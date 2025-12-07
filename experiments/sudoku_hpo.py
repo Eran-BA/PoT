@@ -100,6 +100,9 @@ def get_search_space(trial: Trial) -> Dict[str, Any]:
         
         # Warmup
         "warmup_steps": trial.suggest_int("warmup_steps", 500, 4000, step=500),
+        
+        # Training mode
+        "async_batch": trial.suggest_categorical("async_batch", [True, False]),
     }
 
 
@@ -116,6 +119,7 @@ def get_ray_search_space() -> Dict[str, Any]:
         "dropout": tune.uniform(0.0, 0.3),
         "beta2": tune.uniform(0.9, 0.999),
         "warmup_steps": tune.choice([500, 1000, 1500, 2000, 2500, 3000, 3500, 4000]),
+        "async_batch": tune.choice([True, False]),
     }
 
 
@@ -424,7 +428,6 @@ def run_hpo(args):
         "batch_size": args.batch_size,
         "epochs_per_trial": args.epochs_per_trial,
         "eval_interval": args.eval_interval,
-        "async_batch": args.async_batch,
         "d_model": 512,
         "n_heads": 8,
         "H_layers": 2,
@@ -434,7 +437,12 @@ def run_hpo(args):
         "hrm_grad_style": True,
     })
     
-    print(f"Async batching: {'ON' if args.async_batch else 'OFF'}")
+    # Override async_batch if specified via CLI (otherwise search both)
+    if args.async_batch:
+        search_space["async_batch"] = True
+        print(f"Async batching: FORCED ON")
+    else:
+        print(f"Async batching: SEARCHING [True, False]")
     
     # Optuna search
     optuna_search = OptunaSearch(
