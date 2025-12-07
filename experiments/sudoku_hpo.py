@@ -89,6 +89,9 @@ def get_search_space(trial: Trial) -> Dict[str, Any]:
         "H_cycles": 2,  # Fixed at 2
         "L_cycles": trial.suggest_categorical("L_cycles", [4, 8]),
         
+        # ACT halting
+        "halt_max_steps": trial.suggest_int("halt_max_steps", 1, 4),
+        
         # Regularization
         "dropout": trial.suggest_float("dropout", 0.0, 0.3),
         
@@ -109,6 +112,7 @@ def get_ray_search_space() -> Dict[str, Any]:
         "puzzle_weight_decay": tune.uniform(0.01, 2.0),
         "H_cycles": 2,  # Fixed at 2
         "L_cycles": tune.choice([4, 8]),
+        "halt_max_steps": tune.randint(1, 5),  # 1-4
         "dropout": tune.uniform(0.0, 0.3),
         "beta2": tune.uniform(0.9, 0.999),
         "warmup_steps": tune.randint(1, 9) * 500,  # 500-4000 step 500
@@ -419,7 +423,6 @@ def run_hpo(args):
         "d_ff": 2048,
         "T": 4,
         "hrm_grad_style": True,
-        "halt_max_steps": 4,
     })
     
     # Optuna search
