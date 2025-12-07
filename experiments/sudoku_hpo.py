@@ -451,15 +451,10 @@ def run_hpo(args):
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
     
-    # Initialize Ray with runtime environment
+    # Initialize Ray - no runtime_env packaging since workers are local
+    # Workers will access code and data via absolute paths
     if not ray.is_initialized():
-        ray.init(
-            num_gpus=args.num_gpus,
-            runtime_env={
-                "working_dir": project_root,
-                "excludes": ["*.pt", "*.pth", "*.csv", "data/", "experiments/results/", "experiments/hpo_results/", ".git/"],
-            }
-        )
+        ray.init(num_gpus=args.num_gpus)
     
     print(f"\n{'='*60}")
     print("Sudoku HPO - Hyperparameter Optimization")
