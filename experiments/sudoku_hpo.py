@@ -298,8 +298,8 @@ def train_trial(config: Dict[str, Any]) -> None:
     import torch
     import torch.nn.functional as F
     from torch.utils.data import DataLoader
-    from ray import train
-    from ray.train import Checkpoint
+    from ray import tune
+    from ray.tune import Checkpoint
     
     # Add project root to path
     project_root = config.get("project_root")
@@ -421,17 +421,17 @@ def train_trial(config: Dict[str, Any]) -> None:
                         "optimizer_state_dict": optimizer.state_dict(),
                         "best_grid_acc": best_grid_acc,
                     }, checkpoint_path)
-                    train.report(metrics, checkpoint=Checkpoint.from_directory(tmpdir))
+                    tune.report(**metrics, checkpoint=Checkpoint.from_directory(tmpdir))
             else:
-                train.report(metrics)
+                tune.report(**metrics)
         else:
-            train.report({
-                "train_loss": train_metrics["loss"],
-                "train_cell_acc": train_metrics["cell_acc"],
-                "train_grid_acc": train_metrics["grid_acc"],
-                "best_grid_acc": best_grid_acc,
-                "epoch": epoch,
-            })
+            tune.report(
+                train_loss=train_metrics["loss"],
+                train_cell_acc=train_metrics["cell_acc"],
+                train_grid_acc=train_metrics["grid_acc"],
+                best_grid_acc=best_grid_acc,
+                epoch=epoch,
+            )
 
 
 # ============================================================================
