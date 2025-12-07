@@ -313,13 +313,25 @@ def train_trial(config: Dict[str, Any]) -> None:
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # Load data - download if not exists (workers may be in different containers)
+    # Load data
     data_dir = config.get("data_dir", "data/sudoku-extreme-10k-aug-100")
     batch_size = config.get("batch_size", 128)
     
-    # Check if data exists, download if needed
-    if not os.path.exists(os.path.join(data_dir, 'train')):
-        download_sudoku_dataset(data_dir, subsample=10000, num_aug=100)
+    # Check if data exists - if not, download with file lock to prevent race conditions
+    train_path = os.path.join(data_dir, 'train')
+    if not os.path.exists(train_path):
+        try:
+            import filelock
+            lock_file = os.path.join(os.path.dirname(data_dir), ".data_download.lock")
+            with filelock.FileLock(lock_file, timeout=600):  # 10 min timeout
+                # Double-check after acquiring lock
+                if not os.path.exists(train_path):
+                    print(f"Worker downloading data to {data_dir}...")
+                    download_sudoku_dataset(data_dir, subsample=10000, num_aug=100)
+        except ImportError:
+            # filelock not available, just try to download
+            if not os.path.exists(train_path):
+                download_sudoku_dataset(data_dir, subsample=10000, num_aug=100)
     
     train_dataset = SudokuDataset(data_dir, 'train')
     val_dataset = SudokuDataset(data_dir, 'val')
@@ -447,13 +459,25 @@ def train_trial(config: Dict[str, Any]) -> None:
 def run_hpo(args):
     """Run hyperparameter optimization."""
     
-    # Download dataset if needed
-    if args.download:
-        download_sudoku_dataset(args.data_dir, args.subsample, args.num_aug)
-    
-    # Get project root
+    # Get project root first
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
+    
+    # Convert data_dir to absolute path
+    abs_data_dir = os.path.join(project_root, args.data_dir) if not os.path.isabs(args.data_dir) else args.data_dir
+    abs_data_dir = os.path.abspath(abs_data_dir)
+    
+    # Download dataset to absolute path if needed (BEFORE Ray starts)
+    if args.download:
+        download_sudoku_dataset(abs_data_dir, args.subsample, args.num_aug)
+    
+    # Verify data exists before starting Ray
+    train_path = os.path.join(abs_data_dir, 'train')
+    if not os.path.exists(train_path):
+        raise FileNotFoundError(
+            f"Data not found at {train_path}. Run with --download to fetch from HuggingFace."
+        )
+    print(f"✓ Data verified at: {abs_data_dir}")
     
     # Initialize Ray - no runtime_env packaging since workers are local
     # Workers will access code and data via absolute paths
@@ -471,13 +495,10 @@ def run_hpo(args):
     # Search space
     search_space = get_ray_search_space()
     
-    # Add fixed config - use absolute path for data_dir since it's excluded from Ray package
-    abs_data_dir = os.path.join(project_root, args.data_dir) if not os.path.isabs(args.data_dir) else args.data_dir
-    abs_data_dir = os.path.abspath(abs_data_dir)
-    
+    # Add fixed config
     search_space.update({
         "project_root": project_root,
-        "data_dir": abs_data_dir,
+        "data_dir": abs_data_dir,  # Already absolute path
         "batch_size": args.batch_size,
         "epochs_per_trial": args.epochs_per_trial,
         "eval_interval": args.eval_interval,

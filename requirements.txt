@@ -29,6 +29,7 @@ maze-dataset>=1.0.0
 optuna>=3.3.0
 ray[tune]>=2.7.0
 wandb>=0.15.0
+filelock>=3.12.0
 
 # Development
 pytest==7.4.0
