@@ -619,12 +619,27 @@ def run_hpo(args):
     from ray.tune import Callback
     
     class HPOProgressCallback(Callback):
-        """Logs HPO progress locally every N trial updates."""
+        """Logs HPO progress locally and to W&B every N trial updates."""
         
-        def __init__(self, output_dir: str, log_interval: int = 10):
+        def __init__(self, output_dir: str, wandb_project: str = None, log_interval: int = 10):
             self.output_dir = output_dir
+            self.wandb_project = wandb_project
             self.log_interval = log_interval
             self.update_count = 0
+            self.wandb_run = None
+            
+            # Initialize a separate W&B run for HPO-level metrics
+            if wandb_project and HAS_WANDB:
+                try:
+                    self.wandb_run = wandb.init(
+                        project=wandb_project,
+                        name="hpo_progress",
+                        job_type="hpo-monitor",
+                        reinit=True,
+                    )
+                    print(f"✓ HPO progress W&B run initialized")
+                except Exception as e:
+                    print(f"Warning: Could not init W&B for HPO progress: {e}")
         
         def on_trial_result(self, iteration, trials, trial, result, **info):
             self.update_count += 1
@@ -634,7 +649,14 @@ def run_hpo(args):
             
             # Collect all trial results
             trial_data = []
+            running_count = 0
+            complete_count = 0
             for t in trials:
+                if t.status == "RUNNING":
+                    running_count += 1
+                elif t.status == "TERMINATED":
+                    complete_count += 1
+                    
                 if t.last_result:
                     trial_data.append({
                         "trial_id": t.trial_id[:10],
@@ -651,6 +673,7 @@ def run_hpo(args):
             
             # Sort by best_grid_acc
             trial_data.sort(key=lambda x: x["best_grid_acc"], reverse=True)
+            best = trial_data[0]
             
             # Print summary
             print(f"\n{'='*70}")
@@ -663,9 +686,8 @@ def run_hpo(args):
                       f"{td['best_grid_acc']:<10.2f} {td['val_grid_acc']:<10.2f} "
                       f"{td['lr']:<12.2e} {td['L_cycles']:<6}")
             
-            if trial_data:
-                best = trial_data[0]
-                print(f"\n🏆 BEST: {best['best_grid_acc']:.2f}% | lr={best['lr']:.2e}, L_cycles={best['L_cycles']}")
+            print(f"\n🏆 BEST: {best['best_grid_acc']:.2f}% | lr={best['lr']:.2e}, L_cycles={best['L_cycles']}")
+            print(f"   Running: {running_count}, Complete: {complete_count}")
             print(f"{'='*70}\n")
             
             # Save to JSON
@@ -674,11 +696,37 @@ def run_hpo(args):
             with open(progress_path, "w") as f:
                 json.dump({
                     "update_count": self.update_count,
-                    "best_grid_acc": trial_data[0]["best_grid_acc"] if trial_data else 0,
+                    "best_grid_acc": best["best_grid_acc"],
+                    "best_lr": best["lr"],
+                    "best_L_cycles": best["L_cycles"],
+                    "running_trials": running_count,
+                    "complete_trials": complete_count,
                     "trials": trial_data,
                 }, f, indent=2)
+            
+            # Log to W&B
+            if self.wandb_run is not None:
+                try:
+                    wandb.log({
+                        "hpo/best_grid_acc": best["best_grid_acc"],
+                        "hpo/best_lr": best["lr"],
+                        "hpo/best_L_cycles": best["L_cycles"],
+                        "hpo/running_trials": running_count,
+                        "hpo/complete_trials": complete_count,
+                        "hpo/update": self.update_count,
+                    })
+                except Exception as e:
+                    pass  # Silently ignore W&B errors
+        
+        def on_experiment_end(self, trials, **info):
+            """Called when HPO finishes."""
+            if self.wandb_run is not None:
+                try:
+                    wandb.finish()
+                except:
+                    pass
     
-    callbacks.append(HPOProgressCallback(args.output_dir, log_interval=10))
+    callbacks.append(HPOProgressCallback(args.output_dir, args.wandb_project, log_interval=10))
     
     if HAS_WANDB and args.wandb_project:
         callbacks.append(
