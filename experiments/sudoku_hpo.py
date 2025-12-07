@@ -293,13 +293,11 @@ def train_trial(config: Dict[str, Any]) -> None:
     import os
     import sys
     import math
-    import tempfile
     
     import torch
     import torch.nn.functional as F
     from torch.utils.data import DataLoader
     from ray import tune
-    from ray.tune import Checkpoint
     
     # Add project root to path
     project_root = config.get("project_root")
@@ -373,7 +371,6 @@ def train_trial(config: Dict[str, Any]) -> None:
     best_grid_acc = 0.0
     eval_interval = config.get("eval_interval", 50)
     use_async = config.get("async_batch", False)
-    checkpoint_interval = config.get("checkpoint_interval", eval_interval)
     
     for epoch in range(1, epochs_per_trial + 1):
         # Train (async or regular)
@@ -400,31 +397,19 @@ def train_trial(config: Dict[str, Any]) -> None:
             if val_metrics["grid_acc"] > best_grid_acc:
                 best_grid_acc = val_metrics["grid_acc"]
             
-            metrics = {
-                "train_loss": train_metrics["loss"],
-                "train_cell_acc": train_metrics["cell_acc"],
-                "train_grid_acc": train_metrics["grid_acc"],
-                "val_loss": val_metrics["loss"],
-                "val_cell_acc": val_metrics["cell_acc"],
-                "val_grid_acc": val_metrics["grid_acc"],
-                "best_grid_acc": best_grid_acc,
-                "epoch": epoch,
-            }
-            
-            # Save checkpoint at checkpoint intervals
-            if epoch % checkpoint_interval == 0:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    checkpoint_path = os.path.join(tmpdir, "checkpoint.pt")
-                    torch.save({
-                        "epoch": epoch,
-                        "model_state_dict": model.state_dict(),
-                        "optimizer_state_dict": optimizer.state_dict(),
-                        "best_grid_acc": best_grid_acc,
-                    }, checkpoint_path)
-                    tune.report(**metrics, checkpoint=Checkpoint.from_directory(tmpdir))
-            else:
-                tune.report(**metrics)
+            # Report metrics to Ray Tune
+            tune.report(
+                train_loss=train_metrics["loss"],
+                train_cell_acc=train_metrics["cell_acc"],
+                train_grid_acc=train_metrics["grid_acc"],
+                val_loss=val_metrics["loss"],
+                val_cell_acc=val_metrics["cell_acc"],
+                val_grid_acc=val_metrics["grid_acc"],
+                best_grid_acc=best_grid_acc,
+                epoch=epoch,
+            )
         else:
+            # Non-eval epoch: report train metrics only
             tune.report(
                 train_loss=train_metrics["loss"],
                 train_cell_acc=train_metrics["cell_acc"],
