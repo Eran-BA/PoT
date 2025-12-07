@@ -472,10 +472,13 @@ def run_hpo(args):
     # Search space
     search_space = get_ray_search_space()
     
-    # Add fixed config
+    # Add fixed config - use absolute path for data_dir since it's excluded from Ray package
+    abs_data_dir = os.path.join(project_root, args.data_dir) if not os.path.isabs(args.data_dir) else args.data_dir
+    abs_data_dir = os.path.abspath(abs_data_dir)
+    
     search_space.update({
         "project_root": project_root,
-        "data_dir": os.path.join(project_root, args.data_dir) if not os.path.isabs(args.data_dir) else args.data_dir,
+        "data_dir": abs_data_dir,
         "batch_size": args.batch_size,
         "epochs_per_trial": args.epochs_per_trial,
         "eval_interval": args.eval_interval,
