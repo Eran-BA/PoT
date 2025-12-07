@@ -307,34 +307,16 @@ def train_trial(config: Dict[str, Any]) -> None:
         sys.path.insert(0, project_root)
     
     # Now import project modules
-    from src.data import SudokuDataset, download_sudoku_dataset
     from src.pot.models import HybridPoHHRMSolver
     from src.training import train_epoch, train_epoch_async, evaluate
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # Load data
-    data_dir = config.get("data_dir", "data/sudoku-extreme-10k-aug-100")
+    # Get data from Ray object store (shared by main process)
+    import ray
+    train_dataset = ray.get(config["train_data_ref"])
+    val_dataset = ray.get(config["val_data_ref"])
     batch_size = config.get("batch_size", 128)
-    
-    # Check if data exists - if not, download with file lock to prevent race conditions
-    train_path = os.path.join(data_dir, 'train')
-    if not os.path.exists(train_path):
-        try:
-            import filelock
-            lock_file = os.path.join(os.path.dirname(data_dir), ".data_download.lock")
-            with filelock.FileLock(lock_file, timeout=600):  # 10 min timeout
-                # Double-check after acquiring lock
-                if not os.path.exists(train_path):
-                    print(f"Worker downloading data to {data_dir}...")
-                    download_sudoku_dataset(data_dir, subsample=10000, num_aug=100)
-        except ImportError:
-            # filelock not available, just try to download
-            if not os.path.exists(train_path):
-                download_sudoku_dataset(data_dir, subsample=10000, num_aug=100)
-    
-    train_dataset = SudokuDataset(data_dir, 'train')
-    val_dataset = SudokuDataset(data_dir, 'val')
     
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True
@@ -479,10 +461,22 @@ def run_hpo(args):
         )
     print(f"✓ Data verified at: {abs_data_dir}")
     
-    # Initialize Ray - no runtime_env packaging since workers are local
-    # Workers will access code and data via absolute paths
+    # Load data BEFORE Ray starts (on host that has filesystem access)
+    print("Loading data into memory...")
+    from src.data import SudokuDataset
+    train_dataset = SudokuDataset(abs_data_dir, 'train')
+    val_dataset = SudokuDataset(abs_data_dir, 'val')
+    print(f"✓ Loaded {len(train_dataset)} train, {len(val_dataset)} val puzzles")
+    
+    # Initialize Ray
     if not ray.is_initialized():
         ray.init(num_gpus=args.num_gpus)
+    
+    # Put datasets in Ray object store for workers to access
+    print("Sharing data via Ray object store...")
+    train_data_ref = ray.put(train_dataset)
+    val_data_ref = ray.put(val_dataset)
+    print("✓ Data shared with workers")
     
     print(f"\n{'='*60}")
     print("Sudoku HPO - Hyperparameter Optimization")
@@ -498,7 +492,8 @@ def run_hpo(args):
     # Add fixed config
     search_space.update({
         "project_root": project_root,
-        "data_dir": abs_data_dir,  # Already absolute path
+        "train_data_ref": train_data_ref,  # Ray object store reference
+        "val_data_ref": val_data_ref,      # Ray object store reference
         "batch_size": args.batch_size,
         "epochs_per_trial": args.epochs_per_trial,
         "eval_interval": args.eval_interval,
