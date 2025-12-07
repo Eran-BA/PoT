@@ -430,9 +430,13 @@ def train_trial(config: Dict[str, Any]) -> None:
         if epoch % eval_interval == 0 or epoch == 1:
             val_metrics = evaluate(model, val_loader, device, use_poh=True)
             
+            # Print validation metrics
+            print(f"  → Val: loss={val_metrics['loss']:.4f}, cell_acc={val_metrics['cell_acc']:.1f}%, grid_acc={val_metrics['grid_acc']:.1f}%, best={best_grid_acc:.1f}%")
+            
             is_best = val_metrics["grid_acc"] > best_grid_acc
             if is_best:
                 best_grid_acc = val_metrics["grid_acc"]
+                print(f"  🏆 New best: {best_grid_acc:.2f}%")
                 
                 # Save best model checkpoint
                 checkpoint_path = os.path.join(log_dir, f"{trial_name}_best.pt")
