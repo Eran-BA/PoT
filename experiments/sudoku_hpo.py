@@ -428,9 +428,19 @@ def run_hpo(args):
     if args.download:
         download_sudoku_dataset(args.data_dir, args.subsample, args.num_aug)
     
-    # Initialize Ray
+    # Get project root
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    
+    # Initialize Ray with runtime environment
     if not ray.is_initialized():
-        ray.init(num_gpus=args.num_gpus)
+        ray.init(
+            num_gpus=args.num_gpus,
+            runtime_env={
+                "working_dir": project_root,
+                "excludes": ["*.pt", "*.pth", "*.csv", "data/", "experiments/results/", "experiments/hpo_results/", ".git/"],
+            }
+        )
     
     print(f"\n{'='*60}")
     print("Sudoku HPO - Hyperparameter Optimization")
@@ -445,7 +455,8 @@ def run_hpo(args):
     
     # Add fixed config
     search_space.update({
-        "data_dir": args.data_dir,
+        "project_root": project_root,
+        "data_dir": os.path.join(project_root, args.data_dir) if not os.path.isabs(args.data_dir) else args.data_dir,
         "batch_size": args.batch_size,
         "epochs_per_trial": args.epochs_per_trial,
         "eval_interval": args.eval_interval,
