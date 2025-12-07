@@ -308,6 +308,26 @@ def train_trial(config: Dict[str, Any]) -> None:
     from src.pot.models import HybridPoHHRMSolver
     from src.training import train_epoch, train_epoch_async, evaluate
     
+    # Initialize wandb for this trial (explicit logging)
+    import wandb
+    wandb_project = config.get("wandb_project", "sudoku-hpo")
+    wandb_run = None
+    if wandb_project:
+        try:
+            # Create a unique run name based on config
+            run_name = f"trial_lr{config['lr']:.2e}_L{config['L_cycles']}"
+            wandb_run = wandb.init(
+                project=wandb_project,
+                group=config.get("wandb_group", "hpo"),
+                name=run_name,
+                config={k: v for k, v in config.items() 
+                       if not k.endswith("_ref") and k not in ["project_root"]},
+                reinit=True,
+            )
+        except Exception as e:
+            print(f"Warning: Could not initialize wandb: {e}")
+            wandb_run = None
+    
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # Get data from Ray object store (shared by main process)
@@ -394,11 +414,36 @@ def train_trial(config: Dict[str, Any]) -> None:
         if epoch % eval_interval == 0 or epoch == 1:
             val_metrics = evaluate(model, val_loader, device, use_poh=True)
             
-            if val_metrics["grid_acc"] > best_grid_acc:
+            is_best = val_metrics["grid_acc"] > best_grid_acc
+            if is_best:
                 best_grid_acc = val_metrics["grid_acc"]
+                
+                # Save best model checkpoint
+                checkpoint_dir = config.get("checkpoint_dir", "/tmp/sudoku_hpo_checkpoints")
+                os.makedirs(checkpoint_dir, exist_ok=True)
+                trial_name = f"trial_lr{config['lr']:.2e}_L{config['L_cycles']}"
+                checkpoint_path = os.path.join(checkpoint_dir, f"{trial_name}_best.pt")
+                
+                torch.save({
+                    "epoch": epoch,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "best_grid_acc": best_grid_acc,
+                    "config": {k: v for k, v in config.items() 
+                             if not k.endswith("_ref") and k not in ["project_root"]},
+                }, checkpoint_path)
+                
+                # Upload best model to wandb as artifact
+                if wandb_run is not None:
+                    artifact = wandb.Artifact(
+                        name=f"best-model-{trial_name}",
+                        type="model",
+                        description=f"Best model checkpoint at epoch {epoch} with grid_acc={best_grid_acc:.2f}%",
+                    )
+                    artifact.add_file(checkpoint_path)
+                    wandb.log_artifact(artifact)
             
-            # Report metrics to Ray Tune
-            session.report({
+            metrics = {
                 "train_loss": train_metrics["loss"],
                 "train_cell_acc": train_metrics["cell_acc"],
                 "train_grid_acc": train_metrics["grid_acc"],
@@ -407,16 +452,32 @@ def train_trial(config: Dict[str, Any]) -> None:
                 "val_grid_acc": val_metrics["grid_acc"],
                 "best_grid_acc": best_grid_acc,
                 "epoch": epoch,
-            })
+            }
+            
+            # Report metrics to Ray Tune
+            session.report(metrics)
+            
+            # Log to wandb explicitly
+            if wandb_run is not None:
+                wandb.log(metrics)
         else:
             # Non-eval epoch: report train metrics only
-            session.report({
+            metrics = {
                 "train_loss": train_metrics["loss"],
                 "train_cell_acc": train_metrics["cell_acc"],
                 "train_grid_acc": train_metrics["grid_acc"],
                 "best_grid_acc": best_grid_acc,
                 "epoch": epoch,
-            })
+            }
+            session.report(metrics)
+            
+            # Log to wandb explicitly
+            if wandb_run is not None:
+                wandb.log(metrics)
+    
+    # Finish wandb run
+    if wandb_run is not None:
+        wandb.finish()
 
 
 # ============================================================================
@@ -483,6 +544,7 @@ def run_hpo(args):
         "epochs_per_trial": args.epochs_per_trial,
         "eval_interval": args.eval_interval,
         "checkpoint_interval": args.eval_interval,  # Save checkpoint at eval intervals
+        "checkpoint_dir": os.path.join(args.output_dir, "checkpoints"),
         "d_model": 512,
         "n_heads": 8,
         "H_layers": 2,
@@ -490,6 +552,9 @@ def run_hpo(args):
         "d_ff": 2048,
         "T": 4,
         "hrm_grad_style": True,
+        # W&B config for explicit logging in trials
+        "wandb_project": args.wandb_project,
+        "wandb_group": args.study_name,
     })
     
     # Override async_batch if specified via CLI (otherwise search both)
