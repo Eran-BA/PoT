@@ -95,6 +95,9 @@ def train_epoch_async(
     """
     model.train()
     
+    # Get underlying model (handles DDP wrapping)
+    base_model = model.module if hasattr(model, 'module') else model
+    
     # Determine batch size from first batch
     first_batch = next(iter(dataloader))
     batch_size = first_batch['input'].size(0)
@@ -107,7 +110,7 @@ def train_epoch_async(
     inf_loader = InfiniteDataLoader(dataloader)
     
     # Initialize carry state (all halted, so first batch loads data)
-    carry = model.create_async_carry(batch_size, device)
+    carry = base_model.create_async_carry(batch_size, device)
     
     # Metrics tracking
     total_loss = 0
@@ -132,8 +135,8 @@ def train_epoch_async(
         # Record which samples were halted before this step (these just completed)
         was_halted = carry.halted.clone()
         
-        # Forward: one ACT step
-        new_carry, outputs = model.async_forward(carry, new_batch)
+        # Forward: one ACT step (use base_model for async methods)
+        new_carry, outputs = base_model.async_forward(carry, new_batch)
         
         logits = outputs['logits']
         labels = outputs['labels']
@@ -144,7 +147,7 @@ def train_epoch_async(
         # Compute loss for ALL samples (gradient flows for all)
         # Note: HRM also computes loss for all, the async nature is just about data replacement
         lm_loss = F.cross_entropy(
-            logits.view(-1, model.vocab_size),
+            logits.view(-1, base_model.vocab_size),
             labels.view(-1)
         )
         
@@ -256,6 +259,10 @@ def train_epoch(
         Dictionary with loss, cell_acc, grid_acc, avg_steps
     """
     model.train()
+    
+    # Get underlying model (handles DDP wrapping)
+    base_model = model.module if hasattr(model, 'module') else model
+    
     total_loss = 0
     correct_cells = 0
     total_cells = 0
@@ -283,7 +290,7 @@ def train_epoch(
         
         # CE loss on ALL cells (HRM-style)
         lm_loss = F.cross_entropy(
-            logits.view(-1, model.vocab_size),
+            logits.view(-1, base_model.vocab_size),
             label.view(-1)
         )
         
@@ -364,6 +371,10 @@ def evaluate(
         Dictionary with loss, cell_acc, grid_acc
     """
     model.eval()
+    
+    # Get underlying model (handles DDP wrapping)
+    base_model = model.module if hasattr(model, 'module') else model
+    
     total_loss = 0
     correct_cells = 0
     total_cells = 0
@@ -380,7 +391,7 @@ def evaluate(
             model_out = model(inp, puzzle_ids)
             logits = model_out[0]
             
-            loss = F.cross_entropy(logits.view(-1, model.vocab_size), label.view(-1))
+            loss = F.cross_entropy(logits.view(-1, base_model.vocab_size), label.view(-1))
             total_loss += loss.item()
             
             preds = logits.argmax(dim=-1)
