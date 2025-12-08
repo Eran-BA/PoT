@@ -74,7 +74,7 @@ def train_epoch_async(
     debug: bool = False,
     scheduler: Optional[Any] = None,
     puzzle_scheduler: Optional[Any] = None,
-    constraint_weight: float = 0.5,
+    constraint_weight: float = 0.0,
     samples_per_epoch: Optional[int] = None,
     track_halt_histogram: bool = False,
 ) -> Dict[str, Any]:
@@ -283,7 +283,7 @@ def train_epoch(
     debug: bool = False,
     scheduler: Optional[Any] = None,
     puzzle_scheduler: Optional[Any] = None,
-    constraint_weight: float = 0.5,
+    constraint_weight: float = 0.0,
 ) -> Dict[str, float]:
     """
     Train for one epoch.
