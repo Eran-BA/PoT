@@ -76,7 +76,8 @@ def train_epoch_async(
     puzzle_scheduler: Optional[Any] = None,
     constraint_weight: float = 0.5,
     samples_per_epoch: Optional[int] = None,
-) -> Dict[str, float]:
+    track_halt_histogram: bool = False,
+) -> Dict[str, Any]:
     """
     Train for one epoch using HRM-style async batching.
     
@@ -96,9 +97,10 @@ def train_epoch_async(
         puzzle_scheduler: LR scheduler for puzzle optimizer
         constraint_weight: Weight for Sudoku constraint loss
         samples_per_epoch: Total samples to process per epoch (default: len(dataloader) * batch_size)
+        track_halt_histogram: If True, track which halt step each sample finished at
         
     Returns:
-        Dictionary with loss, cell_acc, grid_acc, avg_steps
+        Dictionary with loss, cell_acc, grid_acc, avg_steps, and optionally halt_histogram
     """
     model.train()
     
@@ -128,6 +130,9 @@ def train_epoch_async(
     total_steps = 0
     completed_samples = 0
     forward_calls = 0
+    
+    # Halt histogram tracking: {step: {'halted': count, 'solved': count}}
+    halt_histogram = {} if track_halt_histogram else None
     
     pbar = tqdm(total=samples_per_epoch, desc=f"Epoch {epoch} (async)", 
                  disable=not _is_main_process())
@@ -201,10 +206,27 @@ def train_epoch_async(
         preds = logits.argmax(dim=-1)
         correct_cells += (preds == labels).sum().item()
         total_cells += labels.numel()
-        correct_grids += (preds == labels).all(dim=1).sum().item()
+        grid_correct = (preds == labels).all(dim=1)  # [B] bool
+        correct_grids += grid_correct.sum().item()
         total_grids += labels.size(0)
         total_steps += 1  # Each forward is one ACT step
         forward_calls += 1
+        
+        # Track halt histogram for newly halted samples
+        if track_halt_histogram and newly_halted.any():
+            # Get step count for each sample from carry
+            steps_tensor = new_carry.steps  # [B] int32
+            
+            for i in range(newly_halted.size(0)):
+                if newly_halted[i]:
+                    step = steps_tensor[i].item()
+                    solved = grid_correct[i].item()
+                    
+                    if step not in halt_histogram:
+                        halt_histogram[step] = {'halted': 0, 'solved': 0}
+                    halt_histogram[step]['halted'] += 1
+                    if solved:
+                        halt_histogram[step]['solved'] += 1
         
         # Track completed samples (halted samples that will be replaced next step)
         completed_samples += num_completed
@@ -225,13 +247,29 @@ def train_epoch_async(
     if debug:
         run_debug(model, dataloader, optimizer, device, epoch)
     
-    return {
+    result = {
         'loss': total_loss / max(1, forward_calls),
         'cell_acc': 100 * correct_cells / max(1, total_cells),
         'grid_acc': 100 * correct_grids / max(1, total_grids),
         'avg_steps': total_steps / max(1, forward_calls),
         'forward_calls': forward_calls,
     }
+    
+    if track_halt_histogram and halt_histogram:
+        result['halt_histogram'] = halt_histogram
+        
+        # Print halt histogram summary
+        if _is_main_process():
+            print("\n📊 Train Halt Step Histogram:")
+            print(f"{'Step':<6} {'Halted':<10} {'Solved':<10} {'Solve Rate':<12}")
+            print("-" * 40)
+            for step in sorted(halt_histogram.keys()):
+                data = halt_histogram[step]
+                rate = 100 * data['solved'] / data['halted'] if data['halted'] > 0 else 0
+                print(f"{step:<6} {data['halted']:<10} {data['solved']:<10} {rate:<10.2f}%")
+            print()
+    
+    return result
 
 
 def train_epoch(
