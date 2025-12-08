@@ -229,7 +229,6 @@ class SudokuTrainable(Trainable):
             use_poh=True,
             scheduler=self.scheduler,
             puzzle_scheduler=self.puzzle_scheduler,
-            constraint_weight=0.0,
         )
         
         # Resample augmentations
@@ -421,7 +420,6 @@ def train_trial(config: Dict[str, Any]) -> None:
                 model, train_loader, optimizer, puzzle_optimizer,
                 device, epoch, use_poh=True,
                 scheduler=scheduler, puzzle_scheduler=puzzle_scheduler,
-                constraint_weight=0.0,
             )
         
         train_dataset.on_epoch_end()

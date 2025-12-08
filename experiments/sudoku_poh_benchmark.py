@@ -216,8 +216,6 @@ def main():
     parser.add_argument('--lr-min-ratio', type=float, default=0.0,
                        help='Min LR ratio for cosine schedule. HRM uses 0.1 or 1.0')
     parser.add_argument('--eval-interval', type=int, default=100)
-    parser.add_argument('--constraint-weight', type=float, default=0.5, 
-                       help='Weight for Sudoku constraint loss (not in HRM)')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     parser.add_argument('--debug-interval', type=int, default=10, help='Debug every N epochs')
     
@@ -510,7 +508,6 @@ def main():
                 model, train_loader, optimizer, puzzle_optimizer, 
                 device, epoch, use_poh=use_poh, debug=do_debug,
                 scheduler=scheduler, puzzle_scheduler=puzzle_scheduler,
-                constraint_weight=args.constraint_weight,
                 samples_per_epoch=full_dataset_size,
             )
         else:
@@ -519,7 +516,6 @@ def main():
                 model, train_loader, optimizer, puzzle_optimizer, 
                 device, epoch, use_poh=use_poh, debug=do_debug,
                 scheduler=scheduler, puzzle_scheduler=puzzle_scheduler,
-                constraint_weight=args.constraint_weight
             )
         
         # Resample augmentations for next epoch
