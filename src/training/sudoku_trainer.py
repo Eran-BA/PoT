@@ -365,7 +365,8 @@ def evaluate(
     dataloader,
     device: torch.device,
     use_poh: bool = True,
-) -> Dict[str, float]:
+    track_halt_histogram: bool = False,
+) -> Dict[str, Any]:
     """
     Evaluate model.
     
@@ -374,9 +375,11 @@ def evaluate(
         dataloader: Test data loader
         device: Device to evaluate on
         use_poh: Whether model uses PoH/puzzle embeddings
+        track_halt_histogram: If True, track which halt step each puzzle finished at
+                              and whether it was solved correctly
         
     Returns:
-        Dictionary with loss, cell_acc, grid_acc
+        Dictionary with loss, cell_acc, grid_acc, and optionally halt_histogram
     """
     model.eval()
     
@@ -389,6 +392,9 @@ def evaluate(
     correct_grids = 0
     total_grids = 0
     
+    # Halt histogram tracking: {step: {'halted': count, 'solved': count}}
+    halt_histogram = {} if track_halt_histogram else None
+    
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Evaluating", disable=not _is_main_process()):
             inp = batch['input'].to(device)
@@ -399,20 +405,109 @@ def evaluate(
             model_out = model(inp, puzzle_ids)
             logits = model_out[0]
             
+            # Extract steps if available (index 3 in model output)
+            steps_tensor = None
+            if track_halt_histogram and len(model_out) > 3:
+                steps_output = model_out[3]
+                # steps can be a tensor [B] or a single int
+                if isinstance(steps_output, torch.Tensor):
+                    steps_tensor = steps_output
+                elif isinstance(steps_output, int):
+                    # If single int, all samples halted at same step
+                    steps_tensor = torch.full((inp.size(0),), steps_output, dtype=torch.int32, device=device)
+            
             loss = F.cross_entropy(logits.view(-1, base_model.vocab_size), label.view(-1))
             total_loss += loss.item()
             
             preds = logits.argmax(dim=-1)
             correct_cells += (preds == label).sum().item()
             total_cells += label.numel()
-            correct_grids += (preds == label).all(dim=1).sum().item()
+            
+            # Per-sample solve status
+            grid_correct = (preds == label).all(dim=1)  # [B] bool
+            correct_grids += grid_correct.sum().item()
             total_grids += label.size(0)
+            
+            # Update halt histogram
+            if track_halt_histogram and steps_tensor is not None:
+                for i in range(inp.size(0)):
+                    step = steps_tensor[i].item()
+                    solved = grid_correct[i].item()
+                    
+                    if step not in halt_histogram:
+                        halt_histogram[step] = {'halted': 0, 'solved': 0}
+                    halt_histogram[step]['halted'] += 1
+                    if solved:
+                        halt_histogram[step]['solved'] += 1
     
-    return {
+    result = {
         'loss': total_loss / len(dataloader),
         'cell_acc': 100 * correct_cells / total_cells,
         'grid_acc': 100 * correct_grids / total_grids,
     }
+    
+    if track_halt_histogram and halt_histogram:
+        result['halt_histogram'] = halt_histogram
+        
+        # Print halt histogram summary
+        if _is_main_process():
+            print("\n📊 Halt Step Histogram:")
+            print(f"{'Step':<6} {'Halted':<10} {'Solved':<10} {'Solve Rate':<12}")
+            print("-" * 40)
+            for step in sorted(halt_histogram.keys()):
+                data = halt_histogram[step]
+                rate = 100 * data['solved'] / data['halted'] if data['halted'] > 0 else 0
+                print(f"{step:<6} {data['halted']:<10} {data['solved']:<10} {rate:<10.2f}%")
+            print()
+    
+    return result
+
+
+def log_halt_histogram_to_wandb(halt_histogram: Dict[int, Dict[str, int]], prefix: str = "") -> Dict[str, Any]:
+    """
+    Prepare halt histogram data for W&B logging.
+    
+    Args:
+        halt_histogram: Dict from evaluate() with {step: {'halted': N, 'solved': M}}
+        prefix: Optional prefix for metric names (e.g., "val_" or "test_")
+        
+    Returns:
+        Dict ready for wandb.log() containing:
+        - {prefix}halt_steps: list of all halt steps for histogram
+        - {prefix}halt_step_{N}_count: count of puzzles halted at step N
+        - {prefix}halt_step_{N}_solved: count solved at step N  
+        - {prefix}halt_step_{N}_rate: solve rate at step N
+    """
+    if not halt_histogram:
+        return {}
+    
+    log_dict = {}
+    all_steps = []
+    
+    for step in sorted(halt_histogram.keys()):
+        data = halt_histogram[step]
+        halted = data['halted']
+        solved = data['solved']
+        rate = 100 * solved / halted if halted > 0 else 0
+        
+        # Add to list for histogram
+        all_steps.extend([step] * halted)
+        
+        # Individual metrics per step
+        log_dict[f"{prefix}halt_step_{step}_count"] = halted
+        log_dict[f"{prefix}halt_step_{step}_solved"] = solved
+        log_dict[f"{prefix}halt_step_{step}_rate"] = rate
+    
+    # Store raw list for W&B histogram
+    log_dict[f"{prefix}halt_steps_raw"] = all_steps
+    
+    # Summary stats
+    total_halted = sum(d['halted'] for d in halt_histogram.values())
+    total_solved = sum(d['solved'] for d in halt_histogram.values())
+    log_dict[f"{prefix}halt_total_puzzles"] = total_halted
+    log_dict[f"{prefix}halt_total_solved"] = total_solved
+    
+    return log_dict
 
 
 # ============================================================================
