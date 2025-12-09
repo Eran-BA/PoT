@@ -102,8 +102,8 @@ def get_search_space(trial: Trial) -> Dict[str, Any]:
         # Warmup (more options)
         "warmup_steps": trial.suggest_int("warmup_steps", 200, 5000, step=200),
         
-        # Training mode - FIXED async for efficiency
-        "async_batch": True,
+        # Training mode
+        "async_batch": trial.suggest_categorical("async_batch", [True, False]),
     }
 
 
@@ -121,7 +121,7 @@ def get_ray_search_space() -> Dict[str, Any]:
         "dropout": tune.uniform(0.0, 0.4),
         "beta2": tune.uniform(0.9, 0.999),
         "warmup_steps": tune.choice([200, 500, 1000, 1500, 2000, 2500, 3000, 4000, 5000]),
-        "async_batch": True,  # FIXED async for efficiency
+        "async_batch": tune.choice([True, False]),
     }
 
 
