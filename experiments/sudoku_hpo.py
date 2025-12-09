@@ -77,33 +77,33 @@ def get_search_space(trial: Trial) -> Dict[str, Any]:
         "lr": trial.suggest_float("lr", 1e-5, 1e-3, log=True),
         
         # Weight decay (HRM uses 0.1)
-        "weight_decay": trial.suggest_float("weight_decay", 0.05, 0.5),
+        "weight_decay": trial.suggest_float("weight_decay", 0.01, 0.5),
         
-        # Puzzle embedding learning rate multiplier
-        "puzzle_lr_multiplier": trial.suggest_float("puzzle_lr_multiplier", 10.0, 200.0),
+        # Puzzle embedding learning rate multiplier (wider range)
+        "puzzle_lr_multiplier": trial.suggest_float("puzzle_lr_multiplier", 5.0, 100.0),
         
-        # Puzzle weight decay
-        "puzzle_weight_decay": trial.suggest_float("puzzle_weight_decay", 0.01, 2.0),
+        # Puzzle weight decay (wider range)
+        "puzzle_weight_decay": trial.suggest_float("puzzle_weight_decay", 0.001, 3.0),
         
-        # Architecture: H and L cycles
-        "H_cycles": 2,  # Fixed at 2
-        "L_cycles": trial.suggest_categorical("L_cycles", [4, 8]),
+        # Architecture: H and L cycles (more options)
+        "H_cycles": trial.suggest_categorical("H_cycles", [1, 2, 3]),
+        "L_cycles": trial.suggest_categorical("L_cycles", [2, 4, 6, 8]),
         
-        # ACT halting
-        "halt_max_steps": trial.suggest_categorical("halt_max_steps", [2, 3, 4]),
-        "halt_exploration": trial.suggest_float("halt_exploration", 0.05, 0.15),
+        # ACT halting - FIXED at 2
+        "halt_max_steps": 2,
+        "halt_exploration": trial.suggest_float("halt_exploration", 0.02, 0.20),
         
-        # Regularization
-        "dropout": trial.suggest_float("dropout", 0.0, 0.3),
+        # Regularization (wider range)
+        "dropout": trial.suggest_float("dropout", 0.0, 0.4),
         
         # Optimizer settings
         "beta2": trial.suggest_float("beta2", 0.9, 0.999),
         
-        # Warmup
-        "warmup_steps": trial.suggest_int("warmup_steps", 500, 4000, step=500),
+        # Warmup (more options)
+        "warmup_steps": trial.suggest_int("warmup_steps", 200, 5000, step=200),
         
-        # Training mode
-        "async_batch": trial.suggest_categorical("async_batch", [True, False]),
+        # Training mode - FIXED async for efficiency
+        "async_batch": True,
     }
 
 
@@ -111,17 +111,17 @@ def get_ray_search_space() -> Dict[str, Any]:
     """Define search space for Ray Tune format."""
     return {
         "lr": tune.loguniform(1e-5, 1e-3),
-        "weight_decay": tune.uniform(0.05, 0.5),
-        "puzzle_lr_multiplier": tune.uniform(10.0, 200.0),
-        "puzzle_weight_decay": tune.uniform(0.01, 2.0),
-        "H_cycles": 2,  # Fixed at 2
-        "L_cycles": tune.choice([4, 8]),
-        "halt_max_steps": tune.choice([2, 3, 4]),
-        "halt_exploration": tune.uniform(0.05, 0.15),
-        "dropout": tune.uniform(0.0, 0.3),
+        "weight_decay": tune.uniform(0.01, 0.5),
+        "puzzle_lr_multiplier": tune.uniform(5.0, 100.0),
+        "puzzle_weight_decay": tune.uniform(0.001, 3.0),
+        "H_cycles": tune.choice([1, 2, 3]),
+        "L_cycles": tune.choice([2, 4, 6, 8]),
+        "halt_max_steps": 2,  # FIXED at 2
+        "halt_exploration": tune.uniform(0.02, 0.20),
+        "dropout": tune.uniform(0.0, 0.4),
         "beta2": tune.uniform(0.9, 0.999),
-        "warmup_steps": tune.choice([500, 1000, 1500, 2000, 2500, 3000, 3500, 4000]),
-        "async_batch": tune.choice([True, False]),
+        "warmup_steps": tune.choice([200, 500, 1000, 1500, 2000, 2500, 3000, 4000, 5000]),
+        "async_batch": True,  # FIXED async for efficiency
     }
 
 
