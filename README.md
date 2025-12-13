@@ -616,7 +616,7 @@ This is not a fixed design choice — the GRU can be replaced with other recurre
 - **LSTM** — Long Short-Term Memory for stronger gating
 - **xLSTM** — Extended LSTM with exponential gating and matrix memory ([Beck et al., 2024](https://arxiv.org/abs/2405.04517))
 - **Mamba / S4** — State-space models for efficient long-range dependencies
-
+- **minGRU / minLSTM** — Simplified variants for reduced overhead
 
 The key insight is that any recurrent unit capable of maintaining state **across depth** (i.e., across iteration steps, not across tokens) can serve as the controller backbone. Different choices may offer trade-offs in:
 - Memory capacity and gradient flow
