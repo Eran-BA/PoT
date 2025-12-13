@@ -600,10 +600,28 @@ This work builds upon several foundational papers:
 - [x] HybridPoHHRMSolver implementation (~25.8M params)
 - [x] Sudoku-Extreme dataset integration (1000 puzzles × 1000 augmentations)
 - [x] Colab notebook for A100 training
-- [ ] Reaching HRM paper target (55% grid accuracy)
+- [x] Reaching HRM paper target (55% grid accuracy)
 
 ### Archived (in `archive/` and `experiments/`)
 - NLI, GPT, Maze, Connect Four benchmarks
+
+---
+
+## 🔬 Future Research Directions
+
+The current architecture uses **GRU cells** for the recurrent controller modules (f_L and f_H). Importantly, these GRUs operate **across depth (refinement iterations)**, not across the input sequence length. Each token maintains its own independent controller state that evolves as the model iterates through reasoning steps.
+
+This is not a fixed design choice — the GRU can be replaced with other recurrent units:
+
+- **LSTM** — Long Short-Term Memory for stronger gating
+- **xLSTM** — Extended LSTM with exponential gating and matrix memory ([Beck et al., 2024](https://arxiv.org/abs/2405.04517))
+- **Mamba / S4** — State-space models for efficient long-range dependencies
+
+
+The key insight is that any recurrent unit capable of maintaining state **across depth** (i.e., across iteration steps, not across tokens) can serve as the controller backbone. Different choices may offer trade-offs in:
+- Memory capacity and gradient flow
+- Computational efficiency
+- Expressiveness of the routing dynamics
 
 ---
 
