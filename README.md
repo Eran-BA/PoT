@@ -613,12 +613,61 @@ The current architecture uses **GRU cells** for the recurrent controller modules
 
 This is not a fixed design choice — the GRU can be replaced with other recurrent units:
 
+### Option 1: Alternative Recurrent Units
+
 - **LSTM** — Long Short-Term Memory for stronger gating
 - **xLSTM** — Extended LSTM with exponential gating and matrix memory ([Beck et al., 2024](https://arxiv.org/abs/2405.04517))
 - **Mamba / S4** — State-space models for efficient long-range dependencies
 - **minGRU / minLSTM** — Simplified variants for reduced overhead
 
-The key insight is that any recurrent unit capable of maintaining state **across depth** (i.e., across iteration steps, not across tokens) can serve as the controller backbone. Different choices may offer trade-offs in:
+The key insight is that any recurrent unit capable of maintaining state **across depth** (i.e., across iteration steps, not across tokens) can serve as the controller backbone.
+
+### Option 2: Causal Depth Transformer Controller
+
+A more expressive alternative is to replace the GRU entirely with a **causal Transformer operating over the depth axis**. Unlike GRUs which only have implicit access to past states through compressed hidden states, a depth Transformer can explicitly attend to *any* relevant previous refinement step.
+
+**Core idea:** At refinement step t, compute routing weights α⁽ᵗ⁾ using only past and current depth states {x⁽⁰⁾, ..., x⁽ᵗ⁾}, then use α⁽ᵗ⁾ to mix attention heads.
+
+**Architecture:**
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Causal Depth Transformer Controller                        │
+│                                                             │
+│  Input options:                                             │
+│  ├── (A) Token-wise: u_i^(t) = W_u·x_i^(t) + pos^(t)       │
+│  └── (B) Pooled: g^(t) = Pool(X^(t)), u^(t) = W_u·g + pos  │
+│                                                             │
+│  Depth sequence U^(0:t) → DepthTransformer (causal mask)   │
+│  └── 1-2 layers, d_ctrl = d_model/4, n_heads = 4           │
+│                                                             │
+│  Output y^(t) → Router → α^(t) routing weights             │
+│  └── Token-conditioned: logits = W_r·[x_i | y^(t)]         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Advantages:**
+- **Explicit attention over depth history** — step 10 can directly reference step 3
+- **Parallel training** — causal mask allows batched forward pass over all K steps
+- **Better gradient flow** — residual connections avoid vanishing gradients
+- **Interpretability** — attention weights show which past reasoning steps matter
+
+**Implementation choices:**
+1. **Recompute prefix** (simple): At step t, run DepthTx on [0..t]. O(t²) across steps, fine for K ≤ 16.
+2. **KV-cache** (fast): Cache K/V for each layer over previous depth steps. O(t) per step.
+
+**Recommended starting point:**
+- Pooled controller input (Option B) for efficiency
+- Token-conditioned routing for per-token expressivity
+- 1-2 layer Transformer with d_ctrl = 128-256
+- Recompute prefix first, add KV-cache later if needed
+
+**Integration with HRM two-timescale design:**
+- Keep f_H (slow) as GRU — updates rarely, doesn't need long-range depth attention
+- Replace f_L (fast) with Depth Transformer — updates every step, benefits most
+
+---
+
+Different controller choices offer trade-offs in:
 - Memory capacity and gradient flow
 - Computational efficiency
 - Expressiveness of the routing dynamics
