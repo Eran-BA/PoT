@@ -645,6 +645,144 @@ A more expressive alternative is to replace the GRU entirely with a **causal Tra
 └─────────────────────────────────────────────────────────────┘
 ```
 
+**Detailed Architecture Diagram:**
+
+```
+                    CAUSAL DEPTH TRANSFORMER CONTROLLER
+    ═══════════════════════════════════════════════════════════════
+
+    INPUT (at refinement step t)
+    ┌─────────────────────────────────────────────────────────────┐
+    │  X^(t) = [x₁, x₂, ..., xₛ]   (S tokens, d_model each)      │
+    └───────────────────────────┬─────────────────────────────────┘
+                                │
+                                ▼
+    ┌─────────────────────────────────────────────────────────────┐
+    │                    POOLING + PROJECTION                     │
+    │  ┌─────────────┐    ┌─────────────┐    ┌─────────────────┐ │
+    │  │  LayerNorm  │ →  │  Mean Pool  │ →  │ Linear+GELU+Lin │ │
+    │  │   (X^(t))   │    │  over S     │    │ d_model → d_ctrl│ │
+    │  └─────────────┘    └─────────────┘    └────────┬────────┘ │
+    │                                                  │          │
+    │                                    u^(t) = ctrl_input + pos^(t)
+    └──────────────────────────────────────────────────┬──────────┘
+                                                       │
+                                                       ▼
+    ┌─────────────────────────────────────────────────────────────┐
+    │                    DEPTH CACHE (grows with t)               │
+    │                                                             │
+    │    U = [ u^(0), u^(1), u^(2), ..., u^(t) ]                 │
+    │          ↓       ↓       ↓             ↓                    │
+    │        step 0  step 1  step 2  ...  current                │
+    │                                                             │
+    └───────────────────────────┬─────────────────────────────────┘
+                                │
+                                ▼
+    ┌─────────────────────────────────────────────────────────────┐
+    │            CAUSAL DEPTH TRANSFORMER (over depth axis)       │
+    │                                                             │
+    │    ┌───────────────────────────────────────────────────┐   │
+    │    │  TransformerEncoder (n_layers=2, n_heads=4)       │   │
+    │    │                                                   │   │
+    │    │      Attention Mask (CAUSAL over depth):          │   │
+    │    │      ┌─────────────────────────┐                  │   │
+    │    │      │  step:  0   1   2   t   │                  │   │
+    │    │      │    0   [✓] [✗] [✗] [✗]  │  ✓ = can attend  │   │
+    │    │      │    1   [✓] [✓] [✗] [✗]  │  ✗ = masked out  │   │
+    │    │      │    2   [✓] [✓] [✓] [✗]  │                  │   │
+    │    │      │    t   [✓] [✓] [✓] [✓]  │  ← current step  │   │
+    │    │      └─────────────────────────┘                  │   │
+    │    │                                                   │   │
+    │    │  Each step can only see past steps (causal)       │   │
+    │    └───────────────────────────────────────────────────┘   │
+    │                          │                                  │
+    │                          ▼                                  │
+    │              Y = Transformer(U, causal_mask)               │
+    │              r^(t) = Y[-1]  (last position = current step) │
+    │                                                             │
+    └───────────────────────────┬─────────────────────────────────┘
+                                │
+                                ▼
+    ┌─────────────────────────────────────────────────────────────┐
+    │               TOKEN-CONDITIONED ROUTER                      │
+    │                                                             │
+    │    For each token i:                                        │
+    │    ┌────────────────────────────────────────────────────┐  │
+    │    │  r^(t)  ──┐                                        │  │
+    │    │           ├──→ concat ──→ [xᵢ | r^(t)]            │  │
+    │    │  xᵢ^(t) ─┘                     │                   │  │
+    │    │                                ▼                   │  │
+    │    │                    ┌────────────────────┐          │  │
+    │    │                    │  Router MLP        │          │  │
+    │    │                    │  LN → Linear+GELU  │          │  │
+    │    │                    │  → Linear → logits │          │  │
+    │    │                    └─────────┬──────────┘          │  │
+    │    │                              │                     │  │
+    │    │                              ▼                     │  │
+    │    │              logitsᵢ = [h₁, h₂, ..., hₕ]          │  │
+    │    │                              │                     │  │
+    │    │                    ┌─────────▼──────────┐          │  │
+    │    │                    │ Softmax(logits/τ)  │          │  │
+    │    │                    │ (temperature τ)    │          │  │
+    │    │                    └─────────┬──────────┘          │  │
+    │    │                              │                     │  │
+    │    │                    ┌─────────▼──────────┐          │  │
+    │    │                    │ Optional: Top-k    │          │  │
+    │    │                    │ sparsification     │          │  │
+    │    │                    └─────────┬──────────┘          │  │
+    │    │                              ▼                     │  │
+    │    │              αᵢ^(t) = [α₁, α₂, ..., αₕ]           │  │
+    │    └────────────────────────────────────────────────────┘  │
+    │                                                             │
+    └───────────────────────────┬─────────────────────────────────┘
+                                │
+                                ▼
+    ┌─────────────────────────────────────────────────────────────┐
+    │                         OUTPUT                              │
+    │                                                             │
+    │    α^(t) = [α₁^(t), α₂^(t), ..., αₛ^(t)]                   │
+    │                                                             │
+    │    Shape: [Batch, Sequence, Heads]                         │
+    │                                                             │
+    │    Each αᵢ^(t) sums to 1.0 (softmax over heads)            │
+    │    Used to weight attention head outputs in PoH Block      │
+    │                                                             │
+    └─────────────────────────────────────────────────────────────┘
+
+
+    KEY DIFFERENCES FROM GRU CONTROLLER:
+    ═══════════════════════════════════════════════════════════════
+
+    ┌─────────────────────────┬───────────────────────────────────┐
+    │      GRU Controller     │   Causal Depth Transformer        │
+    ├─────────────────────────┼───────────────────────────────────┤
+    │  h^(t) = GRU(x, h^(t-1))│  y^(t) = Attn(U^(0:t), causal)   │
+    │                         │                                   │
+    │  Compressed history     │  Explicit attention to ALL        │
+    │  in fixed-size hidden   │  previous depth steps             │
+    │  state h                │                                   │
+    │                         │                                   │
+    │  O(1) memory per step   │  O(t) memory (cache grows)        │
+    │                         │                                   │
+    │  Implicit past access   │  Explicit: step 10 can directly   │
+    │  (through h)            │  attend to step 3's features      │
+    │                         │                                   │
+    │  Sequential processing  │  Parallel training possible       │
+    │  (can't parallelize)    │  (with causal mask)               │
+    └─────────────────────────┴───────────────────────────────────┘
+```
+
+**Empirical Results (Sudoku-Extreme benchmark):**
+
+| Epoch | Transformer Cell | GRU Cell | Transformer Grid | GRU Grid |
+|-------|------------------|----------|------------------|----------|
+| 30 | 58.0% | ~55% | 0.0% | 0.0% |
+| 47 | 61.7% | 62.7% | 0.0% | 0.1% |
+| 62 | 63.6% | ~64% | 0.1% | ~0.8% |
+| 70 | 64.6% | 65.2% | 0.6% | 1.3% |
+
+**Verdict:** The Causal Depth Transformer achieves comparable performance to GRU, validating this alternative architecture for depth-wise control.
+
 **Advantages:**
 - **Explicit attention over depth history** — step 10 can directly reference step 3
 - **Parallel training** — causal mask allows batched forward pass over all K steps
