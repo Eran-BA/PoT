@@ -36,6 +36,8 @@ from dataclasses import dataclass
 from src.pot.models.reasoning_module import ReasoningModule
 from src.pot.models.hrm_layers import RMSNorm
 from src.pot.core.hrm_controller import HRMState
+from src.pot.core.depth_transformer_controller import DepthControllerCache
+from src.pot.core.lstm_controllers import LSTMDepthState, xLSTMDepthState
 
 
 @dataclass
@@ -504,19 +506,51 @@ class HybridHRMBase(nn.Module):
         Handles different state formats:
         - Tensor: use torch.where
         - HRMState (dataclass with z_L, z_H, step): reset each field
+        - DepthControllerCache (dataclass with u_list): reset depth history for halted samples
         - Other: return fresh state (fallback)
         """
         if isinstance(old_state, torch.Tensor):
             # Simple tensor state
             mask = halted_mask.view(-1, *([1] * (old_state.dim() - 1)))
             return torch.where(mask, fresh_state, old_state)
-        elif hasattr(old_state, 'z_L') and hasattr(old_state, 'z_H') and hasattr(old_state, 'step'):
+        elif isinstance(old_state, HRMState):
             # HRMState dataclass - reset each field for halted samples
             mask_2d = halted_mask.view(-1, 1)  # [B, 1] for broadcasting to [B, d_ctrl]
             new_z_L = torch.where(mask_2d, fresh_state.z_L, old_state.z_L)
             new_z_H = torch.where(mask_2d, fresh_state.z_H, old_state.z_H)
             new_step = torch.where(halted_mask, fresh_state.step, old_state.step)
             return HRMState(z_L=new_z_L, z_H=new_z_H, step=new_step)
+        elif isinstance(old_state, LSTMDepthState):
+            # LSTMDepthState - reset h, c, step for halted samples
+            mask_2d = halted_mask.view(-1, 1)  # [B, 1]
+            new_h = torch.where(mask_2d, fresh_state.h, old_state.h)
+            new_c = torch.where(mask_2d, fresh_state.c, old_state.c)
+            # step is an int, so use fresh for all if any halted (simplification)
+            new_step = fresh_state.step if halted_mask.any() else old_state.step
+            return LSTMDepthState(h=new_h, c=new_c, step=new_step)
+        elif isinstance(old_state, xLSTMDepthState):
+            # xLSTMDepthState - reset h, c, n, m for halted samples
+            mask_2d = halted_mask.view(-1, 1)  # [B, 1]
+            new_h = torch.where(mask_2d, fresh_state.h, old_state.h)
+            new_c = torch.where(mask_2d, fresh_state.c, old_state.c)
+            new_n = torch.where(mask_2d, fresh_state.n, old_state.n)
+            new_m = torch.where(halted_mask, fresh_state.m, old_state.m)
+            new_step = fresh_state.step if halted_mask.any() else old_state.step
+            return xLSTMDepthState(h=new_h, c=new_c, n=new_n, m=new_m, step=new_step)
+        elif isinstance(old_state, DepthControllerCache):
+            # DepthControllerCache - for halted samples, we clear their depth history
+            # u_list contains tensors of shape [B, d_ctrl]
+            # For halted samples, we zero out their entries to effectively reset
+            if len(old_state.u_list) == 0:
+                return fresh_state  # Already empty
+            
+            mask_2d = halted_mask.view(-1, 1)  # [B, 1]
+            new_u_list = []
+            for u in old_state.u_list:
+                # Zero out halted samples' entries (they'll rebuild from scratch)
+                new_u = torch.where(mask_2d, torch.zeros_like(u), u)
+                new_u_list.append(new_u)
+            return DepthControllerCache(u_list=new_u_list)
         else:
             # Unknown format - fallback to fresh (logs warning in debug)
             return fresh_state

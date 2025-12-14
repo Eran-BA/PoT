@@ -157,6 +157,18 @@ class CausalDepthTransformerRouter(nn.Module):
         """Initialize empty cache for a new forward pass."""
         return DepthControllerCache(u_list=[])
 
+    def init_state(self, batch_size: int, device: torch.device) -> DepthControllerCache:
+        """Initialize state for async batching (API compatibility with HRM controllers).
+        
+        Args:
+            batch_size: Batch size (not used, cache is batch-agnostic)
+            device: Device (not used, tensors are created lazily)
+            
+        Returns:
+            Empty DepthControllerCache
+        """
+        return self.init_cache()
+
     @staticmethod
     def _causal_mask(T: int, device: torch.device) -> torch.Tensor:
         """Create causal mask for depth Transformer.
