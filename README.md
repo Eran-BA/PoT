@@ -812,4 +812,93 @@ Different controller choices offer trade-offs in:
 
 ---
 
+### 3️⃣ Causal Depth Transformer Controller — Mermaid Diagram
+
+```mermaid
+flowchart TB
+    %% ==== Styles ====
+    classDef input fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#111
+    classDef pool fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#111
+    classDef cache fill:#fff3e0,stroke:#ef6c00,stroke-width:2px,color:#111
+    classDef transformer fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#111
+    classDef router fill:#fff9c4,stroke:#f9a825,stroke-width:2px,color:#111
+    classDef output fill:#ffebee,stroke:#c62828,stroke-width:2px,color:#111
+    classDef note fill:#fafafa,stroke:#bbb,stroke-width:1px,color:#333
+
+    %% ==== Input ====
+    X["X^(t) = Token representations<br/>[B, S, d_model]"]:::input
+
+    %% ==== Pooling Stage ====
+    subgraph POOL["Pooling + Projection"]
+        direction TB
+        LN["LayerNorm"]:::pool
+        MEAN["Mean Pool<br/>over S tokens"]:::pool
+        MLP["MLP: d_model → d_ctrl"]:::pool
+        POS["+ depth_pos^(t)"]:::pool
+        UT["u^(t) = controller input"]:::pool
+        
+        LN --> MEAN --> MLP --> POS --> UT
+    end
+
+    %% ==== Depth Cache ====
+    subgraph CACHE["Depth Cache (grows with t)"]
+        direction LR
+        U0["u^(0)"]:::cache
+        U1["u^(1)"]:::cache
+        U2["u^(2)"]:::cache
+        DOTS["..."]:::cache
+        UCUR["u^(t)"]:::cache
+    end
+
+    %% ==== Causal Transformer ====
+    subgraph DEPTHTX["Causal Depth Transformer"]
+        direction TB
+        STACK["TransformerEncoder<br/>n_layers=2, n_heads=4"]:::transformer
+        MASK["Causal Mask:<br/>step t sees only 0..t"]:::note
+        LASTOUT["r^(t) = output at position t"]:::transformer
+        
+        STACK --> LASTOUT
+        MASK -.-> STACK
+    end
+
+    %% ==== Router ====
+    subgraph ROUTER["Token-Conditioned Router"]
+        direction TB
+        CONCAT["concat(x_i, r^(t))<br/>for each token i"]:::router
+        RMLP["Router MLP:<br/>LN → Linear → GELU → Linear"]:::router
+        SOFTMAX["Softmax(logits / τ)"]:::router
+        TOPK{{"Optional: Top-k"}}:::router
+        ALPHA["α^(t) = routing weights<br/>[B, S, H]"]:::router
+        
+        CONCAT --> RMLP --> SOFTMAX --> TOPK --> ALPHA
+    end
+
+    %% ==== Output ====
+    OUT["α^(t) used in PoH Block<br/>to weight attention heads"]:::output
+
+    %% ==== Connections ====
+    X --> POOL
+    UT --> CACHE
+    UCUR --> DEPTHTX
+    U0 --> DEPTHTX
+    U1 --> DEPTHTX
+    U2 --> DEPTHTX
+    LASTOUT --> ROUTER
+    X -.->|"token features"| CONCAT
+    ALPHA --> OUT
+
+    %% ==== Recurrence ====
+    OUT -. "next refinement step t+1" .-> X
+```
+
+**How it works:**
+
+1. **Pool tokens** → compress X^(t) to single vector u^(t)
+2. **Append to cache** → U = [u^(0), u^(1), ..., u^(t)]
+3. **Causal attention** → Transformer attends only to past/current steps
+4. **Route per-token** → combine r^(t) with each token x_i to produce α_i^(t)
+5. **Apply to PoH Block** → α weights mix attention head outputs
+
+---
+
 **Questions?** Open an issue or see [QUICK_START.md](QUICK_START.md) for copy-paste commands!
