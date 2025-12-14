@@ -183,6 +183,9 @@ def train_epoch_async(
         if puzzle_optimizer:
             puzzle_optimizer.step()
         
+        # Detach carry to prevent gradient accumulation across steps
+        new_carry = new_carry.detach()
+        
         # Step schedulers
         if scheduler:
             scheduler.step()

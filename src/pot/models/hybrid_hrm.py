@@ -78,6 +78,43 @@ class PoTAsyncCarry:
     current_labels: torch.Tensor # [B, seq_len]
     current_puzzle_ids: torch.Tensor  # [B]
 
+    def detach(self) -> 'PoTAsyncCarry':
+        """Detach all tensors from computation graph to prevent gradient accumulation across steps."""
+        def _detach_state(state):
+            """Recursively detach state tensors."""
+            if state is None:
+                return None
+            if isinstance(state, torch.Tensor):
+                return state.detach()
+            if hasattr(state, 'u_list'):  # DepthControllerCache
+                return type(state)(u_list=[u.detach() for u in state.u_list])
+            if hasattr(state, 'h') and hasattr(state, 'c'):  # LSTM-like states
+                if hasattr(state, 'n'):  # xLSTMDepthState
+                    return type(state)(
+                        h=state.h.detach(), c=state.c.detach(),
+                        n=state.n.detach(), m=state.m.detach(),
+                        step=state.step
+                    )
+                else:  # LSTMDepthState
+                    return type(state)(h=state.h.detach(), c=state.c.detach(), step=state.step)
+            if hasattr(state, 'z_L') and hasattr(state, 'z_H'):  # HRMState
+                return type(state)(
+                    z_L=state.z_L.detach(), z_H=state.z_H.detach(), step=state.step
+                )
+            return state  # Unknown type, return as-is
+        
+        return PoTAsyncCarry(
+            z_H=self.z_H.detach(),
+            z_L=self.z_L.detach(),
+            L_ptr_state=_detach_state(self.L_ptr_state),
+            H_ptr_state=_detach_state(self.H_ptr_state),
+            steps=self.steps.detach(),
+            halted=self.halted.detach(),
+            current_input=self.current_input.detach(),
+            current_labels=self.current_labels.detach(),
+            current_puzzle_ids=self.current_puzzle_ids.detach(),
+        )
+
 
 class HybridHRMBase(nn.Module):
     """
