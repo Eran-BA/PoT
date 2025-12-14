@@ -607,9 +607,9 @@ This work builds upon several foundational papers:
 
 ---
 
-## 🔬 Future Research Directions
+## 🔬 Current (already implemented) Research Directions
 
-The current architecture uses **GRU cells** for the recurrent controller modules (f_L and f_H). Importantly, these GRUs operate **across depth (refinement iterations)**, not across the input sequence length. Each token maintains its own independent controller state that evolves as the model iterates through reasoning steps.
+The above architecture uses **GRU cells** for the recurrent controller modules (f_L and f_H). Importantly, these GRUs operate **across depth (refinement iterations)**, not across the input sequence length. Each token maintains its own independent controller state that evolves as the model iterates through reasoning steps.
 
 This is not a fixed design choice — the GRU can be replaced with other recurrent units:
 
