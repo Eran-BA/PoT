@@ -117,8 +117,8 @@ class ReasoningModule(nn.Module):
         if self.controller_type == "gru":
             # HRMPointerController uses state= kwarg
             route_weights, ptr_state, _ = self.pointer_controller(x, state=ptr_state)
-        elif self.controller_type == "transformer":
-            # CausalDepthTransformerRouter uses step() with cache
+        elif self.controller_type in ("transformer", "pot_transformer"):
+            # CausalDepthTransformerRouter and PoTDepthTransformerRouter use step() with cache
             route_weights, ptr_state, _ = self.pointer_controller.step(
                 x, t=depth_step, cache=ptr_state
             )

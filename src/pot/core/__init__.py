@@ -4,6 +4,7 @@ Core task-agnostic architecture components.
 
 from .hrm_controller import HRMPointerController, HRMState
 from .depth_transformer_controller import CausalDepthTransformerRouter, DepthControllerCache
+from .pot_transformer_controller import PoTDepthTransformerRouter
 from .lstm_controllers import (
     LSTMDepthController,
     LSTMDepthState,
@@ -28,6 +29,8 @@ __all__ = [
     # Controllers - Transformer based
     "CausalDepthTransformerRouter",
     "DepthControllerCache",
+    # Controllers - PoT Transformer (Nested PoT)
+    "PoTDepthTransformerRouter",
     # Controllers - LSTM based
     "LSTMDepthController",
     "LSTMDepthState",

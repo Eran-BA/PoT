@@ -49,7 +49,7 @@ class PoHSudokuSolver(nn.Module):
         max_halting_steps: Maximum halting steps
         latent_len: Number of latent tokens
         latent_k: Inner latent update iterations
-        controller_type: Type of depth controller ("gru", "lstm", "xlstm", "mingru", "transformer")
+        controller_type: Type of depth controller ("gru", "lstm", "xlstm", "mingru", "transformer", "pot_transformer")
         controller_kwargs: Additional kwargs for controller creation
     """
     
@@ -197,7 +197,7 @@ class PoHSudokuSolver(nn.Module):
         # Get routing weights (handle different controller APIs)
         if self.controller_type == "gru":
             route_weights, hrm_state, _ = self.hrm_controller(x, state=hrm_state)
-        elif self.controller_type == "transformer":
+        elif self.controller_type in ("transformer", "pot_transformer"):
             route_weights, hrm_state, _ = self.hrm_controller.step(
                 x, t=depth_step, cache=hrm_state
             )
@@ -352,7 +352,7 @@ class HybridPoHHRMSolver(HybridHRMBase):
         halt_max_steps: Maximum ACT outer steps (1 = no ACT, like original)
         halt_exploration_prob: Exploration probability for Q-learning
         allow_early_halt_eval: If True, enable Q-learning based early halting during eval
-        controller_type: Type of depth controller ("gru", "lstm", "xlstm", "mingru", "transformer")
+        controller_type: Type of depth controller ("gru", "lstm", "xlstm", "mingru", "transformer", "pot_transformer")
         controller_kwargs: Additional kwargs for controller creation
     """
     

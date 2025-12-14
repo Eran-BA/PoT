@@ -16,6 +16,7 @@ import torch.nn as nn
 
 from .hrm_controller import HRMPointerController
 from .depth_transformer_controller import CausalDepthTransformerRouter
+from .pot_transformer_controller import PoTDepthTransformerRouter
 from .lstm_controllers import (
     LSTMDepthController,
     xLSTMDepthController,
@@ -23,9 +24,9 @@ from .lstm_controllers import (
 )
 
 
-ControllerType = Literal["gru", "lstm", "xlstm", "mingru", "transformer"]
+ControllerType = Literal["gru", "lstm", "xlstm", "mingru", "transformer", "pot_transformer"]
 
-CONTROLLER_TYPES = ["gru", "lstm", "xlstm", "mingru", "transformer"]
+CONTROLLER_TYPES = ["gru", "lstm", "xlstm", "mingru", "transformer", "pot_transformer"]
 
 
 def create_controller(
@@ -146,6 +147,22 @@ def create_controller(
             **kwargs,
         )
     
+    elif controller_type == "pot_transformer":
+        # Nested PoT: Transformer controller with gated MHA internally
+        return PoTDepthTransformerRouter(
+            d_model=d_model,
+            n_heads=n_heads,
+            d_ctrl=d_ctrl,
+            n_ctrl_layers=n_ctrl_layers,
+            n_ctrl_heads=n_ctrl_heads,
+            dropout=dropout,
+            max_depth=max_depth,
+            token_conditioned=token_conditioned,
+            temperature=temperature,
+            topk=topk,
+            **kwargs,
+        )
+    
     else:
         valid_types = ", ".join(CONTROLLER_TYPES)
         raise ValueError(
@@ -185,6 +202,11 @@ def get_controller_info(controller_type: ControllerType) -> dict:
         "transformer": {
             "name": "Causal Depth Transformer",
             "description": "Transformer with causal attention over depth axis",
+            "paper": None,
+        },
+        "pot_transformer": {
+            "name": "PoT Depth Transformer (Nested PoT)",
+            "description": "Transformer with GATED MHA internally (nested PoT architecture)",
             "paper": None,
         },
     }
