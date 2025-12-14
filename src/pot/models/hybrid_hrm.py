@@ -111,6 +111,8 @@ class HybridHRMBase(nn.Module):
         halt_max_steps: Maximum ACT outer steps (default 1 = no ACT)
         halt_exploration_prob: Exploration probability for Q-learning
         allow_early_halt_eval: If True, enable Q-learning based early halting during eval
+        controller_type: Type of depth controller ("gru", "lstm", "xlstm", "mingru", "transformer")
+        controller_kwargs: Additional kwargs for controller creation
     """
     
     def __init__(
@@ -129,6 +131,8 @@ class HybridHRMBase(nn.Module):
         halt_max_steps: int = 1,
         halt_exploration_prob: float = 0.1,
         allow_early_halt_eval: bool = False,
+        controller_type: str = "gru",
+        controller_kwargs: dict = None,
     ):
         super().__init__()
         
@@ -140,6 +144,7 @@ class HybridHRMBase(nn.Module):
         self.halt_max_steps = halt_max_steps
         self.halt_exploration_prob = halt_exploration_prob
         self.allow_early_halt_eval = allow_early_halt_eval
+        self.controller_type = controller_type
         
         # Embedding scaling factor (CRITICAL: HRM uses this!)
         self.embed_scale = d_model ** 0.5  # sqrt(512) ≈ 22.6
@@ -150,8 +155,17 @@ class HybridHRMBase(nn.Module):
         self.register_buffer('L_init', torch.randn(d_model) * 1.0)
         
         # Two-timescale reasoning modules with PoT head routing
-        self.L_level = ReasoningModule(d_model, n_heads, L_layers, d_ff, dropout, T)
-        self.H_level = ReasoningModule(d_model, n_heads, H_layers, d_ff, dropout, T)
+        ctrl_kwargs = controller_kwargs or {}
+        self.L_level = ReasoningModule(
+            d_model, n_heads, L_layers, d_ff, dropout, T,
+            controller_type=controller_type,
+            controller_kwargs=ctrl_kwargs,
+        )
+        self.H_level = ReasoningModule(
+            d_model, n_heads, H_layers, d_ff, dropout, T,
+            controller_type=controller_type,
+            controller_kwargs=ctrl_kwargs,
+        )
         
         # Output normalization
         self.final_norm = RMSNorm(d_model)
@@ -214,8 +228,8 @@ class HybridHRMBase(nn.Module):
         z_L = self.L_init.view(1, 1, -1).expand(B, self.seq_len, -1).clone()
         
         # Initialize pointer controller states
-        L_ptr_state = self.L_level.pointer_controller.init_state(B, device)
-        H_ptr_state = self.H_level.pointer_controller.init_state(B, device)
+        L_ptr_state = self._init_controller_state(self.L_level.pointer_controller, B, device)
+        H_ptr_state = self._init_controller_state(self.H_level.pointer_controller, B, device)
         
         if hrm_grad_style:
             # HRM-style: ONLY the very last L_level call and very last H_level call get gradients
@@ -269,12 +283,24 @@ class HybridHRMBase(nn.Module):
         
         return hidden, q_halt, q_continue, self.H_cycles * self.L_cycles
     
+    def _init_controller_state(self, controller, batch_size: int, device: torch.device):
+        """Initialize controller state, handling different controller types."""
+        if hasattr(controller, 'init_cache'):
+            # Transformer controller
+            return controller.init_cache()
+        elif hasattr(controller, 'init_state'):
+            # GRU, LSTM, xLSTM, minGRU controllers
+            return controller.init_state(batch_size, device)
+        else:
+            # Fallback: return None and let controller handle it
+            return None
+    
     def _init_carry(self, B: int, device: torch.device) -> ACTCarry:
         """Initialize carry state for ACT wrapper."""
         z_H = self.H_init.view(1, 1, -1).expand(B, self.seq_len, -1).clone()
         z_L = self.L_init.view(1, 1, -1).expand(B, self.seq_len, -1).clone()
-        L_ptr_state = self.L_level.pointer_controller.init_state(B, device)
-        H_ptr_state = self.H_level.pointer_controller.init_state(B, device)
+        L_ptr_state = self._init_controller_state(self.L_level.pointer_controller, B, device)
+        H_ptr_state = self._init_controller_state(self.H_level.pointer_controller, B, device)
         return ACTCarry(z_H=z_H, z_L=z_L, L_ptr_state=L_ptr_state, H_ptr_state=H_ptr_state)
     
     def _single_act_step(

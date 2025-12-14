@@ -17,6 +17,7 @@ import torch.nn.functional as F
 from typing import Optional
 
 from src.pot.core.hrm_controller import HRMPointerController, HRMState
+from src.pot.core.controller_factory import create_controller
 from src.pot.models.hybrid_hrm import HybridHRMBase
 from src.pot.models.puzzle_embedding import PuzzleEmbedding
 from src.pot.models.adaptive_halting import QHaltingController
@@ -48,6 +49,8 @@ class PoHSudokuSolver(nn.Module):
         max_halting_steps: Maximum halting steps
         latent_len: Number of latent tokens
         latent_k: Inner latent update iterations
+        controller_type: Type of depth controller ("gru", "lstm", "xlstm", "mingru", "transformer")
+        controller_kwargs: Additional kwargs for controller creation
     """
     
     def __init__(
@@ -65,6 +68,8 @@ class PoHSudokuSolver(nn.Module):
         max_halting_steps: int = 16,
         latent_len: int = 16,
         latent_k: int = 3,
+        controller_type: str = "gru",  # NEW: controller type
+        controller_kwargs: dict = None,  # NEW: controller kwargs
     ):
         super().__init__()
         
@@ -73,6 +78,7 @@ class PoHSudokuSolver(nn.Module):
         self.R = R
         self.n_layers = n_layers
         self.seq_len = 81  # 9x9 Sudoku
+        self.controller_type = controller_type
         
         # Puzzle embeddings
         self.puzzle_emb = PuzzleEmbedding(num_puzzles, puzzle_emb_dim, init_std=0.02)
@@ -95,12 +101,15 @@ class PoHSudokuSolver(nn.Module):
         self.pos_embed = nn.Parameter(torch.randn(1, max_len, d_model) * 0.02)
         self.pre_norm = nn.LayerNorm(d_model)
         
-        # HRM controller
-        self.hrm_controller = HRMPointerController(
+        # Depth controller (supports multiple types)
+        ctrl_kwargs = controller_kwargs or {}
+        self.hrm_controller = create_controller(
+            controller_type=controller_type,
             d_model=d_model,
             n_heads=n_heads,
             T=T,
-            dropout=dropout
+            dropout=dropout,
+            **ctrl_kwargs,
         )
         
         # Transformer layers (Post-norm + SwiGLU)
@@ -125,16 +134,85 @@ class PoHSudokuSolver(nn.Module):
         # Output projection
         self.output_proj = nn.Linear(d_model, vocab_size)
     
-    def _encode_once(self, x: torch.Tensor, hrm_state: Optional[HRMState] = None):
-        """Single encoding pass with HRM routing."""
+    def _init_controller_state(self, batch_size: int, device):
+        """Initialize controller state, handling different controller types."""
+        if hasattr(self.hrm_controller, 'init_cache'):
+            return self.hrm_controller.init_cache()
+        elif hasattr(self.hrm_controller, 'init_state'):
+            return self.hrm_controller.init_state(batch_size, device)
+        return None
+    
+    def _detach_controller_state(self, state):
+        """Detach controller state for O(1) memory."""
+        if state is None:
+            return None
+        
+        # Handle HRMState (GRU controller)
+        if hasattr(state, 'z_L') and hasattr(state, 'z_H'):
+            return HRMState(
+                z_L=state.z_L.detach(),
+                z_H=state.z_H.detach(),
+                step=state.step
+            )
+        
+        # Handle LSTMDepthState
+        if hasattr(state, 'h') and hasattr(state, 'c') and hasattr(state, 'step'):
+            from src.pot.core.lstm_controllers import LSTMDepthState
+            return LSTMDepthState(
+                h=state.h.detach(),
+                c=state.c.detach(),
+                step=state.step
+            )
+        
+        # Handle xLSTMDepthState
+        if hasattr(state, 'n') and hasattr(state, 'm'):
+            from src.pot.core.lstm_controllers import xLSTMDepthState
+            return xLSTMDepthState(
+                h=state.h.detach(),
+                c=state.c.detach(),
+                n=state.n.detach(),
+                m=state.m.detach(),
+                step=state.step
+            )
+        
+        # Handle DepthControllerCache (transformer)
+        if hasattr(state, 'u_list'):
+            from src.pot.core.depth_transformer_controller import DepthControllerCache
+            return DepthControllerCache(
+                u_list=[u.detach() for u in state.u_list]
+            )
+        
+        # Handle simple tensor state (minGRU)
+        if isinstance(state, torch.Tensor):
+            return state.detach()
+        
+        # Fallback
+        return state
+    
+    def _encode_once(self, x: torch.Tensor, hrm_state=None, depth_step: int = 0):
+        """Single encoding pass with routing."""
         B, T, D = x.shape
         n_heads = self.attn_layers[0].num_heads
         
-        # Get routing weights
-        route_weights, hrm_state, _ = self.hrm_controller(x, state=hrm_state)
+        # Get routing weights (handle different controller APIs)
+        if self.controller_type == "gru":
+            route_weights, hrm_state, _ = self.hrm_controller(x, state=hrm_state)
+        elif self.controller_type == "transformer":
+            route_weights, hrm_state, _ = self.hrm_controller.step(
+                x, t=depth_step, cache=hrm_state
+            )
+        else:
+            route_weights, hrm_state, _ = self.hrm_controller.step(x, state=hrm_state)
         
-        # Scale routing weights by n_heads to preserve magnitude
-        route_weights_scaled = route_weights * n_heads
+        # Handle different output shapes
+        if route_weights.dim() == 2:
+            # [B, H] -> scale and expand
+            route_weights_scaled = route_weights * n_heads
+            route_exp = route_weights_scaled.unsqueeze(1).unsqueeze(-1)
+        else:
+            # [B, S, H] -> per-token routing
+            route_weights_scaled = route_weights * n_heads
+            route_exp = route_weights_scaled.unsqueeze(-1)
         
         # Apply transformer layers with head routing
         for attn, ffn, norm1, norm2, drop in zip(
@@ -145,7 +223,6 @@ class PoHSudokuSolver(nn.Module):
             attn_out, _ = attn(x, x, x, need_weights=False)
             d_head = D // attn.num_heads
             attn_out_heads = attn_out.view(B, T, attn.num_heads, d_head)
-            route_exp = route_weights_scaled.unsqueeze(1).unsqueeze(-1)
             attn_out_routed = (attn_out_heads * route_exp).view(B, T, D)
             x = norm1(x + drop(attn_out_routed))
             
@@ -191,8 +268,8 @@ class PoHSudokuSolver(nn.Module):
         # Persistent hidden state (HRM-style)
         x_grid_hidden = torch.zeros_like(x_grid_input)
         
-        # Initialize HRM state
-        hrm_state = self.hrm_controller.init_state(B, device)
+        # Initialize controller state
+        hrm_state = self._init_controller_state(B, device)
         actual_steps = self.max_halting_steps
         x_out = None
         
@@ -213,8 +290,8 @@ class PoHSudokuSolver(nn.Module):
             x_step = x_step + self.pos_embed[:, :x_step.size(1), :]
             x_step = self.pre_norm(x_step)
             
-            # Encode
-            x_out, hrm_state = self._encode_once(x_step, hrm_state)
+            # Encode (pass depth_step for transformer controller)
+            x_out, hrm_state = self._encode_once(x_step, hrm_state, depth_step=step - 1)
             
             # Check halting
             q_halt, q_continue = self.q_halt_controller(x_out)
@@ -231,12 +308,7 @@ class PoHSudokuSolver(nn.Module):
             latent_cur = latent_cur.detach()
             x_out = x_out.detach()
             x_grid_hidden = x_grid_hidden.detach()
-            if hrm_state is not None:
-                hrm_state = HRMState(
-                    z_L=hrm_state.z_L.detach(),
-                    z_H=hrm_state.z_H.detach(),
-                    step=hrm_state.step
-                )
+            hrm_state = self._detach_controller_state(hrm_state)
         
         # Extract output (remove puzzle + latent tokens)
         x = x_out[:, self.puzzle_emb_len + self.latent_len:, :]
@@ -280,6 +352,8 @@ class HybridPoHHRMSolver(HybridHRMBase):
         halt_max_steps: Maximum ACT outer steps (1 = no ACT, like original)
         halt_exploration_prob: Exploration probability for Q-learning
         allow_early_halt_eval: If True, enable Q-learning based early halting during eval
+        controller_type: Type of depth controller ("gru", "lstm", "xlstm", "mingru", "transformer")
+        controller_kwargs: Additional kwargs for controller creation
     """
     
     def __init__(
@@ -300,6 +374,8 @@ class HybridPoHHRMSolver(HybridHRMBase):
         halt_max_steps: int = 1,  # 1 = no ACT (original behavior), >1 = ACT enabled
         halt_exploration_prob: float = 0.1,
         allow_early_halt_eval: bool = False,  # Enable early halting during eval
+        controller_type: str = "gru",  # NEW: controller type
+        controller_kwargs: dict = None,  # NEW: controller kwargs
     ):
         # Initialize base class with ACT parameters
         super().__init__(
@@ -317,6 +393,8 @@ class HybridPoHHRMSolver(HybridHRMBase):
             halt_max_steps=halt_max_steps,
             halt_exploration_prob=halt_exploration_prob,
             allow_early_halt_eval=allow_early_halt_eval,
+            controller_type=controller_type,
+            controller_kwargs=controller_kwargs,
         )
         
         self.vocab_size = vocab_size
