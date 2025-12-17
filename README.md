@@ -241,7 +241,7 @@ Rather than running deeper networks, PoT deepens its thinking process — contin
 
 In other words:
 
-PoT doesn’t just compute token embeddings — it thinks within them, iteratively reorganizing its own representation space to reach a more coherent internal understanding, without fall to the lower token ids 1-dimention. (which cause a loss of a lot of information found in the embeddings themself)
+PoT doesn’t just compute token embeddings — it thinks within them, iteratively reorganizing its own representation space to reach a more coherent internal understanding, without fall to the lower token ids 1-dimension. (which cause a loss of a lot of information found in the embeddings themself)
 
 
 ### Comparison to related ideas
