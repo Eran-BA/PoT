@@ -6,6 +6,8 @@
 
 ## 🗞 News
 
+- 📄 **Paper**: [BERT/GPT with Inner-Thinking Cycles: Iterative Refinement via Dynamic Head Routing](paper.pdf)
+
 - **Sudoku Benchmark (Colab, A100)** — train a master-level Sudoku solver:
   [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Sudoku_PoH_Benchmark.ipynb)
 
@@ -541,6 +543,19 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
 
 ## 📖 Citation
 
+### Paper
+
+```bibtex
+@article{benartzy2025pot,
+  author       = {Eran Ben Artzy},
+  title        = {BERT/GPT with Inner-Thinking Cycles: Iterative Refinement via Dynamic Head Routing},
+  year         = {2025},
+  note         = {Available at https://github.com/Eran-BA/PoT/blob/main/paper.pdf}
+}
+```
+
+### Software
+
 ```bibtex
 @software{benartzy2025poh,
   author       = {Eran Ben Artzy},
@@ -554,6 +569,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
 
 Or cite as:
 
+> Ben Artzy, E. (2025). BERT/GPT with Inner-Thinking Cycles: Iterative Refinement via Dynamic Head Routing. [Paper](paper.pdf)
+>
 > Ben Artzy, E. (2025). Pointer-over-Heads Transformer: Dynamic Multi-Head Attention with Adaptive Routing. Zenodo. https://doi.org/10.5281/zenodo.17958198
 
 ---

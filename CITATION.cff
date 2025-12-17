@@ -12,24 +12,42 @@ type: software
 authors:
   - family-names: Ben Artzy
     given-names: Eran
+    email: eranb92@gmail.com
 repository-code: 'https://github.com/Eran-BA/PoT'
 url: 'https://github.com/Eran-BA/PoT'
 abstract: >-
-  A novel transformer architecture for dependency parsing
-  that dynamically routes information through attention heads
-  using a learned controller. Unlike standard transformers
-  that use all heads equally, PoT adaptively selects which
-  heads to attend to based on the input, enabling adaptive
-  computation and head specialization.
+  The Pointer-over-Heads Transformer (PoT) is a drop-in modification 
+  of multi-head attention that adds dynamic head-wise routing and 
+  iterative refinement cycles with full compatibility with PyTorch 
+  MultiheadAttention. A two-timescale hierarchical controller produces 
+  per-token routing weights over attention heads, enabling the model 
+  to compose different attention patterns across refinement steps.
+  On the Sudoku-Extreme benchmark, PoT achieves 80% grid accuracy—a 
+  +25 percentage point improvement over the HRM baseline (55%)—and 
+  92% cell accuracy, outperforming Tiny Recursive Models (87%).
 keywords:
   - transformer
   - attention mechanism
-  - dependency parsing
+  - iterative refinement
   - adaptive computation
-  - natural language processing
+  - dynamic routing
+  - multi-head attention
   - deep learning
   - pytorch
+  - sudoku
+  - reasoning
 license: Apache-2.0
-version: 0.1.1
-date-released: '2025-10-11'
+version: 2.0.0
+date-released: '2025-12-16'
+preferred-citation:
+  type: article
+  authors:
+    - family-names: Ben Artzy
+      given-names: Eran
+      email: eranb92@gmail.com
+  title: >-
+    BERT/GPT with Inner-Thinking Cycles: Iterative Refinement 
+    via Dynamic Head Routing
+  year: 2025
+  url: 'https://github.com/Eran-BA/PoT/blob/main/paper.pdf'
 

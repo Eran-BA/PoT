@@ -1,0 +1,405 @@
+\documentclass[11pt]{article}
+
+% =========================
+% Packages
+% =========================
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\geometry{margin=1in}
+\usepackage{setspace}
+\onehalfspacing
+
+\usepackage{amsmath, amssymb}
+\usepackage{bm}
+
+\usepackage{graphicx}
+\usepackage{booktabs}
+
+\usepackage{hyperref}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  citecolor=blue,
+  urlcolor=blue
+}
+
+\usepackage{enumitem}
+
+\usepackage{listings}
+\usepackage{xcolor}
+
+% =========================
+% Listings setup
+% =========================
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  frame=single,
+  columns=fullflexible,
+  showstringspaces=false
+}
+
+% =========================
+% Commands
+% =========================
+\newcommand{\poh}{PoT}
+\newcommand{\dmodel}{d_{\mathrm{model}}}
+\newcommand{\fL}{f_{\mathrm{L}}}
+\newcommand{\fH}{f_{\mathrm{H}}}
+
+% =========================
+% Title
+% =========================
+\title{BERT/GPT with Inner-Thinking Cycles:\\
+Iterative Refinement via Dynamic Head Routing\\[0.5em]
+\small Bringing Latent Multi-Cycle Reasoning into Standard Transformers}
+
+\author{
+Eran Ben Artzy\\
+\texttt{eranb92@gmail.com}
+}
+
+\date{December 2025}
+
+\begin{document}
+\maketitle
+
+% =========================
+% Abstract
+% =========================
+\begin{abstract}
+Standard Transformers process each input through a fixed number of layers with similar structure of heads, limiting their ability to adapt computation to task difficulty. Meanwhile, latent multi-step reasoning models demonstrate that iterative internal computation can solve algorithmic tasks, but often diverge from mainstream Transformer.
+
+I introduce the \emph{Pointer-over-Heads Transformer} (\poh{}), a drop-in modification of multi-head attention that adds (i)~\textbf{dynamic head-wise routing} and (ii)~\textbf{iterative refinement cycles} and full compatibility with PyTorch \texttt{MultiheadAttention}. A two-timescale hierarchical controller, produces per-token routing weights over attention heads, enabling the model to compose different attention patterns across refinement steps.
+
+On the Sudoku-Extreme benchmark, \poh{} achieves \textbf{80\% grid accuracy}—a +25 percentage point improvement over the HRM baseline (55\%)—and \textbf{92\% cell accuracy}, outperforming Tiny Recursive Models (87\%). The architecture enables BERT/GPT-style models to ``think'' through multiple internal cycles while maintaining the same parameter count. The full implementation is available at \href{https://github.com/Eran-BA/PoT}{https://github.com/Eran-BA/PoT}.
+\end{abstract}
+
+% =========================
+% Introduction
+% =========================
+\section{Introduction}
+
+Transformers~\cite{vaswani2017} have become the dominant architecture across language, vision, and multimodal learning. However, their computation pattern is rigid: each input passes through the same fixed stack of layers regardless of task difficulty. This fixed-depth design limits adaptive computation—simple inputs consume the same resources as complex ones, and multi-step reasoning must be compressed into a single forward pass.
+
+Recent latent reasoning models demonstrate that iterative internal computation can solve algorithmic tasks such as Sudoku-Extreme~\cite{hrm2025} and maze navigation using relatively few parameters. These models refine an internal state over multiple steps rather than producing explicit chain-of-thought text. However, they often rely on custom architectures that are incompatible with mainstream Transformer implementations and pretrained checkpoints.
+
+This work asks: \emph{Can we add inner-thinking cycles to BERT/GPT-style architectures while preserving parameter parity and implementation compatibility?}
+
+The answer is yes. I introduce the Pointer-over-Heads Transformer (\poh{}), which enables standard Transformers to perform iterative refinement through dynamic attention head routing. The key insight is that different attention heads can specialize in different reasoning patterns, and a learned controller can compose these patterns across multiple refinement steps—effectively giving the model ``thinking time'' within a single forward pass.
+
+\paragraph{Contributions.}
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Pointer-over-Heads (\poh{}) Attention:} A drop-in replacement for standard multi-head attention that adds dynamic per-token, per-head routing.
+  
+  \item \textbf{Two-Timescale Controller:} A hierarchical routing mechanism with fast ($\fL$) and slow ($\fH$) components that enables compositional multi-step reasoning.
+  
+  \item \textbf{Inner-Thinking Architecture:} Integration of iterative refinement into BERT/GPT-style models, yielding 16 effective reasoning steps per forward pass while maintaining parameter parity.
+  
+  \item \textbf{State-of-the-Art Results:} On Sudoku-Extreme, \poh{} achieves 80\% grid accuracy (+25pp over HRM) and 92\% cell accuracy (+5pp over TRM).
+\end{enumerate}
+
+% =========================
+% Background
+% =========================
+\section{Background and Related Work}
+
+\subsection{Fixed-Depth Transformers}
+Standard Transformers~\cite{vaswani2017} stack multi-head self-attention and feed-forward blocks. Both depth and head aggregation are fixed at architecture design time. While effective for many tasks, this rigidity limits adaptive computation: the model cannot allocate more ``thinking'' to harder examples.
+
+\subsection{Iterative Refinement and Recursive Transformers}
+Several works explore iterative computation:
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Adaptive Computation Time (ACT)}~\cite{graves2016}: Learns when to halt computation via a differentiable pondering mechanism.
+ 
+  \item \textbf{Tiny Recursive Models (TRM)}: Reuse blocks to simulate deeper networks with fewer parameters, achieving 87\% cell accuracy on Sudoku.
+\end{itemize}
+These approaches reuse uniform computation. \poh{} differs by \emph{routing over attention heads} at each step, allowing different reasoning patterns per iteration.
+
+\subsection{Hierarchical Reasoning Model (HRM)}
+The HRM~\cite{hrm2025} introduces two-timescale recurrent modules for algorithmic reasoning:
+\begin{itemize}[leftmargin=*]
+  \item $\fL$ (low-level): Updates every step—fast, reactive computation.
+  \item $\fH$ (high-level): Updates every $T$ steps—slow, strategic planning.
+\end{itemize}
+HRM achieves 55\% grid accuracy on Sudoku-Extreme. \poh{} adapts this two-timescale design to route over attention heads within standard Transformer blocks, achieving 80\% grid accuracy.
+
+\subsection{Mixture-of-Experts and Routing}
+Mixture-of-experts (MoE) models route tokens to different expert sub-networks for efficiency. \poh{} differs fundamentally:
+\begin{itemize}[leftmargin=*]
+  \item Routes over \emph{attention heads}, not experts
+  \item Processes \emph{all tokens} densely (no sparse routing)
+  \item Re-routes at \emph{every refinement step}
+  \item Goal is adaptive reasoning, not computational efficiency
+\end{itemize}
+
+% =========================
+% Architecture
+% =========================
+\section{Pointer-over-Heads Transformer}
+
+\subsection{Overview}
+
+The \poh{} architecture adds inner-thinking cycles to standard Transformers through three nested mechanisms:
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Refinement Loop:} The model applies its attention blocks $R$ times per forward pass, iteratively refining token representations.
+  \item \textbf{Two-Timescale Controller:} At each refinement step, a hierarchical controller produces routing weights over attention heads.
+  \item \textbf{Weighted Head Aggregation:} Head outputs are combined using learned routing weights rather than uniform concatenation.
+\end{enumerate}
+
+This enables the model to ``think'' through problems by composing different attention patterns across iterations—similar to how humans might approach a puzzle by alternating between local deduction and global pattern recognition.
+
+\subsection{Dynamic Head-Wise Routing}
+
+Let $\dmodel$ denote the hidden dimension and $H$ the number of attention heads. Given token representations $\mathbf{X}^{(t)} \in \mathbb{R}^{N \times \dmodel}$ at refinement step $t$, each head computes standard attention:
+\[
+\mathrm{Head}_k(\mathbf{X}^{(t)}) =
+\mathrm{Softmax}\!\left(\frac{\mathbf{X}^{(t)}W^Q_k (\mathbf{X}^{(t)}W^K_k)^\top}{\sqrt{d_k}}\right) \mathbf{X}^{(t)}W^V_k
+\]
+
+In standard multi-head attention, head outputs are concatenated uniformly. \poh{} instead combines heads using \emph{per-token, per-step} routing weights $\alpha^{(t)}_{i,k}$:
+\begin{equation}
+\tilde{h}^{(t)}_i = \sum_{k=1}^{H} \alpha^{(t)}_{i,k} \cdot \mathrm{Head}_k(\mathbf{X}^{(t)})_i
+\label{eq:routing}
+\end{equation}
+where $\sum_k \alpha^{(t)}_{i,k} = 1$ via softmax normalization. Critically, the routing weights $\alpha$ change at each refinement step $t$, allowing the model to emphasize different heads as reasoning progresses.
+
+\subsection{Controller Architectures}
+
+The routing weights are produced by a controller that operates across the \emph{depth axis} (refinement iterations), not across the input sequence. We implement two controller variants:
+
+\subsubsection{GRU Controller (Default)}
+
+A two-timescale hierarchical controller inspired by HRM~\cite{hrm2025}:
+
+\paragraph{Low-level module ($\fL$).} Updates at \emph{every} refinement step, enabling fast, reactive adjustments:
+\begin{equation}
+z_L^{(t)} = \mathrm{GRU}_L\!\left( [x_{\mathrm{pool}}^{(t)}; z_H^{(t)}],\, z_L^{(t-1)} \right)
+\end{equation}
+where $x_{\mathrm{pool}}^{(t)}$ is a pooled summary of token representations and $[\cdot\,;\cdot]$ denotes concatenation.
+
+\paragraph{High-level module ($\fH$).} Updates every $T$ steps, maintaining slow, strategic context:
+\begin{equation}
+z_H^{(t)} = 
+\begin{cases}
+\mathrm{GRU}_H\!\left( x_{\mathrm{pool}}^{(t)},\, z_H^{(t-1)} \right) & \text{if } t \bmod T = 0 \\
+z_H^{(t-1)} & \text{otherwise}
+\end{cases}
+\end{equation}
+
+\paragraph{Routing computation.} The final routing weights combine token features with controller state:
+\begin{equation}
+\bm{\alpha}^{(t)}_i = \mathrm{Softmax}\!\left( W_r \cdot [x_i^{(t)}; z_L^{(t)}] \,/\, \tau \right)
+\end{equation}
+where $\tau$ is a learnable temperature parameter.
+
+\subsubsection{Causal Depth Transformer Controller}
+
+An alternative controller that replaces GRU cells with self-attention over the depth axis, i.e. over the thinking history, Unlike GRUs which only have implicit access to past states through compressed hidden states, the Causal Depth Transformer can \emph{explicitly attend to any previous refinement step}:
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Pool tokens:} Compress $\mathbf{X}^{(t)}$ to a single vector $u^{(t)} \in \mathbb{R}^{d_{\mathrm{ctrl}}}$ plus learned depth positional embedding.
+  \item \textbf{Append to cache:} Build sequence $U = [u^{(0)}, u^{(1)}, \ldots, u^{(t)}]$.
+  \item \textbf{Causal attention:} Run a Transformer encoder with causal mask—step $t$ attends only to steps $0 \ldots t$.
+  \item \textbf{Route per-token:} Combine output $r^{(t)}$ with each token $x_i^{(t)}$ to produce $\alpha_i^{(t)}$.
+\end{enumerate}
+
+This architecture offers explicit attention over the depth history and enables parallel training via causal masking. The implementation uses 2 layers, 8 attention heads, and $d_{\mathrm{ctrl}} = 256$.
+
+\subsection{Full Architecture}
+
+For complex reasoning tasks, we organize \poh{} blocks into a two-level hierarchy:
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{L-level (fast reasoning):} Runs $L_{\mathrm{cycles}}$ iterations per H-cycle
+  \item \textbf{H-level (slow reasoning):} Runs $H_{\mathrm{cycles}}$ outer iterations
+\end{itemize}
+
+Total refinement steps per forward pass: $R = H_{\mathrm{cycles}} \times L_{\mathrm{cycles}}$.
+
+Each level contains:
+\begin{itemize}[leftmargin=*]
+  \item Multiple \poh{} attention blocks
+  \item RMSNorm for stable training
+  \item SwiGLU feed-forward networks
+  \item Residual connections
+\end{itemize}
+
+\paragraph{Gradient efficiency.} Following HRM, only the final iteration receives gradients during training, reducing memory cost while maintaining performance.
+
+% =========================
+% Benchmark
+% =========================
+\section{Sudoku-Extreme Benchmark}
+
+\subsection{Task Description}
+Sudoku-Extreme consists of minimal-clue puzzles (17--23 given digits) that require deep logical reasoning. Given a 9$\times$9 grid with blanks (represented as 0), the model must predict all 81 cell values. This task tests multi-step constraint propagation—a capability that fixed-depth models struggle with.
+
+\subsection{Dataset}
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Base puzzles:} 10,000 Sudoku-Extreme instances
+  \item \textbf{Augmentation:} 100 symmetry/permutation transforms per puzzle
+  \item \textbf{Training set:} 1,000,000 augmented examples
+  \item \textbf{Validation:} Held-out puzzles with fresh augmentations
+\end{itemize}
+
+\subsection{Model Configuration}
+
+\begin{table}[h]
+\centering
+\caption{HybridPoHHRM configuration for Sudoku-Extreme}
+\label{tab:config}
+\begin{tabular}{ll}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+Hidden dimension ($\dmodel$) & 512 \\
+Attention heads ($H$) & 8 \\
+FFN dimension & 2048 \\
+H-cycles / L-cycles & 2 / 8 \\
+H-layers / L-layers & 2 / 2 \\
+Controller period ($T$) & 4 \\
+Controller dimension & 256 \\
+Total refinement steps & 16 \\
+Dropout & 0.0 \\
+Total parameters & $\sim$25.8M \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Training Details}
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Optimizer:} AdamW ($\beta_1=0.9$, $\beta_2=0.95$)
+  \item \textbf{Learning rate:} $3 \times 10^{-4}$ with cosine decay
+  \item \textbf{Warmup:} 2,000 steps
+  \item \textbf{Batch size:} 768
+  \item \textbf{Epochs:} 1,000
+  \item \textbf{Hardware:} Single NVIDIA A100 GPU ($\sim$10 hours)
+\end{itemize}
+
+% =========================
+% Results
+% =========================
+\section{Results}
+
+\subsection{Main Results}
+
+We compare \poh{} against two strong baselines on Sudoku-Extreme:
+
+\begin{table}[h]
+\centering
+\caption{Sudoku-Extreme benchmark results. \poh{} achieves state-of-the-art performance, outperforming HRM by +25 percentage points on grid accuracy.}
+\label{tab:main_results}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Model} & \textbf{Cell Accuracy (\%)} & \textbf{Grid Accuracy (\%)} \\
+\midrule
+Tiny Recursive Models (TRM) & 87.0 & -- \\
+Hierarchical Reasoning Model (HRM) & -- & 55.0 \\
+\midrule
+\textbf{Pointer-over-Heads (ours)} & \textbf{92.0} & \textbf{80.0} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Key findings.}
+\begin{itemize}[leftmargin=*]
+  \item \poh{} achieves \textbf{92\% cell accuracy}, a +5 percentage point improvement over TRM (87\%).
+  \item \poh{} achieves \textbf{80\% grid accuracy}, a +25 percentage point improvement over HRM (55\%).
+  \item The combination of head-wise routing and two-timescale control enables effective multi-step constraint propagation.
+\end{itemize}
+
+% =========================
+% Analysis
+% =========================
+\section{Analysis}
+
+\subsection{Why Does \poh{} Outperform Baselines?}
+
+We hypothesize that \poh{}'s strong performance stems from three factors:
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Dynamic head composition:} Different attention heads specialize in different constraint types (row, column, 3$\times$3 box). The learned routing composes these constraints dynamically at each refinement step.
+  
+  \item \textbf{Two-timescale reasoning:} The slow controller ($\fH$) maintains a global solving strategy, while the fast controller ($\fL$) handles immediate constraint propagation. This mirrors human Sudoku solving—alternating between local deduction and global pattern recognition.
+  
+  \item \textbf{Sufficient iteration depth:} With 16 refinement steps, \poh{} has enough ``thinking time'' for multi-step logical chains without requiring explicit chain-of-thought generation.
+\end{enumerate}
+
+\subsection{Controller Flexibility}
+
+The \poh{} architecture is agnostic to the specific controller implementation. The codebase provides a unified factory supporting multiple controller types:
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{GRU} (default): Two-timescale HRM-style controller with $\fL$ and $\fH$ modules
+  \item \textbf{Causal Depth Transformer}: Explicit attention over thinking history.
+  \item \textbf{LSTM}: Standard LSTM with stronger gating than GRU
+  \item \textbf{xLSTM}: Extended LSTM with exponential gating~\cite{beck2024}
+  \item \textbf{minGRU}: Simplified single-gate GRU with fewer parameters
+\end{itemize}
+
+Both the GRU and Causal Depth Transformer controllers achieve comparable performance, validating the architectural flexibility. The transformer controller is preferred due to its stability during training.
+
+
+% =========================
+% Conclusion
+% =========================
+\section{Conclusion}
+
+I presented the Pointer-over-Heads Transformer (\poh{}), an architecture that brings inner-thinking cycles to BERT/GPT-style models. By introducing dynamic head-wise routing guided by a two-timescale controller, \poh{} enables iterative refinement within a single forward pass while maintaining full compatibility with standard Transformer implementations.
+
+\paragraph{Key results:}
+\begin{itemize}[leftmargin=*]
+  \item \textbf{80\% grid accuracy} on Sudoku-Extreme (+25pp over HRM)
+  \item \textbf{92\% cell accuracy} (+5pp over TRM)
+  \item Drop-in compatible with PyTorch \texttt{MultiheadAttention}
+\end{itemize}
+\paragraph{Implications.} The success of \poh{} shows that pretrained language models or any world model could benefit from similar inner-thinking mechanisms. Rather than scaling model size, we can scale ``thinking time'' by adding iterative refinement with dynamic routing—potentially enabling smaller models to solve harder reasoning tasks.
+
+% =========================
+% Acknowledgments
+% =========================
+\section*{Acknowledgments}
+The author thanks Viswanadh Vadlamani for financial support and valuable advice throughout this project.
+% =========================
+% References
+% =========================
+\begin{thebibliography}{9}
+
+\bibitem{vaswani2017}
+Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N. Gomez, {\L}ukasz Kaiser, and Illia Polosukhin.
+\newblock Attention Is All You Need.
+\newblock In \emph{Advances in Neural Information Processing Systems (NeurIPS)}, 2017.
+
+\bibitem{graves2016}
+Alex Graves.
+\newblock Adaptive Computation Time for Recurrent Neural Networks.
+\newblock \emph{arXiv preprint arXiv:1603.08983}, 2016.
+
+\bibitem{hrm2025}
+% TODO: Verify arXiv ID (2506.21734 vs 2305.19472) and author names
+Sapient Intelligence.
+\newblock Hierarchical Reasoning Model.
+\newblock \emph{arXiv preprint arXiv:2506.21734}, 2025.
+
+\bibitem{vinyals2015}
+Oriol Vinyals, Meire Fortunato, and Navdeep Jaitly.
+\newblock Pointer Networks.
+\newblock In \emph{Advances in Neural Information Processing Systems (NeurIPS)}, 2015.
+
+\bibitem{beck2024}
+Maximilian Beck, Korbinian P{\"o}ppel, Markus Spanring, Andreas Auer, Oleksandra Prudnikova, Michael Kopp, G{\"u}nter Klambauer, Johannes Brandstetter, and Sepp Hochreiter.
+\newblock xLSTM: Extended Long Short-Term Memory.
+\newblock \emph{arXiv preprint arXiv:2405.04517}, 2024.
+
+\bibitem{potrepo}
+Eran Ben Artzy.
+\newblock Pointer-over-Heads Transformer: Dynamic Multi-Head Attention with Adaptive Routing.
+\newblock Zenodo, 2025.
+\newblock DOI: \href{https://doi.org/10.5281/zenodo.17958199}{10.5281/zenodo.17958199}.
+\newblock Code: \url{https://github.com/Eran-BA/PoT}
+
+\end{thebibliography}
+\end{document}
