@@ -2,7 +2,7 @@
 
 **Dynamic-Routing Transformer with Iterative Refinement**
 
-[![Tests](https://img.shields.io/badge/tests-17%2F17%20passing-brightgreen)]() [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE) [![Results](https://img.shields.io/badge/PoH%20vs%20BERT-+52.58%25-success)]()
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17958198.svg)](https://doi.org/10.5281/zenodo.17958198) [![Tests](https://img.shields.io/badge/tests-17%2F17%20passing-brightgreen)]() [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE) [![Results](https://img.shields.io/badge/PoH%20vs%20BERT-+52.58%25-success)]()
 
 ## 🗞 News
 
@@ -542,13 +542,19 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
 ## 📖 Citation
 
 ```bibtex
-@misc{benartzy2025poh,
-  title={Pointer-over-Heads: Iterative Refinement with Head-Wise Routing},
-  author={Eran Ben Artzy},
-  year={2025},
-  url={https://github.com/Eran-BA/PoT}
+@software{benartzy2025poh,
+  author       = {Eran Ben Artzy},
+  title        = {Pointer-over-Heads Transformer: Dynamic Multi-Head Attention with Adaptive Routing},
+  year         = {2025},
+  publisher    = {Zenodo},
+  doi          = {10.5281/zenodo.17958198},
+  url          = {https://doi.org/10.5281/zenodo.17958198}
 }
 ```
+
+Or cite as:
+
+> Ben Artzy, E. (2025). Pointer-over-Heads Transformer: Dynamic Multi-Head Attention with Adaptive Routing. Zenodo. https://doi.org/10.5281/zenodo.17958198
 
 ---
 
