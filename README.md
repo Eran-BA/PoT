@@ -924,4 +924,12 @@ flowchart TB
 
 ---
 
+## 🔬 Future Research Directions
+
+high level-
+1. PoT as a 1 processor unit. can pull calculations from it, based on a learnable shared embedding layer.
+2. Connect PoT to other units, and look at it as a fixed calculation processing unit that transferred outputs or embeddings to different units (like Encoder-Decoder architecture, where PoT function as the Encoder it self)
+3. connect PoT to cache memory units.
+
+
 **Questions?** Open an issue or see [QUICK_START.md](QUICK_START.md) for copy-paste commands!
