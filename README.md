@@ -2,11 +2,11 @@
 
 **Dynamic-Routing Transformer with Iterative Refinement**
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17958198.svg)](https://doi.org/10.5281/zenodo.17958198) [![Tests](https://img.shields.io/badge/tests-17%2F17%20passing-brightgreen)]() [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE) [![Results](https://img.shields.io/badge/PoH%20vs%20BERT-+52.58%25-success)]()
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17959628.svg)](https://doi.org/10.5281/zenodo.17959628) [![Tests](https://img.shields.io/badge/tests-17%2F17%20passing-brightgreen)]() [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE) [![Results](https://img.shields.io/badge/PoH%20vs%20BERT-+52.58%25-success)]()
 
 ## 🗞 News
 
-- 📄 **Paper**: [BERT/GPT with Inner-Thinking Cycles: Iterative Refinement via Dynamic Head Routing](paper.pdf)
+- 📄 **Paper**: [BERT/GPT with Inner-Thinking Cycles: Iterative Refinement via Dynamic Head Routing](https://doi.org/10.5281/zenodo.17959628) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17959628.svg)](https://doi.org/10.5281/zenodo.17959628)
 
 - **Sudoku Benchmark (Colab, A100)** — train a master-level Sudoku solver:
   [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Sudoku_PoH_Benchmark.ipynb)
@@ -550,7 +550,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
   author       = {Eran Ben Artzy},
   title        = {BERT/GPT with Inner-Thinking Cycles: Iterative Refinement via Dynamic Head Routing},
   year         = {2025},
-  note         = {Available at https://github.com/Eran-BA/PoT/blob/main/paper.pdf}
+  publisher    = {Zenodo},
+  doi          = {10.5281/zenodo.17959628},
+  url          = {https://doi.org/10.5281/zenodo.17959628}
 }
 ```
 
@@ -562,16 +564,14 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
   title        = {Pointer-over-Heads Transformer: Dynamic Multi-Head Attention with Adaptive Routing},
   year         = {2025},
   publisher    = {Zenodo},
-  doi          = {10.5281/zenodo.17958198},
-  url          = {https://doi.org/10.5281/zenodo.17958198}
+  doi          = {10.5281/zenodo.17959628},
+  url          = {https://doi.org/10.5281/zenodo.17959628}
 }
 ```
 
 Or cite as:
 
-> Ben Artzy, E. (2025). BERT/GPT with Inner-Thinking Cycles: Iterative Refinement via Dynamic Head Routing. [Paper](paper.pdf)
->
-> Ben Artzy, E. (2025). Pointer-over-Heads Transformer: Dynamic Multi-Head Attention with Adaptive Routing. Zenodo. https://doi.org/10.5281/zenodo.17958198
+> Ben Artzy, E. (2025). BERT/GPT with Inner-Thinking Cycles: Iterative Refinement via Dynamic Head Routing. Zenodo. https://doi.org/10.5281/zenodo.17959628
 
 ---
 

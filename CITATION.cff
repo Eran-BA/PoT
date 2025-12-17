@@ -49,5 +49,7 @@ preferred-citation:
     BERT/GPT with Inner-Thinking Cycles: Iterative Refinement 
     via Dynamic Head Routing
   year: 2025
-  url: 'https://github.com/Eran-BA/PoT/blob/main/paper.pdf'
+  publisher: Zenodo
+  doi: '10.5281/zenodo.17959628'
+  url: 'https://doi.org/10.5281/zenodo.17959628'
 
