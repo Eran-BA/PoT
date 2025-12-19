@@ -47,6 +47,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+from src.data import download_sudoku_dataset, SudokuDataset as SudokuDatasetV2
 
 
 # =============================================================================
@@ -291,6 +292,7 @@ def main():
     # Data
     parser.add_argument("--data-dir", type=str, default="data/sudoku-extreme-10k-aug-100", help="Data directory")
     parser.add_argument("--num-workers", type=int, default=4, help="DataLoader workers")
+    parser.add_argument("--download", action="store_true", help="Download Sudoku-Extreme dataset from HuggingFace")
     
     # Model architecture
     parser.add_argument("--d-model", type=int, default=512, help="Model dimension")
@@ -347,6 +349,12 @@ def main():
     print(f"Using device: {device}")
     if device == "cuda":
         print(f"GPU: {torch.cuda.get_device_name()}")
+    
+    # Download dataset if requested
+    if args.download:
+        print("\nDownloading Sudoku-Extreme dataset from HuggingFace...")
+        download_sudoku_dataset(args.data_dir, subsample_size=10000)
+        print(f"✓ Dataset saved to {args.data_dir}\n")
     
     # Data
     data = load_sudoku_data_npy(args.data_dir)
