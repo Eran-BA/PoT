@@ -653,6 +653,9 @@ class SwinDepthController(nn.Module):
         temperature: Softmax temperature (default: 1.0)
         topk: Optional top-k sparsification (default: None)
         entropy_reg: Entropy regularization coefficient (default: 1e-3)
+        depth_skip: If True, add residual skip connection across depth iterations.
+            This helps gradient flow and preserves information from each refinement
+            step directly. Recommended for iterative refinement tasks. (default: True)
     """
     
     def __init__(
@@ -671,6 +674,7 @@ class SwinDepthController(nn.Module):
         temperature: float = 1.0,
         topk: Optional[int] = None,
         entropy_reg: float = 1e-3,
+        depth_skip: bool = True,
     ):
         super().__init__()
         
@@ -684,6 +688,7 @@ class SwinDepthController(nn.Module):
         self.temperature = float(temperature)
         self.topk = topk
         self.entropy_reg = entropy_reg
+        self.depth_skip = depth_skip
         
         # Default stage depths
         if stage_depths is None:
@@ -913,6 +918,12 @@ class SwinDepthController(nn.Module):
         # Take the last depth step's spatial features: last S_reduced positions
         y_t = y[-S_reduced:]  # [S_reduced, B, d_ctrl]
         y_t = y_t.permute(1, 0, 2)  # [B, S_reduced, d_ctrl]
+        
+        # Depth skip connection: add current step's input directly to output
+        # This helps gradient flow and preserves information across refinement iterations
+        if self.depth_skip:
+            y_t = y_t + x_depth
+        
         y_t = self.final_norm(y_t)
         
         # Pool the spatial-aware depth features for routing
