@@ -461,6 +461,7 @@ def main():
             # Save best
             if val_metrics['grid_acc'] > best_grid_acc:
                 best_grid_acc = val_metrics['grid_acc']
+                best_model_path = save_dir / "best_model.pt"
                 torch.save({
                     'epoch': epoch,
                     'model_state_dict': model.state_dict(),
@@ -468,8 +469,23 @@ def main():
                     'scheduler_state_dict': scheduler.state_dict(),
                     'best_grid_acc': best_grid_acc,
                     'config': vars(args),
-                }, save_dir / "best_model.pt")
+                }, best_model_path)
                 print(f"  ✓ New best! Grid acc: {100*best_grid_acc:.2f}%")
+                
+                # Upload best model to W&B as artifact
+                if args.wandb:
+                    artifact = wandb.Artifact(
+                        name="sudoku-swin-best",
+                        type="model",
+                        metadata={
+                            "epoch": epoch,
+                            "grid_acc": val_metrics['grid_acc'],
+                            "cell_acc": val_metrics['cell_acc'],
+                            "val_loss": val_metrics['loss'],
+                        }
+                    )
+                    artifact.add_file(str(best_model_path))
+                    wandb.log_artifact(artifact, aliases=["best", f"epoch-{epoch}"])
         else:
             # Just log train metrics
             if args.wandb:
@@ -496,6 +512,8 @@ def main():
     print(f"{'='*60}")
     
     if args.wandb:
+        # Log final best accuracy as summary metric
+        wandb.run.summary["best_grid_acc"] = best_grid_acc
         wandb.finish()
 
 
