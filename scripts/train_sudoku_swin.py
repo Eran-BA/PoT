@@ -318,6 +318,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=1000, help="Training epochs")
     parser.add_argument("--batch-size", type=int, default=768, help="Batch size")
     parser.add_argument("--no-augment", action="store_true", help="Disable augmentation")
+    parser.add_argument("--hrm-grad-style", action="store_true", help="Only last L+H get gradients (HRM-style)")
     parser.add_argument("--lr", type=float, default=3.7e-4, help="Learning rate")
     parser.add_argument("--weight-decay", type=float, default=0.108, help="Weight decay")
     parser.add_argument("--beta2", type=float, default=0.968, help="AdamW beta2")
@@ -386,6 +387,7 @@ def main():
         L_cycles=args.l_cycles,
         T=args.T,
         halt_max_steps=args.halt_max_steps,
+        hrm_grad_style=args.hrm_grad_style,
         controller_type="swin",  # <-- Swin controller!
         controller_kwargs=swin_kwargs,
     ).to(device)
@@ -397,6 +399,7 @@ def main():
     print(f"  - window_size: {args.window_size}")
     print(f"  - n_stages: {args.n_stages}")
     print(f"  - depth_skip: {not args.no_depth_skip}")
+    print(f"  - hrm_grad_style: {args.hrm_grad_style}")
     
     # Optimizer
     optimizer = optim.AdamW(
