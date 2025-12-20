@@ -339,6 +339,7 @@ def main():
     parser.add_argument("--save-dir", type=str, default="checkpoints/swin", help="Checkpoint directory")
     parser.add_argument("--save-every", type=int, default=50, help="Save every N epochs")
     parser.add_argument("--eval-interval", type=int, default=10, help="Eval every N epochs")
+    parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
     
     args = parser.parse_args()
     
@@ -432,13 +433,31 @@ def main():
     with open(save_dir / "config.json", "w") as f:
         json.dump(vars(args), f, indent=2)
     
-    # Training loop
+    # Resume from checkpoint if specified
+    start_epoch = 1
     best_grid_acc = 0
+    if args.resume:
+        if os.path.exists(args.resume):
+            print(f"\nLoading checkpoint from {args.resume}")
+            checkpoint = torch.load(args.resume, map_location=device)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            if 'scheduler_state_dict' in checkpoint:
+                scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            start_epoch = checkpoint.get('epoch', 0) + 1
+            best_grid_acc = checkpoint.get('best_grid_acc', 0)
+            print(f"✓ Resumed from epoch {start_epoch - 1}, best_grid_acc={100*best_grid_acc:.2f}%")
+        else:
+            print(f"Warning: Checkpoint {args.resume} not found, starting from scratch")
+    
+    # Training loop
     print(f"\n{'='*60}")
     print("Starting Swin Controller Training")
+    if args.resume:
+        print(f"Resuming from epoch {start_epoch}")
     print(f"{'='*60}\n")
     
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         # Train
         train_metrics = train_epoch(
             model, train_loader, optimizer, scheduler, device, epoch, args.grad_clip
