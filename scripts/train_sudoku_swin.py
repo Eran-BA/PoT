@@ -437,9 +437,35 @@ def main():
     start_epoch = 1
     best_grid_acc = 0
     if args.resume:
-        if os.path.exists(args.resume):
-            print(f"\nLoading checkpoint from {args.resume}")
-            checkpoint = torch.load(args.resume, map_location=device)
+        checkpoint_path = args.resume
+        
+        # Check if it's a W&B artifact reference (e.g., "wandb:entity/project/artifact:alias")
+        if args.resume.startswith("wandb:"):
+            if not args.wandb:
+                print("Error: --wandb must be enabled to resume from W&B artifact")
+            else:
+                import wandb
+                artifact_ref = args.resume[6:]  # Remove "wandb:" prefix
+                print(f"\nDownloading checkpoint from W&B artifact: {artifact_ref}")
+                try:
+                    artifact = wandb.use_artifact(artifact_ref, type="model")
+                    artifact_dir = artifact.download()
+                    # Find the .pt file in the artifact
+                    pt_files = list(Path(artifact_dir).glob("*.pt"))
+                    if pt_files:
+                        checkpoint_path = str(pt_files[0])
+                        print(f"✓ Downloaded to {checkpoint_path}")
+                    else:
+                        print(f"Error: No .pt file found in artifact")
+                        checkpoint_path = None
+                except Exception as e:
+                    print(f"Error downloading artifact: {e}")
+                    checkpoint_path = None
+        
+        # Load checkpoint
+        if checkpoint_path and os.path.exists(checkpoint_path):
+            print(f"\nLoading checkpoint from {checkpoint_path}")
+            checkpoint = torch.load(checkpoint_path, map_location=device)
             model.load_state_dict(checkpoint['model_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             if 'scheduler_state_dict' in checkpoint:
@@ -447,8 +473,8 @@ def main():
             start_epoch = checkpoint.get('epoch', 0) + 1
             best_grid_acc = checkpoint.get('best_grid_acc', 0)
             print(f"✓ Resumed from epoch {start_epoch - 1}, best_grid_acc={100*best_grid_acc:.2f}%")
-        else:
-            print(f"Warning: Checkpoint {args.resume} not found, starting from scratch")
+        elif checkpoint_path:
+            print(f"Warning: Checkpoint {checkpoint_path} not found, starting from scratch")
     
     # Training loop
     print(f"\n{'='*60}")
