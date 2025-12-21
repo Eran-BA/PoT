@@ -466,7 +466,40 @@ def main():
         if checkpoint_path and os.path.exists(checkpoint_path):
             print(f"\nLoading checkpoint from {checkpoint_path}")
             checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-            model.load_state_dict(checkpoint['model_state_dict'])
+            
+            # Handle size mismatches (e.g., different max_depth)
+            ckpt_state = checkpoint['model_state_dict']
+            model_state = model.state_dict()
+            
+            resized_keys = []
+            for key in ckpt_state:
+                if key in model_state:
+                    ckpt_shape = ckpt_state[key].shape
+                    model_shape = model_state[key].shape
+                    if ckpt_shape != model_shape:
+                        # Handle depth_pos resizing (max_depth changed)
+                        if 'depth_pos' in key and len(ckpt_shape) == 2:
+                            ckpt_depth, dim = ckpt_shape
+                            model_depth, _ = model_shape
+                            if model_depth > ckpt_depth:
+                                # Expand: copy existing, initialize new positions
+                                new_param = torch.zeros(model_shape, device=ckpt_state[key].device)
+                                new_param[:ckpt_depth] = ckpt_state[key]
+                                # Initialize new positions with small random values
+                                nn.init.normal_(new_param[ckpt_depth:], std=0.02)
+                                ckpt_state[key] = new_param
+                                resized_keys.append(f"{key}: [{ckpt_depth}, {dim}] -> [{model_depth}, {dim}]")
+                            else:
+                                # Truncate: use first model_depth positions
+                                ckpt_state[key] = ckpt_state[key][:model_depth]
+                                resized_keys.append(f"{key}: [{ckpt_depth}, {dim}] -> [{model_depth}, {dim}]")
+            
+            if resized_keys:
+                print(f"  Resized parameters (max_depth changed):")
+                for k in resized_keys:
+                    print(f"    - {k}")
+            
+            model.load_state_dict(ckpt_state)
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             if 'scheduler_state_dict' in checkpoint:
                 scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
