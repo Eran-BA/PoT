@@ -509,6 +509,22 @@ def main():
         elif checkpoint_path:
             print(f"Warning: Checkpoint {checkpoint_path} not found, starting from scratch")
     
+    # Initial evaluation before training
+    print(f"\n{'='*60}")
+    print("Initial Evaluation (before training)")
+    print(f"{'='*60}")
+    init_metrics = evaluate(model, val_loader, device)
+    print(f"  Val: loss={init_metrics['loss']:.4f}, "
+          f"cell={100*init_metrics['cell_acc']:.2f}%, "
+          f"grid={100*init_metrics['grid_acc']:.2f}%")
+    if args.wandb:
+        wandb.log({
+            "epoch": start_epoch - 1,
+            "val/loss": init_metrics['loss'],
+            "val/cell_acc": init_metrics['cell_acc'],
+            "val/grid_acc": init_metrics['grid_acc'],
+        })
+    
     # Training loop
     print(f"\n{'='*60}")
     print("Starting Swin Controller Training")
