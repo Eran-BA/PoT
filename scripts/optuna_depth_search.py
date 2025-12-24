@@ -88,6 +88,8 @@ def evaluate_config(
     halt_max_steps: int,
     device: str,
     max_samples: int = None,
+    log_to_wandb: bool = False,
+    trial_number: int = 0,
 ) -> dict:
     """
     Evaluate model with specific depth configuration.
@@ -147,6 +149,16 @@ def evaluate_config(
             'solved': f'{total_grids_correct}/{total_grids}',
             'rate': f'{success_rate:.1f}%'
         })
+        
+        # Log to W&B every 10 samples
+        if log_to_wandb and (i + 1) % 10 == 0:
+            import wandb
+            wandb.log({
+                f"trial_{trial_number}/sample": i + 1,
+                f"trial_{trial_number}/solved": total_grids_correct,
+                f"trial_{trial_number}/running_rate": success_rate,
+                f"trial_{trial_number}/config": f"H{h_cycles}_L{l_cycles}_halt{halt_max_steps}",
+            })
     
     elapsed = time.time() - start_time
     
@@ -175,6 +187,7 @@ def create_objective(
     device: str,
     max_samples: int,
     max_depth: int,
+    log_to_wandb: bool = False,
 ):
     """Create Optuna objective function."""
     
@@ -203,6 +216,8 @@ def create_objective(
                 model, val_inputs, val_labels,
                 h_cycles, l_cycles, halt_max_steps,
                 device, max_samples,
+                log_to_wandb=log_to_wandb,
+                trial_number=trial.number,
             )
         except RuntimeError as e:
             if "out of memory" in str(e).lower():
@@ -382,6 +397,7 @@ def main():
     objective = create_objective(
         model, val_inputs, val_labels,
         device, args.max_samples, args.max_depth,
+        log_to_wandb=args.wandb,
     )
     
     callbacks = [wandb_callback] if wandb_callback else []
