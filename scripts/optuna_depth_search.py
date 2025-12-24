@@ -174,8 +174,8 @@ def create_objective(
         h_cycles = trial.suggest_categorical("h_cycles", [2, 4, 8, 16, 32, 64])
         # l_cycles: 6, 12 (capped at 12)
         l_cycles = trial.suggest_categorical("l_cycles", [6, 12])
-        # halt_max_steps: 5, 10, 20, 40, 80, 160 (deep reasoning!)
-        halt_max_steps = trial.suggest_categorical("halt_max_steps", [5, 10, 20, 40, 80, 160])
+        # halt_max_steps: 4, 8, 16, 32, 64, 128 (×2 from 4, deep reasoning!)
+        halt_max_steps = trial.suggest_categorical("halt_max_steps", [4, 8, 16, 32, 64, 128])
         
         total_steps = h_cycles * l_cycles * halt_max_steps
         
