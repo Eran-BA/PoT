@@ -169,10 +169,13 @@ def create_objective(
     """Create Optuna objective function."""
     
     def objective(trial: optuna.Trial) -> float:
-        # Sample from search space (log scale for h_cycles - most important!)
-        h_cycles = trial.suggest_int("h_cycles", 2, 64, log=True)
-        l_cycles = trial.suggest_int("l_cycles", 4, 16)
-        halt_max_steps = trial.suggest_int("halt_max_steps", 3, 20)
+        # Sample from search space using ×2 scaling (powers of 2)
+        # h_cycles: 2, 4, 8, 16, 32, 64 (most important!)
+        h_cycles = trial.suggest_categorical("h_cycles", [2, 4, 8, 16, 32, 64])
+        # l_cycles: 6, 12, 24, 48
+        l_cycles = trial.suggest_categorical("l_cycles", [6, 12, 24, 48])
+        # halt_max_steps: 5, 10, 20, 40
+        halt_max_steps = trial.suggest_categorical("halt_max_steps", [5, 10, 20, 40])
         
         total_steps = h_cycles * l_cycles * halt_max_steps
         
