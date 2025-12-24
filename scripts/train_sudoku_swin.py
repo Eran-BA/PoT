@@ -110,9 +110,13 @@ class SudokuDataset(Dataset):
         return torch.tensor(inp, dtype=torch.long), torch.tensor(sol, dtype=torch.long), torch.tensor(pid, dtype=torch.long)
 
 
-def load_sudoku_data_npy(data_dir: str):
+def load_sudoku_data_npy(data_dir: str, use_test: bool = False):
     """
     Load Sudoku-Extreme dataset from .npy files.
+    
+    Args:
+        data_dir: Path to dataset directory
+        use_test: If True, load test split (422k) instead of val split
     
     Expected structure:
         data_dir/
@@ -131,12 +135,14 @@ def load_sudoku_data_npy(data_dir: str):
     train_inputs = np.load(data_path / "train" / "all__inputs.npy")
     train_labels = np.load(data_path / "train" / "all__labels.npy")
     
-    val_inputs = np.load(data_path / "val" / "all__inputs.npy")
-    val_labels = np.load(data_path / "val" / "all__labels.npy")
+    # Load test or val based on flag
+    eval_split = "test" if use_test else "val"
+    val_inputs = np.load(data_path / eval_split / "all__inputs.npy")
+    val_labels = np.load(data_path / eval_split / "all__labels.npy")
     
     print(f"Loaded data from {data_dir}")
     print(f"  Train: {len(train_inputs)} samples")
-    print(f"  Val: {len(val_inputs)} samples")
+    print(f"  {eval_split.capitalize()}: {len(val_inputs)} samples")
     
     return {
         'train_inputs': train_inputs,
@@ -293,6 +299,7 @@ def main():
     parser.add_argument("--data-dir", type=str, default="data/sudoku-extreme-10k-aug-100", help="Data directory")
     parser.add_argument("--num-workers", type=int, default=4, help="DataLoader workers")
     parser.add_argument("--download", action="store_true", help="Download Sudoku-Extreme dataset from HuggingFace")
+    parser.add_argument("--test", action="store_true", help="Evaluate on test set (422k) instead of val set")
     
     # Model architecture
     parser.add_argument("--d-model", type=int, default=512, help="Model dimension")
@@ -359,7 +366,7 @@ def main():
         print(f"✓ Dataset saved to {args.data_dir}\n")
     
     # Data
-    data = load_sudoku_data_npy(args.data_dir)
+    data = load_sudoku_data_npy(args.data_dir, use_test=args.test)
     train_loader, val_loader = create_dataloaders(
         data, args.batch_size, 
         augment=not args.no_augment,

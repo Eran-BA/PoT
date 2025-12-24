@@ -66,12 +66,18 @@ class SudokuDataset(Dataset):
         )
 
 
-def load_sudoku_data(data_dir: str):
-    """Load Sudoku validation data."""
+def load_sudoku_data(data_dir: str, use_test: bool = False):
+    """Load Sudoku evaluation data.
+    
+    Args:
+        data_dir: Path to dataset directory
+        use_test: If True, load test split (422k) instead of val split
+    """
     data_path = Path(data_dir)
-    val_inputs = np.load(data_path / "val" / "all__inputs.npy")
-    val_labels = np.load(data_path / "val" / "all__labels.npy")
-    return val_inputs, val_labels
+    split = "test" if use_test else "val"
+    inputs = np.load(data_path / split / "all__inputs.npy")
+    labels = np.load(data_path / split / "all__labels.npy")
+    return inputs, labels
 
 
 # =============================================================================
@@ -244,6 +250,7 @@ def main():
     
     # Data & Model
     parser.add_argument("--data-dir", type=str, default="data/sudoku-extreme-10k-aug-100")
+    parser.add_argument("--test", action="store_true", help="Use test set (422k) instead of val set")
     parser.add_argument("--checkpoint", type=str, required=True, help="Checkpoint path or wandb:entity/project/artifact:version")
     
     # Model architecture (must match checkpoint)
@@ -284,9 +291,10 @@ def main():
         print(f"GPU: {torch.cuda.get_device_name()}")
     
     # Load data
-    print(f"\nLoading data from {args.data_dir}")
-    val_inputs, val_labels = load_sudoku_data(args.data_dir)
-    print(f"  Val samples: {len(val_inputs)}")
+    split_name = "test" if args.test else "val"
+    print(f"\nLoading {split_name} data from {args.data_dir}")
+    val_inputs, val_labels = load_sudoku_data(args.data_dir, use_test=args.test)
+    print(f"  {split_name.capitalize()} samples: {len(val_inputs)}")
     
     # Create model with placeholder config (will be overridden during trials)
     print("\nCreating model...")
