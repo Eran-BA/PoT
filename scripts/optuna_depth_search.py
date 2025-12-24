@@ -150,8 +150,8 @@ def evaluate_config(
             'rate': f'{success_rate:.1f}%'
         })
         
-        # Log to W&B every 10 samples
-        if log_to_wandb and (i + 1) % 10 == 0:
+        # Log to W&B every 5 samples
+        if log_to_wandb and (i + 1) % 5 == 0:
             import wandb
             wandb.log({
                 f"trial_{trial_number}/sample": i + 1,
