@@ -119,10 +119,12 @@ def evaluate_config(
     total_grids = 0
     
     n_samples = len(val_inputs) if max_samples is None else min(max_samples, len(val_inputs))
+    total_steps = h_cycles * l_cycles * halt_max_steps
     
     start_time = time.time()
     
-    for i in tqdm(range(n_samples), desc=f"H={h_cycles}, L={l_cycles}, halt={halt_max_steps}", leave=False):
+    pbar = tqdm(range(n_samples), desc=f"H={h_cycles}, L={l_cycles}, halt={halt_max_steps} ({total_steps} steps)", leave=False)
+    for i in pbar:
         inp = torch.tensor(val_inputs[i:i+1], dtype=torch.long, device=device)
         target = torch.tensor(val_labels[i:i+1], dtype=torch.long, device=device)
         puzzle_id = torch.zeros(1, dtype=torch.long, device=device)
@@ -135,8 +137,16 @@ def evaluate_config(
         
         total_correct += (preds == target).sum().item()
         total_cells += target.numel()
-        total_grids_correct += (preds == target).all(dim=1).sum().item()
+        grid_solved = (preds == target).all(dim=1).sum().item()
+        total_grids_correct += grid_solved
         total_grids += 1
+        
+        # Update progress bar with live success rate
+        success_rate = 100 * total_grids_correct / total_grids
+        pbar.set_postfix({
+            'solved': f'{total_grids_correct}/{total_grids}',
+            'rate': f'{success_rate:.1f}%'
+        })
     
     elapsed = time.time() - start_time
     
