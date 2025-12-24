@@ -170,12 +170,13 @@ def create_objective(
     
     def objective(trial: optuna.Trial) -> float:
         # Sample from search space using ×2 scaling (powers of 2)
-        # h_cycles: 2, 4, 8, 16, 32, 64 (most important!)
-        h_cycles = trial.suggest_categorical("h_cycles", [2, 4, 8, 16, 32, 64])
+        # Constrained to keep total steps < 3000
+        # h_cycles: 2, 4, 8, 16, 32 (most important!)
+        h_cycles = trial.suggest_categorical("h_cycles", [2, 4, 8, 16, 32])
         # l_cycles: 6, 12 (capped at 12)
         l_cycles = trial.suggest_categorical("l_cycles", [6, 12])
-        # halt_max_steps: 4, 8, 16, 32, 64, 128 (×2 from 4, deep reasoning!)
-        halt_max_steps = trial.suggest_categorical("halt_max_steps", [4, 8, 16, 32, 64, 128])
+        # halt_max_steps: 4, 8, 16, 32 (×2 from 4)
+        halt_max_steps = trial.suggest_categorical("halt_max_steps", [4, 8, 16, 32])
         
         total_steps = h_cycles * l_cycles * halt_max_steps
         
@@ -231,7 +232,7 @@ def main():
     # Search settings
     parser.add_argument("--n-trials", type=int, default=50, help="Number of Optuna trials")
     parser.add_argument("--max-samples", type=int, default=100, help="Max val samples per trial (for speed)")
-    parser.add_argument("--max-depth", type=int, default=2000, help="Max total steps to try")
+    parser.add_argument("--max-depth", type=int, default=3000, help="Max total steps to try")
     
     # Device
     parser.add_argument("--device", type=str, default="cuda")
