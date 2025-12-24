@@ -237,6 +237,10 @@ def main():
     parser.add_argument("--study-name", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default="optuna_results")
     
+    # W&B
+    parser.add_argument("--wandb", action="store_true", help="Enable W&B logging")
+    parser.add_argument("--project", type=str, default="sudoku-depth-search", help="W&B project name")
+    
     args = parser.parse_args()
     
     # Device
@@ -280,13 +284,37 @@ def main():
     
     print(f"  Parameters: {sum(p.numel() for p in model.parameters()):,}")
     
+    # Initialize W&B if enabled
+    wandb_callback = None
+    if args.wandb:
+        import wandb
+        from optuna.integration.wandb import WeightsAndBiasesCallback
+        
+        study_name = args.study_name or f"depth_search_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        wandb.init(
+            project=args.project,
+            name=study_name,
+            config={
+                "n_trials": args.n_trials,
+                "max_samples": args.max_samples,
+                "max_depth": args.max_depth,
+                "checkpoint": args.checkpoint,
+            }
+        )
+        wandb_callback = WeightsAndBiasesCallback(
+            metric_name="grid_acc",
+            wandb_kwargs={"project": args.project},
+            as_multirun=True,
+        )
+    
     # Load checkpoint
     checkpoint_path = args.checkpoint
     if checkpoint_path.startswith("wandb:"):
         import wandb
         artifact_ref = checkpoint_path[6:]
         print(f"\nDownloading checkpoint from W&B: {artifact_ref}")
-        wandb.init(mode="disabled")  # Don't log this run
+        if not args.wandb:
+            wandb.init(mode="disabled")
         artifact = wandb.use_artifact(artifact_ref, type="model")
         artifact_dir = artifact.download()
         pt_files = list(Path(artifact_dir).glob("*.pt"))
@@ -339,7 +367,8 @@ def main():
         device, args.max_samples, args.max_depth,
     )
     
-    study.optimize(objective, n_trials=args.n_trials, show_progress_bar=True)
+    callbacks = [wandb_callback] if wandb_callback else []
+    study.optimize(objective, n_trials=args.n_trials, show_progress_bar=True, callbacks=callbacks)
     
     # Results
     print(f"\n{'='*60}")
@@ -397,6 +426,31 @@ def main():
             f.write(f"  H={h}, L={l}, halt={halt}, steps={steps}, grid={trial.value*100:.2f}%\n")
     
     print(f"\nResults saved to {results_file}")
+    
+    # Log final results to W&B
+    if args.wandb:
+        import wandb
+        wandb.run.summary["best_h_cycles"] = study.best_params['h_cycles']
+        wandb.run.summary["best_l_cycles"] = study.best_params['l_cycles']
+        wandb.run.summary["best_halt_max_steps"] = study.best_params['halt_max_steps']
+        wandb.run.summary["best_total_steps"] = total
+        wandb.run.summary["best_grid_acc"] = study.best_value
+        
+        # Log results table
+        table = wandb.Table(columns=["rank", "h_cycles", "l_cycles", "halt_max", "total_steps", "grid_acc", "cell_acc"])
+        for i, trial in enumerate(trials_sorted[:20]):
+            if trial.value is None:
+                continue
+            h = trial.params['h_cycles']
+            l = trial.params['l_cycles']
+            halt = trial.params['halt_max_steps']
+            steps = h * l * halt
+            cell = trial.user_attrs.get('cell_acc', 0)
+            table.add_data(i+1, h, l, halt, steps, trial.value, cell)
+        wandb.log({"top_configs": table})
+        
+        wandb.finish()
+        print("✓ Results logged to W&B")
 
 
 if __name__ == "__main__":
