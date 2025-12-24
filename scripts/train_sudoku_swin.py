@@ -265,7 +265,8 @@ def evaluate(model, dataloader, device):
     total_grids_correct = 0
     total_grids = 0
     
-    for inputs, targets, puzzle_ids in tqdm(dataloader, desc="Evaluating"):
+    pbar = tqdm(dataloader, desc="Evaluating")
+    for inputs, targets, puzzle_ids in pbar:
         inputs = inputs.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
         puzzle_ids = puzzle_ids.to(device, non_blocking=True)
@@ -284,6 +285,13 @@ def evaluate(model, dataloader, device):
         total_grids_correct += (preds == targets).all(dim=1).sum().item()
         total_grids += targets.size(0)
         total_loss += loss.item()
+        
+        # Live progress update
+        pbar.set_postfix({
+            'solved': total_grids_correct,
+            'rate': f'{100*total_grids_correct/total_grids:.2f}%',
+            'cell': f'{100*total_correct/total_cells:.2f}%',
+        })
     
     return {
         'loss': total_loss / len(dataloader),
