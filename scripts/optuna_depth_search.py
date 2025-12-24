@@ -185,8 +185,8 @@ def create_objective(
         # h_cycles: FINE-GRAINED (most important!) - 8 values
         h_cycles = trial.suggest_categorical("h_cycles", [2, 3, 4, 6, 8, 12, 16, 32])
         
-        # l_cycles: COARSE (less important) - 2 values only
-        l_cycles = trial.suggest_categorical("l_cycles", [6, 12])
+        # l_cycles: Start from 12 (found 84% with l=6, now explore higher)
+        l_cycles = trial.suggest_categorical("l_cycles", [12, 24])
         
         # halt_max_steps: FINE-GRAINED (important!) - 8 values
         halt_max_steps = trial.suggest_categorical("halt_max_steps", [4, 6, 8, 12, 16, 24, 32, 48])
