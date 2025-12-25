@@ -355,6 +355,7 @@ def main():
     parser.add_argument("--save-every", type=int, default=50, help="Save every N epochs")
     parser.add_argument("--eval-interval", type=int, default=10, help="Eval every N epochs")
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
+    parser.add_argument("--verbose", action="store_true", help="Show inner-loop progress during evaluation")
     
     args = parser.parse_args()
     
@@ -416,6 +417,11 @@ def main():
     print(f"  - n_stages: {args.n_stages}")
     print(f"  - depth_skip: {not args.no_depth_skip}")
     print(f"  - hrm_grad_style: {args.hrm_grad_style}")
+    
+    # Set verbose mode for inner-loop progress
+    if args.verbose:
+        model.verbose = True
+        print(f"  - verbose: True (showing inner-loop progress)")
     
     # Optimizer
     optimizer = optim.AdamW(
