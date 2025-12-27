@@ -521,7 +521,13 @@ def main():
                     print(f"    - {k}")
             
             model.load_state_dict(ckpt_state)
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            
+            # Skip optimizer state if parameters were resized (prevents shape mismatch in momentum buffers)
+            if resized_keys:
+                print(f"  ⚠️  WARNING: Optimizer state NOT loaded (parameters resized)")
+                print(f"     Momentum buffers reset - first few epochs may have different dynamics")
+            else:
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             if 'scheduler_state_dict' in checkpoint:
                 scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
             start_epoch = checkpoint.get('epoch', 0) + 1
