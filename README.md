@@ -8,6 +8,12 @@
 
 - 📄 **Paper**: [BERT/GPT with Inner-Thinking Cycles: Iterative Refinement via Dynamic Head Routing](https://doi.org/10.5281/zenodo.17959628) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17959628.svg)](https://doi.org/10.5281/zenodo.17959628)
 
+- 🆕 **Diffusion H,L Cycles**: Novel architecture treating H,L two-timescale reasoning as **hierarchical diffusion**
+  - z_H and z_L are progressively denoised at different rates (H slow, L fast)
+  - Learned timing for H-level updates via Gumbel-softmax (instead of fixed T)
+  - HRM-style skip connections: input injection + output residual
+  - Standalone solver: `DiffusionHRMSolver`, `DiffusionSudokuSolver`, `DiffusionMazeSolver`
+
 - 🆕 **New Controllers**: Added **Mamba** (O(N) linear SSM) and **Diffusion** (iterative denoising) depth controllers
   - Mamba: Selective State Space Models for efficient routing ([Gu & Dao, 2024](https://arxiv.org/abs/2312.00752))
   - Diffusion: Denoising-based routing inspired by DiT ([Peebles & Xie, 2023](https://arxiv.org/abs/2212.09748))
@@ -699,7 +705,7 @@ h' = A_bar * h + B_bar * x        # State update
 y = C(x) * h' + D * x             # Output
 ```
 
-### Option 3: Diffusion Depth Controller (NEW)
+### Option 3: Diffusion Depth Controller
 
 The **DiffusionDepthController** uses iterative denoising inspired by diffusion transformers ([Peebles & Xie, 2023](https://arxiv.org/abs/2212.09748)):
 
@@ -721,6 +727,58 @@ diffusion = create_controller("diffusion", d_model=256, n_heads=8, noise_schedul
 z^(t) = denoise(z^(t-1), sigma(t), x_ctrl)
 alpha = softmax(router(z^(t)))
 ```
+
+### Option 3b: Diffusion-Based H,L Cycles (NEW — Full Architecture)
+
+Beyond just the routing controller, we now offer **DiffusionHRMSolver** — a complete architecture where the H,L two-timescale cycles themselves are diffusion-based:
+
+```python
+from src.pot.models.diffusion_hrm_solver import DiffusionSudokuSolver
+
+model = DiffusionSudokuSolver(
+    d_model=512,
+    n_heads=8,
+    max_steps=32,        # Diffusion denoising steps
+    T=4,                 # Base H/L timescale ratio
+    noise_schedule="cosine",
+    learned_timing=True, # Learn WHEN to update H (vs fixed T)
+    halt_max_steps=8,    # ACT outer steps
+)
+
+logits, q_halt, q_continue, steps = model(input_seq, puzzle_ids)
+```
+
+**Architecture:**
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  DiffusionHRMSolver                                             │
+│                                                                 │
+│  Input → Embed → [Diffusion H,L Cycles] → Output Head → Logits │
+│                         ↑                                       │
+│                   z_H (slow) ⟷ z_L (fast)                       │
+│                   denoised at different rates                   │
+│                                                                 │
+│  Key innovations:                                               │
+│  1. Dual-timescale diffusion (H slow, L fast)                  │
+│  2. Learned timing via Gumbel-softmax gate                     │
+│  3. adaLN conditioning (DiT-style)                             │
+│  4. HRM-style skip connections (input injection + output res)  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**How it differs from standard HRM:**
+
+| Aspect | HybridHRM | DiffusionHRMSolver |
+|--------|-----------|-------------------|
+| H,L updates | Deterministic GRU | Diffusion denoising |
+| Timing | Fixed T (e.g., T=4) | Learned via Gumbel-softmax |
+| State evolution | Recurrent | Progressive denoising |
+| Noise | None | Cosine/linear/sqrt schedule |
+
+**Key files:**
+- `src/pot/core/diffusion_hl_cycles.py` — Core diffusion H,L module
+- `src/pot/models/diffusion_hrm_solver.py` — Standalone solver
+- `tests/test_diffusion_hl_cycles.py` — 47 tests (all passing)
 
 ### Option 4: Causal Depth Transformer Controller
 
