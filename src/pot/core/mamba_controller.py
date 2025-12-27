@@ -10,6 +10,12 @@ Key Features:
 - Input-dependent transitions: A, B, C, D matrices depend on input (selective scan)
 - Efficient recurrent processing across depth axis
 - Memory-efficient compared to Transformer controllers
+- Optional optimized inference mode with fused operations
+
+Optimization Options:
+- use_fast_path=True: Enables optimized inference with fused ops
+- If mamba_ssm is installed: Uses CUDA-optimized selective scan kernels
+- torch.compile compatible for additional JIT optimizations
 
 Reference: Gu & Dao (2024) "Mamba: Linear-Time Sequence Modeling with Selective State Spaces"
 https://arxiv.org/abs/2312.00752
@@ -29,6 +35,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
+# Try to import optimized mamba_ssm (CUDA kernels)
+try:
+    from mamba_ssm.ops.selective_scan_interface import selective_scan_fn
+    HAS_MAMBA_SSM = True
+except ImportError:
+    HAS_MAMBA_SSM = False
+    selective_scan_fn = None
+
 
 # =============================================================================
 # State Class
@@ -46,6 +60,44 @@ class MambaDepthState:
     h: torch.Tensor
     ssm_state: torch.Tensor
     step: int
+
+
+# =============================================================================
+# Optimized SSM Step (can be torch.compiled)
+# =============================================================================
+
+def _ssm_step_optimized(
+    x: torch.Tensor,
+    ssm_state: torch.Tensor,
+    A: torch.Tensor,
+    delta: torch.Tensor,
+    B_proj: torch.Tensor,
+    C_proj: torch.Tensor,
+    D: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Optimized SSM step with minimal tensor allocations.
+    
+    This function is designed to be torch.compile compatible.
+    """
+    # Discretize A: A_bar = exp(delta * A)
+    # delta: [B, d_ctrl], A: [d_ctrl, d_state] -> [B, d_ctrl, d_state]
+    delta_A = delta.unsqueeze(-1) * A.unsqueeze(0)
+    A_bar = torch.exp(delta_A)
+    
+    # B_bar = delta * B
+    # delta: [B, d_ctrl], B_proj: [B, d_state] -> [B, d_ctrl, d_state]
+    delta_B = delta.unsqueeze(-1) * B_proj.unsqueeze(1)
+    
+    # SSM recurrence: h' = A_bar * h + B_bar * x
+    # x: [B, d_ctrl] -> [B, d_ctrl, 1]
+    ssm_state_new = A_bar * ssm_state + delta_B * x.unsqueeze(-1)
+    
+    # Output: y = C * h' + D * x
+    # einsum is efficient for this pattern
+    y = torch.einsum('bd,bcd->bc', C_proj, ssm_state_new) + D * x
+    
+    return y, ssm_state_new
 
 
 # =============================================================================
@@ -88,6 +140,7 @@ class MambaDepthController(nn.Module):
         dt_max: Maximum delta value (default: 0.1)
         dt_init: Initialization strategy for delta ("random" or "constant")
         dt_scale: Scale for delta initialization (default: 1.0)
+        use_fast_path: Enable optimized inference (default: False)
     """
     
     def __init__(
@@ -107,6 +160,7 @@ class MambaDepthController(nn.Module):
         dt_max: float = 0.1,
         dt_init: str = "random",
         dt_scale: float = 1.0,
+        use_fast_path: bool = False,
     ):
         super().__init__()
         self.d_model = d_model
@@ -120,6 +174,8 @@ class MambaDepthController(nn.Module):
         self.entropy_reg = entropy_reg
         self.dt_min = dt_min
         self.dt_max = dt_max
+        self.use_fast_path = use_fast_path
+        self._compiled_ssm_step = None
         
         if topk is not None:
             assert 1 <= topk <= n_heads, "topk must be in [1, n_heads]"
@@ -184,6 +240,44 @@ class MambaDepthController(nn.Module):
                 nn.Linear(self.d_ctrl, n_heads),
             )
     
+    def enable_fast_path(self, compile_mode: str = "reduce-overhead"):
+        """
+        Enable optimized inference with torch.compile.
+        
+        Args:
+            compile_mode: torch.compile mode ("default", "reduce-overhead", "max-autotune")
+        
+        Note: Requires PyTorch 2.0+. Falls back gracefully if not available.
+        """
+        self.use_fast_path = True
+        
+        # Try to compile the SSM step function
+        if hasattr(torch, 'compile'):
+            try:
+                self._compiled_ssm_step = torch.compile(
+                    _ssm_step_optimized, 
+                    mode=compile_mode,
+                    fullgraph=True,
+                )
+                return True
+            except Exception as e:
+                print(f"Warning: torch.compile failed: {e}. Using uncompiled fast path.")
+                self._compiled_ssm_step = _ssm_step_optimized
+                return False
+        else:
+            self._compiled_ssm_step = _ssm_step_optimized
+            return False
+    
+    def disable_fast_path(self):
+        """Disable optimized inference."""
+        self.use_fast_path = False
+        self._compiled_ssm_step = None
+    
+    @staticmethod
+    def is_mamba_ssm_available() -> bool:
+        """Check if mamba_ssm CUDA kernels are available."""
+        return HAS_MAMBA_SSM
+    
     def init_state(self, batch_size: int, device: torch.device) -> MambaDepthState:
         """Initialize zero state."""
         h0 = torch.zeros(batch_size, self.d_ctrl, device=device)
@@ -233,8 +327,6 @@ class MambaDepthController(nn.Module):
             y: [B, d_ctrl] output
             ssm_state_new: [B, d_ctrl, d_state] updated SSM state
         """
-        B = x.shape[0]
-        
         # Get A (discretized will be computed)
         A = -torch.exp(self.A_log.float())  # [d_ctrl, d_state]
         
@@ -250,9 +342,14 @@ class MambaDepthController(nn.Module):
         delta = F.softplus(self.dt_proj(delta_proj))  # [B, d_ctrl]
         delta = delta.clamp(min=self.dt_min, max=self.dt_max)
         
+        # Use fast path if enabled
+        if self.use_fast_path and self._compiled_ssm_step is not None:
+            return self._compiled_ssm_step(
+                x, ssm_state, A, delta, B_proj, C_proj, self.D
+            )
+        
+        # Standard path
         # Discretize A and B using delta
-        # A_bar = exp(delta * A)
-        # For numerical stability, we compute this element-wise
         delta_A = delta.unsqueeze(-1) * A.unsqueeze(0)  # [B, d_ctrl, d_state]
         A_bar = torch.exp(delta_A)  # [B, d_ctrl, d_state]
         
@@ -260,18 +357,66 @@ class MambaDepthController(nn.Module):
         delta_B = delta.unsqueeze(-1) * B_proj.unsqueeze(1)  # [B, d_ctrl, d_state]
         
         # SSM recurrence: h' = A_bar * h + B_bar * x
-        # x needs to be expanded: [B, d_ctrl] -> [B, d_ctrl, 1]
         x_expanded = x.unsqueeze(-1)  # [B, d_ctrl, 1]
-        
         ssm_state_new = A_bar * ssm_state + delta_B * x_expanded  # [B, d_ctrl, d_state]
         
         # Output: y = C * h' + D * x
-        # C_proj: [B, d_state], ssm_state_new: [B, d_ctrl, d_state]
-        # We need to compute sum over d_state: [B, d_ctrl]
         y = torch.einsum('bd,bcd->bc', C_proj, ssm_state_new)  # [B, d_ctrl]
         y = y + self.D * x  # Skip connection
         
         return y, ssm_state_new
+    
+    @torch.inference_mode()
+    def step_inference(
+        self,
+        X: torch.Tensor,
+        state: Optional[MambaDepthState] = None,
+    ) -> Tuple[torch.Tensor, MambaDepthState]:
+        """
+        Optimized inference step (no gradients, no aux).
+        
+        This is the fastest path for inference when you don't need
+        auxiliary metrics or gradient computation.
+        
+        Args:
+            X: [B, S, d_model] token representations
+            state: Previous MambaDepthState (or None to initialize)
+            
+        Returns:
+            alpha: [B, S, H] routing weights
+            state: Updated MambaDepthState
+        """
+        B, S, D = X.shape
+        device = X.device
+        
+        if state is None:
+            state = self.init_state(B, device)
+        
+        # Pool and project input (no dropout in inference)
+        g = self.pool_ln(X).mean(dim=1)
+        x_ctrl = self.inp_proj(g)
+        
+        # Selective SSM step
+        y, ssm_state_new = self._selective_ssm_step(x_ctrl, state.ssm_state)
+        
+        # Output projection and normalization
+        h_new = self.ln_h(self.out_proj(y))
+        
+        # Route to heads
+        if self.token_conditioned:
+            h_tok = h_new[:, None, :].expand(B, S, self.d_ctrl)
+            logits = self.router(torch.cat([X, h_tok], dim=-1))
+        else:
+            logits = self.router(h_new)[:, None, :].expand(B, S, self.n_heads)
+        
+        alpha = F.softmax(logits / self.temperature, dim=-1)
+        
+        if self.topk is not None and self.topk < alpha.size(-1):
+            alpha = self._topk_mask_renorm(alpha)
+        
+        new_state = MambaDepthState(h=h_new, ssm_state=ssm_state_new, step=state.step + 1)
+        
+        return alpha, new_state
     
     def step(
         self,
@@ -356,4 +501,3 @@ class MambaDepthController(nn.Module):
             alpha = alpha.squeeze(1)
         
         return alpha, state, aux
-

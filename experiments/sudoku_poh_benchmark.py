@@ -186,6 +186,8 @@ def main():
     parser.add_argument('--controller', type=str, default='gru',
                        choices=['gru', 'lstm', 'xlstm', 'mingru', 'transformer', 'pot_transformer', 'swin', 'mamba', 'diffusion'],
                        help='Controller type for depth routing. mamba=O(N) SSM, diffusion=denoising')
+    parser.add_argument('--optimize-mamba', action='store_true',
+                       help='Enable optimized Mamba inference with torch.compile (requires PyTorch 2.0+)')
     parser.add_argument('--hrm-grad-style', action='store_true',
                        help='Use HRM-style gradients (only last L+H call). Default: all calls in last H_cycle.')
     
@@ -321,6 +323,11 @@ def main():
             max_halting_steps=args.max_halt,
         ).to(device)
     elif args.model == 'hybrid':
+        # Build controller kwargs for optimizations
+        controller_kwargs = {}
+        if args.controller == 'mamba' and args.optimize_mamba:
+            controller_kwargs['use_fast_path'] = True
+        
         model = HybridPoHHRMSolver(
             d_model=args.d_model,
             n_heads=args.n_heads,
@@ -336,10 +343,13 @@ def main():
             halt_max_steps=args.halt_max_steps,
             halt_exploration_prob=args.halt_exploration_prob,
             controller_type=args.controller,
+            controller_kwargs=controller_kwargs if controller_kwargs else None,
         ).to(device)
         print_rank0(f"Hybrid model: H_cycles={args.H_cycles}, L_cycles={args.L_cycles}")
         print_rank0(f"H_layers={args.H_layers}, L_layers={args.L_layers}, dropout={args.dropout}")
         print_rank0(f"Controller: {args.controller}")
+        if args.controller == 'mamba' and args.optimize_mamba:
+            print_rank0(f"  Mamba optimization: ENABLED (torch.compile)")
         print_rank0(f"Gradient style: {'HRM (last L+H only)' if args.hrm_grad_style else 'Full (last H_cycle)'}")
         if args.halt_max_steps > 1:
             print_rank0(f"ACT enabled: halt_max_steps={args.halt_max_steps}, exploration={args.halt_exploration_prob}")

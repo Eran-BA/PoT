@@ -193,8 +193,9 @@ def create_controller(
         # Mamba-style SSM controller with O(N) complexity
         d_state = kwargs.pop("d_state", 16)
         dt_rank = kwargs.pop("dt_rank", None)
+        use_fast_path = kwargs.pop("use_fast_path", False)
         
-        return MambaDepthController(
+        controller = MambaDepthController(
             d_model=d_model,
             n_heads=n_heads,
             d_ctrl=d_ctrl,
@@ -204,8 +205,15 @@ def create_controller(
             token_conditioned=token_conditioned,
             temperature=temperature,
             topk=topk,
+            use_fast_path=use_fast_path,
             **kwargs,
         )
+        
+        # Enable fast path with torch.compile if requested
+        if use_fast_path:
+            controller.enable_fast_path()
+        
+        return controller
     
     elif controller_type == "diffusion":
         # Diffusion-based controller with iterative denoising
