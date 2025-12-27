@@ -8,6 +8,10 @@
 
 - 📄 **Paper**: [BERT/GPT with Inner-Thinking Cycles: Iterative Refinement via Dynamic Head Routing](https://doi.org/10.5281/zenodo.17959628) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17959628.svg)](https://doi.org/10.5281/zenodo.17959628)
 
+- 🆕 **New Controllers**: Added **Mamba** (O(N) linear SSM) and **Diffusion** (iterative denoising) depth controllers
+  - Mamba: Selective State Space Models for efficient routing ([Gu & Dao, 2024](https://arxiv.org/abs/2312.00752))
+  - Diffusion: Denoising-based routing inspired by DiT ([Peebles & Xie, 2023](https://arxiv.org/abs/2212.09748))
+
 - **Sudoku Benchmark (Colab, A100)** — train a master-level Sudoku solver:
   [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Sudoku_PoH_Benchmark.ipynb)
 
