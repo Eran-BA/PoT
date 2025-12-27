@@ -240,16 +240,27 @@ class MambaDepthController(nn.Module):
                 nn.Linear(self.d_ctrl, n_heads),
             )
     
-    def enable_fast_path(self, compile_mode: str = "reduce-overhead"):
+    def enable_fast_path(self, compile_mode: str = "reduce-overhead", for_training: bool = True):
         """
-        Enable optimized inference with torch.compile.
+        Enable optimized execution with torch.compile for BOTH training and inference.
         
         Args:
-            compile_mode: torch.compile mode ("default", "reduce-overhead", "max-autotune")
+            compile_mode: torch.compile mode:
+                - "reduce-overhead": Best for inference, low compile time
+                - "max-autotune": Maximum speed, longer compile time (recommended for training)
+                - "default": Balanced
+            for_training: If True, use settings optimized for training (default True)
         
         Note: Requires PyTorch 2.0+. Falls back gracefully if not available.
+        
+        Returns:
+            True if torch.compile succeeded, False otherwise
         """
         self.use_fast_path = True
+        
+        # For training, max-autotune often gives best results
+        if for_training and compile_mode == "reduce-overhead":
+            compile_mode = "default"  # reduce-overhead can have issues with gradients
         
         # Try to compile the SSM step function
         if hasattr(torch, 'compile'):
@@ -259,6 +270,8 @@ class MambaDepthController(nn.Module):
                     mode=compile_mode,
                     fullgraph=True,
                 )
+                self._compile_mode = compile_mode
+                self._compiled_for_training = for_training
                 return True
             except Exception as e:
                 print(f"Warning: torch.compile failed: {e}. Using uncompiled fast path.")
