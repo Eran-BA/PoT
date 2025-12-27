@@ -516,18 +516,49 @@ def main():
         print_rank0(f"\nResuming from checkpoint: {args.resume}")
         checkpoint = torch.load(args.resume, map_location=device)
         
-        # Load model state
-        state_dict = checkpoint['model_state_dict']
-        if distributed:
-            model.module.load_state_dict(state_dict)
-        else:
-            model.load_state_dict(state_dict)
+        # Load model state with potential parameter resizing (for max_depth changes)
+        ckpt_state = checkpoint['model_state_dict']
+        model_state = base_model.state_dict()
+        resized_keys = []
         
-        # Load optimizer state
-        if 'optimizer_state_dict' in checkpoint:
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        if puzzle_optimizer and 'puzzle_optimizer_state_dict' in checkpoint:
-            puzzle_optimizer.load_state_dict(checkpoint['puzzle_optimizer_state_dict'])
+        # Check for depth_pos parameters that may need resizing
+        for key in ckpt_state:
+            if 'depth_pos' in key and key in model_state:
+                ckpt_shape = ckpt_state[key].shape
+                model_shape = model_state[key].shape
+                if ckpt_shape != model_shape:
+                    # Resize: expand or truncate first dimension (depth)
+                    ckpt_depth, dim = ckpt_shape
+                    model_depth = model_shape[0]
+                    if model_depth > ckpt_depth:
+                        # Expand: repeat or pad with zeros
+                        new_param = torch.zeros(model_shape, device=ckpt_state[key].device)
+                        new_param[:ckpt_depth] = ckpt_state[key]
+                        ckpt_state[key] = new_param
+                    else:
+                        # Truncate
+                        ckpt_state[key] = ckpt_state[key][:model_depth]
+                    resized_keys.append(f"{key}: {list(ckpt_shape)} -> {list(model_shape)}")
+        
+        if resized_keys:
+            print_rank0(f"  Resized parameters (max_depth changed):")
+            for k in resized_keys:
+                print_rank0(f"    - {k}")
+        
+        if distributed:
+            model.module.load_state_dict(ckpt_state)
+        else:
+            model.load_state_dict(ckpt_state)
+        
+        # Load optimizer state (skip if parameters were resized to avoid shape mismatch)
+        if resized_keys:
+            print_rank0(f"  ⚠️  WARNING: Optimizer state NOT loaded (parameters resized)")
+            print_rank0(f"     Momentum buffers reset - first few epochs may have different dynamics")
+        else:
+            if 'optimizer_state_dict' in checkpoint:
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            if puzzle_optimizer and 'puzzle_optimizer_state_dict' in checkpoint:
+                puzzle_optimizer.load_state_dict(checkpoint['puzzle_optimizer_state_dict'])
         
         # Resume from next epoch
         start_epoch = checkpoint.get('epoch', 0) + 1
