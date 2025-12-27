@@ -23,11 +23,13 @@ from .lstm_controllers import (
     minGRUDepthController,
 )
 from .swin_depth_controller import SwinDepthController
+from .mamba_controller import MambaDepthController
+from .diffusion_controller import DiffusionDepthController
 
 
-ControllerType = Literal["gru", "lstm", "xlstm", "mingru", "transformer", "pot_transformer", "swin"]
+ControllerType = Literal["gru", "lstm", "xlstm", "mingru", "transformer", "pot_transformer", "swin", "mamba", "diffusion"]
 
-CONTROLLER_TYPES = ["gru", "lstm", "xlstm", "mingru", "transformer", "pot_transformer", "swin"]
+CONTROLLER_TYPES = ["gru", "lstm", "xlstm", "mingru", "transformer", "pot_transformer", "swin", "mamba", "diffusion"]
 
 
 def create_controller(
@@ -187,6 +189,43 @@ def create_controller(
             **kwargs,
         )
     
+    elif controller_type == "mamba":
+        # Mamba-style SSM controller with O(N) complexity
+        d_state = kwargs.pop("d_state", 16)
+        dt_rank = kwargs.pop("dt_rank", None)
+        
+        return MambaDepthController(
+            d_model=d_model,
+            n_heads=n_heads,
+            d_ctrl=d_ctrl,
+            d_state=d_state,
+            dt_rank=dt_rank,
+            dropout=dropout,
+            token_conditioned=token_conditioned,
+            temperature=temperature,
+            topk=topk,
+            **kwargs,
+        )
+    
+    elif controller_type == "diffusion":
+        # Diffusion-based controller with iterative denoising
+        n_denoise_layers = kwargs.pop("n_denoise_layers", 2)
+        noise_schedule = kwargs.pop("noise_schedule", "cosine")
+        
+        return DiffusionDepthController(
+            d_model=d_model,
+            n_heads=n_heads,
+            d_ctrl=d_ctrl,
+            n_denoise_layers=n_denoise_layers,
+            noise_schedule=noise_schedule,
+            max_depth=max_depth,
+            dropout=dropout,
+            token_conditioned=token_conditioned,
+            temperature=temperature,
+            topk=topk,
+            **kwargs,
+        )
+    
     else:
         valid_types = ", ".join(CONTROLLER_TYPES)
         raise ValueError(
@@ -237,6 +276,16 @@ def get_controller_info(controller_type: ControllerType) -> dict:
             "name": "Swin Depth Controller",
             "description": "Hierarchical controller with local window attention and shifting",
             "paper": "https://arxiv.org/abs/2103.14030",
+        },
+        "mamba": {
+            "name": "Mamba Depth Controller",
+            "description": "Selective SSM with O(N) linear complexity and input-dependent transitions",
+            "paper": "https://arxiv.org/abs/2312.00752",
+        },
+        "diffusion": {
+            "name": "Diffusion Depth Controller",
+            "description": "Iterative denoising controller inspired by diffusion transformers",
+            "paper": "https://arxiv.org/abs/2212.09748",
         },
     }
     return info.get(controller_type.lower(), {"name": "Unknown", "description": ""})
