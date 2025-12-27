@@ -12,6 +12,9 @@ from .lstm_controllers import (
     xLSTMDepthState,
     minGRUDepthController,
 )
+from .swin_depth_controller import SwinDepthController, SwinDepthCache
+from .mamba_controller import MambaDepthController, MambaDepthState
+from .diffusion_controller import DiffusionDepthController, DiffusionDepthState
 from .controller_factory import create_controller, get_controller_info, CONTROLLER_TYPES
 from .pointer_block import PointerBlock
 from .losses import ranknet_loss, soft_sort_loss
@@ -39,6 +42,15 @@ __all__ = [
     "xLSTMDepthState",
     # Controllers - minGRU (simplified)
     "minGRUDepthController",
+    # Controllers - Swin (hierarchical window attention)
+    "SwinDepthController",
+    "SwinDepthCache",
+    # Controllers - Mamba (SSM-based, O(N) complexity)
+    "MambaDepthController",
+    "MambaDepthState",
+    # Controllers - Diffusion (iterative denoising)
+    "DiffusionDepthController",
+    "DiffusionDepthState",
     # Blocks
     "PointerBlock",
     # Losses

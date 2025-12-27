@@ -184,6 +184,7 @@ class HybridHRMBase(nn.Module):
         self.halt_exploration_prob = halt_exploration_prob
         self.allow_early_halt_eval = allow_early_halt_eval
         self.controller_type = controller_type
+        self.verbose = False  # Set to True to see inner-loop progress
         
         # Embedding scaling factor (CRITICAL: HRM uses this!)
         self.embed_scale = d_model ** 0.5  # sqrt(512) ≈ 22.6
@@ -374,6 +375,11 @@ class HybridHRMBase(nn.Module):
                     if not is_last:
                         with torch.no_grad():
                             z_L, L_ptr_state = self.L_level(z_L, z_H + input_emb, L_ptr_state)
+                    if self.verbose:
+                        iter_num = H_step * self.L_cycles + L_step + 1
+                        total = self.H_cycles * self.L_cycles
+                        print(f"\r    H={H_step+1}/{self.H_cycles} L={L_step+1}/{self.L_cycles} "
+                              f"[{iter_num}/{total}]", end="", flush=True)
                 
                 if H_step < self.H_cycles - 1:
                     with torch.no_grad():
@@ -392,6 +398,11 @@ class HybridHRMBase(nn.Module):
                 for H_step in range(self.H_cycles):
                     for L_step in range(self.L_cycles):
                         z_L, L_ptr_state = self.L_level(z_L, z_H + input_emb, L_ptr_state)
+                        if self.verbose:
+                            iter_num = H_step * self.L_cycles + L_step + 1
+                            total = self.H_cycles * self.L_cycles
+                            print(f"\r    H={H_step+1}/{self.H_cycles} L={L_step+1}/{self.L_cycles} "
+                                  f"[{iter_num}/{total}]", end="", flush=True)
                     z_H, H_ptr_state = self.H_level(z_H, z_L, H_ptr_state)
         
         # Normalize and compute Q-values
@@ -454,6 +465,12 @@ class HybridHRMBase(nn.Module):
             # Use gradients only on last step (like HRM)
             use_grad = is_last_step
             
+            # Verbose progress
+            if self.verbose:
+                total_inner = self.H_cycles * self.L_cycles
+                print(f"\r  ACT step {act_step + 1}/{self.halt_max_steps} "
+                      f"({total_inner} inner iters per step)", end="", flush=True)
+            
             # Run one ACT step
             carry, hidden, q_halt, q_continue = self._single_act_step(
                 input_emb, carry, use_grad=use_grad
@@ -489,6 +506,10 @@ class HybridHRMBase(nn.Module):
                             torch.maximum(next_q_halt, next_q_continue)
                         )
                         break
+        
+        # Clear verbose line
+        if self.verbose:
+            print()  # newline after progress
         
         # Compute target Q if not already computed (for Q-learning)
         if self.training and self.halt_max_steps > 1 and target_q_continue is None:
@@ -722,6 +743,11 @@ class HybridHRMBase(nn.Module):
                     is_last = (H_step == self.H_cycles - 1) and (L_step == self.L_cycles - 1)
                     if not is_last:
                         z_L, L_ptr_state = self.L_level(z_L, z_H + input_emb, L_ptr_state)
+                    if self.verbose:
+                        iter_num = H_step * self.L_cycles + L_step + 1
+                        total = self.H_cycles * self.L_cycles
+                        print(f"\r    H={H_step+1}/{self.H_cycles} L={L_step+1}/{self.L_cycles} "
+                              f"[{iter_num}/{total}]", end="", flush=True)
                 
                 if H_step < self.H_cycles - 1:
                     z_H, H_ptr_state = self.H_level(z_H, z_L, H_ptr_state)
@@ -733,6 +759,9 @@ class HybridHRMBase(nn.Module):
         # Final calls WITH gradients (these are the only ones that backprop)
         z_L, L_ptr_state = self.L_level(z_L, z_H + input_emb, L_ptr_state)
         z_H, H_ptr_state = self.H_level(z_H, z_L, H_ptr_state)
+        
+        if self.verbose:
+            print()  # newline after inner progress
         
         # Normalize and compute Q-values
         hidden = self.final_norm(z_H)
