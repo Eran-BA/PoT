@@ -634,18 +634,91 @@ This work builds upon several foundational papers:
 
 The above architecture uses **GRU cells** for the recurrent controller modules (f_L and f_H). Importantly, these GRUs operate **across depth (refinement iterations)**, not across the input sequence length. Each token maintains its own independent controller state that evolves as the model iterates through reasoning steps.
 
-This is not a fixed design choice — the GRU can be replaced with other recurrent units:
+This is not a fixed design choice — the GRU can be replaced with other recurrent units.
+
+### Available Controller Types
+
+All controllers are accessible via the unified factory:
+
+```python
+from src.pot.core import create_controller, CONTROLLER_TYPES
+
+print(CONTROLLER_TYPES)
+# ['gru', 'lstm', 'xlstm', 'mingru', 'transformer', 'pot_transformer', 'swin', 'mamba', 'diffusion']
+
+controller = create_controller("mamba", d_model=256, n_heads=8)
+```
+
+| Type | Name | Complexity | Description |
+|------|------|------------|-------------|
+| `gru` | HRM GRU Controller | O(1) per step | Two-timescale GRU (f_L fast, f_H slow) from HRM paper |
+| `lstm` | LSTM Depth Controller | O(1) per step | Standard LSTM with stronger gating than GRU |
+| `xlstm` | xLSTM Depth Controller | O(1) per step | Extended LSTM with exponential gating (sLSTM variant) |
+| `mingru` | minGRU Depth Controller | O(1) per step | Simplified GRU with single gate, fewer parameters |
+| `transformer` | Causal Depth Transformer | O(t²) over depth | Transformer with causal attention over depth axis |
+| `pot_transformer` | PoT Depth Transformer | O(t²) over depth | Nested PoT with gated MHA internally |
+| `swin` | Swin Depth Controller | O(t²) over depth | Hierarchical controller with local window attention |
+| `mamba` | **Mamba Depth Controller** | **O(N) linear** | Selective SSM with input-dependent transitions |
+| `diffusion` | **Diffusion Depth Controller** | O(1) per step | Iterative denoising inspired by diffusion transformers |
 
 ### Option 1: Alternative Recurrent Units
 
 - **LSTM** — Long Short-Term Memory for stronger gating
 - **xLSTM** — Extended LSTM with exponential gating and matrix memory ([Beck et al., 2024](https://arxiv.org/abs/2405.04517))
-- **Mamba / S4** — State-space models for efficient long-range dependencies
-- **minGRU / minLSTM** — Simplified variants for reduced overhead
+- **Mamba** — Selective State Space Models with O(N) linear complexity ([Gu & Dao, 2024](https://arxiv.org/abs/2312.00752))
+- **minGRU** — Simplified GRU variant for reduced overhead
 
 The key insight is that any recurrent unit capable of maintaining state **across depth** (i.e., across iteration steps, not across tokens) can serve as the controller backbone.
 
-### Option 2: Causal Depth Transformer Controller
+### Option 2: Mamba Depth Controller (NEW)
+
+The **MambaDepthController** uses Selective State Space Models (SSMs) for efficient depth-wise routing with **O(N) linear time complexity**:
+
+```python
+from src.pot.core import create_controller
+
+# Mamba controller - O(N) complexity
+mamba = create_controller("mamba", d_model=256, n_heads=8, d_state=16)
+```
+
+**Key features:**
+- **Input-dependent transitions**: A, B, C, D matrices depend on input (selective scan)
+- **Linear complexity**: O(N) vs O(N²) for attention-based controllers
+- **Efficient recurrent processing**: Memory-efficient compared to Transformer controllers
+
+**Core SSM recurrence:**
+```
+Δ = softplus(Linear(x))           # Input-dependent discretization
+A_bar = exp(Δ * A)                # Discretized transition
+B_bar = Δ * B(x)                  # Input-dependent input matrix
+h' = A_bar * h + B_bar * x        # State update
+y = C(x) * h' + D * x             # Output
+```
+
+### Option 3: Diffusion Depth Controller (NEW)
+
+The **DiffusionDepthController** uses iterative denoising inspired by diffusion transformers ([Peebles & Xie, 2023](https://arxiv.org/abs/2212.09748)):
+
+```python
+from src.pot.core import create_controller
+
+# Diffusion controller - iterative denoising
+diffusion = create_controller("diffusion", d_model=256, n_heads=8, noise_schedule="cosine")
+```
+
+**Key features:**
+- **Iterative denoising**: Routing weights evolve through a learned denoising process
+- **Learned noise schedules**: Linear, cosine, or sqrt schedules
+- **Adaptive LayerNorm (adaLN)**: Conditioning inspired by DiT (Diffusion Transformers)
+- **Smooth routing evolution**: Temporally coherent across depth steps
+
+**Denoising process:**
+```
+z^(t) = denoise(z^(t-1), sigma(t), x_ctrl)
+alpha = softmax(router(z^(t)))
+```
+
+### Option 4: Causal Depth Transformer Controller
 
 A more expressive alternative is to replace the GRU entirely with a **causal Transformer operating over the depth axis**. Unlike GRUs which only have implicit access to past states through compressed hidden states, a depth Transformer can explicitly attend to *any* relevant previous refinement step.
 
@@ -835,7 +908,7 @@ Different controller choices offer trade-offs in:
 
 ---
 
-### 3️⃣ Causal Depth Transformer Controller — Mermaid Diagram
+### 5️⃣ Causal Depth Transformer Controller — Mermaid Diagram
 
 ```mermaid
 flowchart TB
