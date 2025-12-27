@@ -150,7 +150,7 @@ class HybridHRMBase(nn.Module):
         halt_max_steps: Maximum ACT outer steps (default 1 = no ACT)
         halt_exploration_prob: Exploration probability for Q-learning
         allow_early_halt_eval: If True, enable Q-learning based early halting during eval
-        controller_type: Type of depth controller ("gru", "lstm", "xlstm", "mingru", "transformer", "pot_transformer")
+        controller_type: Type of depth controller ("gru", "lstm", "xlstm", "mingru", "transformer", "pot_transformer", "swin", "mamba", "diffusion")
         controller_kwargs: Additional kwargs for controller creation
     """
     
