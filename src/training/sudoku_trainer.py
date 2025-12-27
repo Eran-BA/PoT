@@ -75,6 +75,7 @@ def train_epoch_async(
     puzzle_scheduler: Optional[Any] = None,
     samples_per_epoch: Optional[int] = None,
     track_halt_histogram: bool = False,
+    grad_clip: float = 1.0,
 ) -> Dict[str, Any]:
     """
     Train for one epoch using HRM-style async batching.
@@ -95,6 +96,7 @@ def train_epoch_async(
         puzzle_scheduler: LR scheduler for puzzle optimizer
         samples_per_epoch: Total samples to process per epoch (default: len(dataloader) * batch_size)
         track_halt_histogram: If True, track which halt step each sample finished at
+        grad_clip: Maximum gradient norm (0 to disable)
         
     Returns:
         Dictionary with loss, cell_acc, grid_acc, avg_steps, and optionally halt_histogram
@@ -178,7 +180,8 @@ def train_epoch_async(
             loss = lm_loss
         
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        if grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
         if puzzle_optimizer:
             puzzle_optimizer.step()
@@ -280,6 +283,7 @@ def train_epoch(
     debug: bool = False,
     scheduler: Optional[Any] = None,
     puzzle_scheduler: Optional[Any] = None,
+    grad_clip: float = 1.0,
 ) -> Dict[str, float]:
     """
     Train for one epoch.
@@ -295,6 +299,7 @@ def train_epoch(
         debug: Enable debug logging
         scheduler: Learning rate scheduler
         puzzle_scheduler: LR scheduler for puzzle optimizer
+        grad_clip: Maximum gradient norm (0 to disable)
         
     Returns:
         Dictionary with loss, cell_acc, grid_acc, avg_steps
@@ -352,7 +357,8 @@ def train_epoch(
             loss = lm_loss
         
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        if grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
         if puzzle_optimizer:
             puzzle_optimizer.step()

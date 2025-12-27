@@ -30,6 +30,7 @@ License: Apache 2.0
 import sys
 import os
 import math
+from datetime import datetime
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -186,6 +187,10 @@ def main():
     parser.add_argument('--controller', type=str, default='gru',
                        choices=['gru', 'lstm', 'xlstm', 'mingru', 'transformer', 'pot_transformer', 'swin', 'mamba', 'diffusion'],
                        help='Controller type for depth routing. mamba=O(N) SSM, diffusion=denoising')
+    parser.add_argument('--d-ctrl', type=int, default=None,
+                       help='Controller hidden dimension (default: d_model // 4)')
+    parser.add_argument('--max-depth', type=int, default=32,
+                       help='Maximum depth steps for controller (used by diffusion, swin)')
     parser.add_argument('--optimize-mamba', action='store_true',
                        help='Enable optimized Mamba inference with torch.compile (requires PyTorch 2.0+)')
     parser.add_argument('--hrm-grad-style', action='store_true',
@@ -221,12 +226,23 @@ def main():
     parser.add_argument('--lr-min-ratio', type=float, default=0.0,
                        help='Min LR ratio for cosine schedule. HRM uses 0.1 or 1.0')
     parser.add_argument('--eval-interval', type=int, default=100)
+    parser.add_argument('--grad-clip', type=float, default=1.0,
+                       help='Gradient clipping max norm (0 to disable)')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     parser.add_argument('--debug-interval', type=int, default=10, help='Debug every N epochs')
+    
+    # W&B logging
+    parser.add_argument('--wandb', action='store_true', help='Enable W&B logging')
+    parser.add_argument('--project', type=str, default='sudoku-poh', help='W&B project name')
+    parser.add_argument('--run-name', type=str, default=None, help='W&B run name (auto-generated if not set)')
     
     # Output
     parser.add_argument('--output', type=str, default='experiments/results/sudoku_poh')
     parser.add_argument('--seed', type=int, default=42)
+    
+    # Checkpoints
+    parser.add_argument('--resume', type=str, default=None,
+                       help='Path to checkpoint to resume training from')
     
     # Evaluation mode
     parser.add_argument('--eval-only', action='store_true', help='Only evaluate, skip training')
@@ -325,6 +341,10 @@ def main():
     elif args.model == 'hybrid':
         # Build controller kwargs for optimizations
         controller_kwargs = {}
+        if args.d_ctrl is not None:
+            controller_kwargs['d_ctrl'] = args.d_ctrl
+        if args.controller in ('diffusion', 'swin'):
+            controller_kwargs['max_depth'] = args.max_depth
         if args.controller == 'mamba' and args.optimize_mamba:
             controller_kwargs['use_fast_path'] = True
         
@@ -375,6 +395,18 @@ def main():
     param_count = sum(p.numel() for p in model.parameters())
     print_rank0(f"\nModel: {args.model.upper()}")
     print_rank0(f"Parameters: {param_count:,} ({param_count/1e6:.2f}M)")
+    
+    # Initialize W&B logging (only on rank 0)
+    if args.wandb and is_main_process():
+        import wandb
+        run_name = args.run_name or f"{args.model}_{args.controller}_{datetime.now():%Y%m%d_%H%M%S}"
+        wandb.init(
+            project=args.project,
+            name=run_name,
+            config=vars(args),
+        )
+        wandb.watch(model, log="gradients", log_freq=100)
+        print_rank0(f"W&B logging enabled: {args.project}/{run_name}")
     
     # Load checkpoint if specified
     if args.checkpoint:
@@ -475,6 +507,34 @@ def main():
         if puzzle_optimizer else None
     )
     
+    # Resume from checkpoint if specified
+    start_epoch = 1
+    best_grid_acc = 0
+    results = []
+    
+    if args.resume:
+        print_rank0(f"\nResuming from checkpoint: {args.resume}")
+        checkpoint = torch.load(args.resume, map_location=device)
+        
+        # Load model state
+        state_dict = checkpoint['model_state_dict']
+        if distributed:
+            model.module.load_state_dict(state_dict)
+        else:
+            model.load_state_dict(state_dict)
+        
+        # Load optimizer state
+        if 'optimizer_state_dict' in checkpoint:
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if puzzle_optimizer and 'puzzle_optimizer_state_dict' in checkpoint:
+            puzzle_optimizer.load_state_dict(checkpoint['puzzle_optimizer_state_dict'])
+        
+        # Resume from next epoch
+        start_epoch = checkpoint.get('epoch', 0) + 1
+        best_grid_acc = checkpoint.get('test_grid_acc', 0)
+        
+        print_rank0(f"  ✓ Resumed from epoch {start_epoch - 1}, best_grid_acc={best_grid_acc:.2f}%")
+    
     print_rank0(f"\n{'='*60}")
     print_rank0(f"Training {args.model.upper()} Sudoku Solver")
     print_rank0(f"{'='*60}")
@@ -487,9 +547,6 @@ def main():
     print_rank0(f"Total steps: {total_steps}")
     if use_poh:
         print_rank0(f"R={args.R}, T={args.T}, max_halt={args.max_halt}")
-    
-    best_grid_acc = 0
-    results = []
     
     if is_main_process():
         os.makedirs(args.output, exist_ok=True)
@@ -509,7 +566,7 @@ def main():
     else:
         full_dataset_size = len(train_loader) * args.batch_size
     
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         # Set epoch for distributed sampler (ensures proper shuffling)
         if train_sampler is not None:
             train_sampler.set_epoch(epoch)
@@ -524,6 +581,7 @@ def main():
                 device, epoch, use_poh=use_poh, debug=do_debug,
                 scheduler=scheduler, puzzle_scheduler=puzzle_scheduler,
                 samples_per_epoch=full_dataset_size,
+                grad_clip=args.grad_clip,
             )
         else:
             # Standard mini-batch training
@@ -531,6 +589,7 @@ def main():
                 model, train_loader, optimizer, puzzle_optimizer, 
                 device, epoch, use_poh=use_poh, debug=do_debug,
                 scheduler=scheduler, puzzle_scheduler=puzzle_scheduler,
+                grad_clip=args.grad_clip,
             )
         
         # Resample augmentations for next epoch
@@ -556,17 +615,44 @@ def main():
                 'test_grid_acc': val_metrics['grid_acc'],
             })
             
+            # Log to W&B
+            if args.wandb and is_main_process():
+                import wandb
+                wandb.log({
+                    "epoch": epoch,
+                    "train/loss": train_metrics['loss'],
+                    "train/cell_acc": train_metrics['cell_acc'],
+                    "train/grid_acc": train_metrics['grid_acc'],
+                    "val/loss": val_metrics['loss'],
+                    "val/cell_acc": val_metrics['cell_acc'],
+                    "val/grid_acc": val_metrics['grid_acc'],
+                    "lr": scheduler.get_last_lr()[0],
+                })
+            
             # Save best model (only rank 0)
             if val_metrics['grid_acc'] > best_grid_acc:
                 best_grid_acc = val_metrics['grid_acc']
                 if is_main_process():
                     # Get state dict from underlying model (handles DDP)
                     state_dict = base_model.state_dict()
-                    torch.save({
+                    checkpoint_path = os.path.join(args.output, f'{args.model}_best.pt')
+                    checkpoint_data = {
                         'epoch': epoch,
                         'model_state_dict': state_dict,
+                        'optimizer_state_dict': optimizer.state_dict(),
                         'test_grid_acc': best_grid_acc,
-                    }, os.path.join(args.output, f'{args.model}_best.pt'))
+                        'config': vars(args),
+                    }
+                    if puzzle_optimizer:
+                        checkpoint_data['puzzle_optimizer_state_dict'] = puzzle_optimizer.state_dict()
+                    torch.save(checkpoint_data, checkpoint_path)
+                    
+                    # Save as W&B artifact
+                    if args.wandb:
+                        import wandb
+                        artifact = wandb.Artifact(f"{args.model}-{args.controller}-best", type="model")
+                        artifact.add_file(checkpoint_path)
+                        wandb.log_artifact(artifact)
                 print_rank0(f"  ✓ New best: {best_grid_acc:.2f}%")
             
             # Check for near-perfect accuracy
@@ -592,6 +678,11 @@ def main():
             }, f, indent=2)
     
     print_rank0(f"\n💾 Results saved to: {args.output}")
+    
+    # Finish W&B logging
+    if args.wandb and is_main_process():
+        import wandb
+        wandb.finish()
     
     # Clean up distributed training
     cleanup_distributed()
