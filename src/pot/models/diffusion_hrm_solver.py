@@ -114,6 +114,7 @@ class DiffusionHRMSolver(nn.Module):
         allow_early_halt_eval: Allow early halting during evaluation
         use_sequence_denoiser: Use attention-based sequence denoiser
         learned_timing: Learn when to update H (vs fixed T)
+        init_noise_scale: Scale for initial noise (lower = more stable, 0 = start from zeros)
     """
     
     def __init__(
@@ -134,6 +135,7 @@ class DiffusionHRMSolver(nn.Module):
         allow_early_halt_eval: bool = False,
         use_sequence_denoiser: bool = True,
         learned_timing: bool = True,
+        init_noise_scale: float = 0.1,
     ):
         super().__init__()
         
@@ -172,6 +174,7 @@ class DiffusionHRMSolver(nn.Module):
             dropout=dropout,
             use_sequence_denoiser=use_sequence_denoiser,
             learned_timing=learned_timing,
+            init_noise_scale=init_noise_scale,
         )
         
         # Output normalization
