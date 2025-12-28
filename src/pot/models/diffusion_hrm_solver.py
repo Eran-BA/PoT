@@ -115,6 +115,7 @@ class DiffusionHRMSolver(nn.Module):
         use_sequence_denoiser: Use attention-based sequence denoiser
         learned_timing: Learn when to update H (vs fixed T)
         init_noise_scale: Scale for initial noise (lower = more stable, 0 = start from zeros)
+        lastgrad: Number of final diffusion steps with gradient flow (HRM-style)
     """
     
     def __init__(
@@ -136,6 +137,7 @@ class DiffusionHRMSolver(nn.Module):
         use_sequence_denoiser: bool = True,
         learned_timing: bool = True,
         init_noise_scale: float = 0.1,
+        lastgrad: int = 2,
     ):
         super().__init__()
         
@@ -175,6 +177,7 @@ class DiffusionHRMSolver(nn.Module):
             use_sequence_denoiser=use_sequence_denoiser,
             learned_timing=learned_timing,
             init_noise_scale=init_noise_scale,
+            lastgrad=lastgrad,
         )
         
         # Output normalization

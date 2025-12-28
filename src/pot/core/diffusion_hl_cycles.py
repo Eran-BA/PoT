@@ -619,6 +619,7 @@ class DiffusionHLCycles(nn.Module):
         use_sequence_denoiser: If True, use attention-based sequence denoiser
         learned_timing: If True, learn when to update H (vs fixed T)
         init_noise_scale: Scale for initial noise during training
+        lastgrad: Number of final steps with gradient flow (HRM-style, rest are detached)
     """
     
     def __init__(
@@ -633,6 +634,7 @@ class DiffusionHLCycles(nn.Module):
         use_sequence_denoiser: bool = True,
         learned_timing: bool = True,
         init_noise_scale: float = 1.0,
+        lastgrad: int = 2,
     ):
         super().__init__()
         
@@ -642,6 +644,7 @@ class DiffusionHLCycles(nn.Module):
         self.init_noise_scale = init_noise_scale
         self.use_sequence_denoiser = use_sequence_denoiser
         self.learned_timing = learned_timing
+        self.lastgrad = lastgrad
         
         # Dual-timescale noise schedules
         self.noise_schedule = DualTimescaleNoiseSchedule(
@@ -924,8 +927,9 @@ class DiffusionHLCycles(nn.Module):
         for step_idx in range(n_steps):
             is_last = step_idx == n_steps - 1
             
-            # Gradient handling: only last few steps get gradients (like HRM)
-            if not is_last and step_idx < n_steps - 2:
+            # Gradient handling: only last K steps get gradients (like HRM)
+            # This saves memory and prevents vanishing gradients
+            if step_idx < n_steps - self.lastgrad:
                 with torch.no_grad():
                     state, aux = self.step(x, state)
                 state = state.detach()
