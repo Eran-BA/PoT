@@ -616,12 +616,13 @@ class TestParameterCounts:
         assert sum(p.numel() for p in injector.parameters()) == 0
     
     def test_broadcast_mode_params(self, base_params):
-        """Broadcast mode should have proj + gate parameters."""
+        """Broadcast mode should have proj + gate + layernorm parameters."""
         injector = FeatureInjector(**base_params, mode="broadcast")
         params = sum(p.numel() for p in injector.parameters())
-        # proj: d_ctrl -> d_model, gate: d_ctrl -> 1
+        # proj: d_ctrl -> d_model, gate: d_ctrl -> 1, ln: 2 * d_model
         expected = base_params["d_ctrl"] * base_params["d_model"] + base_params["d_model"]  # proj weight + bias
         expected += base_params["d_ctrl"] * 1 + 1  # gate weight + bias
+        expected += 2 * base_params["d_model"]  # LayerNorm weight + bias
         assert params == expected
     
     def test_film_mode_params(self, base_params):

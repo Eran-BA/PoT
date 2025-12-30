@@ -37,19 +37,21 @@ class GatedBroadcastInjection(nn.Module):
     
     Formula:
         gate = sigmoid(r @ W_g)
-        x_out = x + gate * broadcast(r @ W_r)
+        x_out = x + gate * broadcast(LayerNorm(r @ W_r))
     
     The gate prevents the injection from overpowering token features.
     
     Args:
         d_model: Token embedding dimension
         d_ctrl: Controller state dimension
+        use_layernorm: If True, apply LayerNorm to projected features (default: True)
     """
     
-    def __init__(self, d_model: int, d_ctrl: int):
+    def __init__(self, d_model: int, d_ctrl: int, use_layernorm: bool = True):
         super().__init__()
         self.proj = nn.Linear(d_ctrl, d_model)
         self.gate = nn.Linear(d_ctrl, 1)
+        self.ln = nn.LayerNorm(d_model) if use_layernorm else nn.Identity()
     
     def forward(
         self,
@@ -58,8 +60,8 @@ class GatedBroadcastInjection(nn.Module):
         alpha: torch.Tensor = None,  # Unused, for API compatibility
     ) -> torch.Tensor:
         """Inject controller features into tokens."""
-        # Project controller state to token space
-        r_proj = self.proj(r)  # [B, D]
+        # Project controller state to token space and normalize
+        r_proj = self.ln(self.proj(r))  # [B, D]
         
         # Compute gate (scalar per batch)
         gate = torch.sigmoid(self.gate(r))  # [B, 1]
@@ -75,7 +77,7 @@ class AlphaGatedInjection(nn.Module):
     
     Formula:
         alpha_scalar = mean(alpha)  # Aggregate routing weights
-        x_out = x + alpha_scalar * (r @ W_r)
+        x_out = x + alpha_scalar * LayerNorm(r @ W_r)
     
     The routing weights (alpha) modulate the injection strength, creating
     coherence between head routing and feature injection.
@@ -90,6 +92,7 @@ class AlphaGatedInjection(nn.Module):
         d_ctrl: Controller state dimension
         alpha_aggregation: How to aggregate alpha ("mean", "max", "entropy")
         use_learned_gate: If True, combine alpha with a learned gate
+        use_layernorm: If True, apply LayerNorm to projected features (default: True)
     """
     
     def __init__(
@@ -98,11 +101,13 @@ class AlphaGatedInjection(nn.Module):
         d_ctrl: int,
         alpha_aggregation: str = "mean",
         use_learned_gate: bool = True,
+        use_layernorm: bool = True,
     ):
         super().__init__()
         self.proj = nn.Linear(d_ctrl, d_model)
         self.alpha_aggregation = alpha_aggregation
         self.use_learned_gate = use_learned_gate
+        self.ln = nn.LayerNorm(d_model) if use_layernorm else nn.Identity()
         
         if use_learned_gate:
             self.gate = nn.Linear(d_ctrl, 1)
@@ -150,8 +155,8 @@ class AlphaGatedInjection(nn.Module):
         else:
             alpha_scalar = self._aggregate_alpha(alpha)  # [B, 1]
         
-        # Project controller state to token space
-        r_proj = self.proj(r)  # [B, D]
+        # Project controller state to token space and normalize
+        r_proj = self.ln(self.proj(r))  # [B, D]
         
         # Optionally combine with learned gate
         if self.use_learned_gate:
@@ -364,6 +369,7 @@ class FeatureInjector(nn.Module):
         dropout: Dropout probability
         alpha_aggregation: For alpha_gated mode, how to aggregate alpha ("mean", "max", "entropy")
         use_learned_gate: For alpha_gated mode, combine alpha with learned gate
+        use_layernorm: For broadcast/alpha_gated modes, apply LayerNorm (default: True)
     """
     
     def __init__(
@@ -376,6 +382,7 @@ class FeatureInjector(nn.Module):
         dropout: float = 0.0,
         alpha_aggregation: str = "mean",
         use_learned_gate: bool = True,
+        use_layernorm: bool = True,
     ):
         super().__init__()
         self.mode = mode
@@ -385,7 +392,7 @@ class FeatureInjector(nn.Module):
         if mode == "none":
             self.injector = None
         elif mode == "broadcast":
-            self.injector = GatedBroadcastInjection(d_model, d_ctrl)
+            self.injector = GatedBroadcastInjection(d_model, d_ctrl, use_layernorm=use_layernorm)
         elif mode == "film":
             self.injector = FiLMInjection(d_model, d_ctrl)
         elif mode == "depth_token":
@@ -402,6 +409,7 @@ class FeatureInjector(nn.Module):
                 d_model, d_ctrl,
                 alpha_aggregation=alpha_aggregation,
                 use_learned_gate=use_learned_gate,
+                use_layernorm=use_layernorm,
             )
         else:
             raise ValueError(
