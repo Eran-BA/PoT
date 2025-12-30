@@ -11,6 +11,7 @@ Modes:
 - "film": FiLM modulation (scale and shift)
 - "depth_token": Prepend learnable depth token that participates in attention
 - "cross_attn": Cross-attention to depth memory bank
+- "alpha_gated": Alpha-modulated broadcast (injection strength follows routing)
 
 Author: Eran Ben Artzy
 Year: 2025
@@ -26,8 +27,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-INJECTION_MODES = ["none", "broadcast", "film", "depth_token", "cross_attn"]
-InjectionMode = Literal["none", "broadcast", "film", "depth_token", "cross_attn"]
+INJECTION_MODES = ["none", "broadcast", "film", "depth_token", "cross_attn", "alpha_gated"]
+InjectionMode = Literal["none", "broadcast", "film", "depth_token", "cross_attn", "alpha_gated"]
 
 
 class GatedBroadcastInjection(nn.Module):
@@ -54,6 +55,7 @@ class GatedBroadcastInjection(nn.Module):
         self,
         x: torch.Tensor,  # [B, S, D]
         r: torch.Tensor,  # [B, d_ctrl]
+        alpha: torch.Tensor = None,  # Unused, for API compatibility
     ) -> torch.Tensor:
         """Inject controller features into tokens."""
         # Project controller state to token space
@@ -63,6 +65,102 @@ class GatedBroadcastInjection(nn.Module):
         gate = torch.sigmoid(self.gate(r))  # [B, 1]
         
         # Broadcast and add with gating
+        injection = gate.unsqueeze(1) * r_proj.unsqueeze(1)  # [B, 1, D]
+        return x + injection
+
+
+class AlphaGatedInjection(nn.Module):
+    """
+    Alpha-modulated broadcast injection.
+    
+    Formula:
+        alpha_scalar = mean(alpha)  # Aggregate routing weights
+        x_out = x + alpha_scalar * (r @ W_r)
+    
+    The routing weights (alpha) modulate the injection strength, creating
+    coherence between head routing and feature injection.
+    
+    Configurable aggregation modes:
+    - "mean": Use mean of alpha across heads
+    - "max": Use max of alpha across heads  
+    - "entropy": Use (1 - normalized_entropy) - inject more when routing is confident
+    
+    Args:
+        d_model: Token embedding dimension
+        d_ctrl: Controller state dimension
+        alpha_aggregation: How to aggregate alpha ("mean", "max", "entropy")
+        use_learned_gate: If True, combine alpha with a learned gate
+    """
+    
+    def __init__(
+        self,
+        d_model: int,
+        d_ctrl: int,
+        alpha_aggregation: str = "mean",
+        use_learned_gate: bool = True,
+    ):
+        super().__init__()
+        self.proj = nn.Linear(d_ctrl, d_model)
+        self.alpha_aggregation = alpha_aggregation
+        self.use_learned_gate = use_learned_gate
+        
+        if use_learned_gate:
+            self.gate = nn.Linear(d_ctrl, 1)
+    
+    def _aggregate_alpha(self, alpha: torch.Tensor) -> torch.Tensor:
+        """
+        Aggregate routing weights to a scalar per batch.
+        
+        Args:
+            alpha: Routing weights [B, H] or [B, S, H]
+            
+        Returns:
+            Scalar per batch [B, 1]
+        """
+        # Flatten to [B, -1] if needed
+        if alpha.dim() == 3:
+            alpha = alpha.mean(dim=1)  # [B, H]
+        
+        if self.alpha_aggregation == "mean":
+            return alpha.mean(dim=-1, keepdim=True)  # [B, 1]
+        elif self.alpha_aggregation == "max":
+            return alpha.max(dim=-1, keepdim=True)[0]  # [B, 1]
+        elif self.alpha_aggregation == "entropy":
+            # Low entropy = confident routing = stronger injection
+            # H = -sum(p * log(p)), normalized by log(n_heads)
+            eps = 1e-8
+            log_alpha = (alpha + eps).log()
+            entropy = -(alpha * log_alpha).sum(dim=-1, keepdim=True)  # [B, 1]
+            max_entropy = alpha.size(-1)  # log would give max entropy
+            normalized_entropy = entropy / (max_entropy + eps)
+            return 1.0 - normalized_entropy  # [B, 1] - high when confident
+        else:
+            raise ValueError(f"Unknown alpha_aggregation: {self.alpha_aggregation}")
+    
+    def forward(
+        self,
+        x: torch.Tensor,  # [B, S, D]
+        r: torch.Tensor,  # [B, d_ctrl]
+        alpha: torch.Tensor,  # [B, H] or [B, S, H] routing weights
+    ) -> torch.Tensor:
+        """Inject controller features modulated by routing weights."""
+        if alpha is None:
+            # Fallback to uniform if no alpha provided
+            alpha_scalar = torch.ones(x.size(0), 1, device=x.device)
+        else:
+            alpha_scalar = self._aggregate_alpha(alpha)  # [B, 1]
+        
+        # Project controller state to token space
+        r_proj = self.proj(r)  # [B, D]
+        
+        # Optionally combine with learned gate
+        if self.use_learned_gate:
+            learned_gate = torch.sigmoid(self.gate(r))  # [B, 1]
+            gate = alpha_scalar * learned_gate
+        else:
+            gate = alpha_scalar
+        
+        # Broadcast and add with alpha-modulated gating
         injection = gate.unsqueeze(1) * r_proj.unsqueeze(1)  # [B, 1, D]
         return x + injection
 
@@ -246,7 +344,7 @@ class FeatureInjector(nn.Module):
     """
     Feature injection from controller state into token embeddings.
     
-    Provides 4 configurable modes for injecting controller knowledge back
+    Provides configurable modes for injecting controller knowledge back
     into tokens, enabling ablation studies of routing-only vs. feature injection.
     
     Modes:
@@ -255,6 +353,7 @@ class FeatureInjector(nn.Module):
     - "film": FiLM modulation (gamma * x + beta)
     - "depth_token": Prepend learnable depth token
     - "cross_attn": Cross-attention to depth memory bank
+    - "alpha_gated": Alpha-modulated broadcast (injection follows routing)
     
     Args:
         d_model: Token embedding dimension
@@ -263,6 +362,8 @@ class FeatureInjector(nn.Module):
         memory_size: For cross_attn mode, max memory entries
         n_heads: For cross_attn mode, number of attention heads
         dropout: Dropout probability
+        alpha_aggregation: For alpha_gated mode, how to aggregate alpha ("mean", "max", "entropy")
+        use_learned_gate: For alpha_gated mode, combine alpha with learned gate
     """
     
     def __init__(
@@ -273,6 +374,8 @@ class FeatureInjector(nn.Module):
         memory_size: int = 16,
         n_heads: int = 4,
         dropout: float = 0.0,
+        alpha_aggregation: str = "mean",
+        use_learned_gate: bool = True,
     ):
         super().__init__()
         self.mode = mode
@@ -294,6 +397,12 @@ class FeatureInjector(nn.Module):
                 n_heads=n_heads,
                 dropout=dropout,
             )
+        elif mode == "alpha_gated":
+            self.injector = AlphaGatedInjection(
+                d_model, d_ctrl,
+                alpha_aggregation=alpha_aggregation,
+                use_learned_gate=use_learned_gate,
+            )
         else:
             raise ValueError(
                 f"Unknown injection mode: '{mode}'. "
@@ -305,6 +414,7 @@ class FeatureInjector(nn.Module):
         x: torch.Tensor,  # [B, S, D] tokens
         r: Optional[torch.Tensor] = None,  # [B, d_ctrl] controller feature
         memory: Optional[torch.Tensor] = None,  # [B, T, D] for cross_attn
+        alpha: Optional[torch.Tensor] = None,  # [B, H] or [B, S, H] routing weights
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
         Apply feature injection.
@@ -313,6 +423,7 @@ class FeatureInjector(nn.Module):
             x: Token embeddings [B, S, D]
             r: Controller feature vector [B, d_ctrl]
             memory: Memory bank for cross_attn mode [B, T, D]
+            alpha: Routing weights for alpha_gated mode [B, H] or [B, S, H]
         
         Returns:
             x_out: Injected token embeddings
@@ -323,6 +434,9 @@ class FeatureInjector(nn.Module):
         
         if self.mode == "cross_attn":
             return self.injector(x, r, memory)
+        elif self.mode == "alpha_gated":
+            x_out = self.injector(x, r, alpha)
+            return x_out, memory
         else:
             x_out = self.injector(x, r)
             return x_out, memory

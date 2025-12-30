@@ -170,7 +170,7 @@ class ReasoningModule(nn.Module):
         # (so injected features participate in attention)
         if self.injection_mode == "depth_token" and features is not None:
             # Depth token mode: prepend token, need to handle routing
-            x, injection_memory = self.injector(x, features, injection_memory)
+            x, injection_memory = self.injector(x, features, injection_memory, alpha=route_weights)
             # x is now [B, S+1, D], route_exp needs adjustment
             if route_weights.dim() == 3:
                 # Per-token routing: prepend a routing weight for depth token
@@ -179,7 +179,8 @@ class ReasoningModule(nn.Module):
                 route_exp = torch.cat([depth_route, route_exp], dim=1)  # [B, S+1, H, 1]
             T = T + 1  # Update sequence length
         elif features is not None:
-            x, injection_memory = self.injector(x, features, injection_memory)
+            # Pass alpha for alpha_gated mode (ignored by other modes)
+            x, injection_memory = self.injector(x, features, injection_memory, alpha=route_weights)
         
         for attn, ffn, norm1, norm2 in zip(
             self.attn_layers, self.ffn_layers,

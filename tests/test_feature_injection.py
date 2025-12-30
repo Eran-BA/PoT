@@ -1,12 +1,13 @@
 """
 Tests for Feature Injection Module.
 
-Tests all 4 injection modes:
+Tests all 6 injection modes:
 - none: Routing-only (no injection)
 - broadcast: Gated broadcast of controller features to all tokens
 - film: FiLM modulation (scale and shift)
 - depth_token: Prepend learnable depth token
 - cross_attn: Cross-attention to depth memory bank
+- alpha_gated: Alpha-modulated broadcast (injection follows routing)
 
 Author: Eran Ben Artzy
 Year: 2025
@@ -20,6 +21,7 @@ import torch.nn as nn
 from src.pot.core.feature_injection import (
     FeatureInjector,
     GatedBroadcastInjection,
+    AlphaGatedInjection,
     FiLMInjection,
     DepthTokenInjection,
     CrossAttentionInjection,
@@ -215,6 +217,106 @@ class TestCrossAttentionInjection:
         assert controller_features.grad is not None
 
 
+class TestAlphaGatedInjection:
+    """Tests for alpha-modulated injection."""
+    
+    @pytest.fixture
+    def n_heads(self):
+        return 8
+    
+    @pytest.fixture
+    def alpha(self, batch_size, n_heads):
+        """Create random routing weights."""
+        alpha = torch.softmax(torch.randn(batch_size, n_heads), dim=-1)
+        return alpha
+    
+    @pytest.fixture
+    def alpha_per_token(self, batch_size, seq_len, n_heads):
+        """Create per-token routing weights."""
+        alpha = torch.softmax(torch.randn(batch_size, seq_len, n_heads), dim=-1)
+        return alpha
+    
+    def test_output_shape(self, tokens, controller_features, alpha, d_model, d_ctrl):
+        """Output should have same shape as input."""
+        injector = AlphaGatedInjection(d_model, d_ctrl)
+        output = injector(tokens, controller_features, alpha)
+        assert output.shape == tokens.shape
+    
+    def test_output_shape_per_token_alpha(self, tokens, controller_features, alpha_per_token, d_model, d_ctrl):
+        """Output should work with per-token alpha."""
+        injector = AlphaGatedInjection(d_model, d_ctrl)
+        output = injector(tokens, controller_features, alpha_per_token)
+        assert output.shape == tokens.shape
+    
+    def test_mean_aggregation(self, tokens, controller_features, alpha, d_model, d_ctrl):
+        """Mean aggregation should use mean of alpha."""
+        injector = AlphaGatedInjection(d_model, d_ctrl, alpha_aggregation="mean")
+        output = injector(tokens, controller_features, alpha)
+        assert output.shape == tokens.shape
+    
+    def test_max_aggregation(self, tokens, controller_features, alpha, d_model, d_ctrl):
+        """Max aggregation should use max of alpha."""
+        injector = AlphaGatedInjection(d_model, d_ctrl, alpha_aggregation="max")
+        output = injector(tokens, controller_features, alpha)
+        assert output.shape == tokens.shape
+    
+    def test_entropy_aggregation(self, tokens, controller_features, alpha, d_model, d_ctrl):
+        """Entropy aggregation should use (1 - entropy) of alpha."""
+        injector = AlphaGatedInjection(d_model, d_ctrl, alpha_aggregation="entropy")
+        output = injector(tokens, controller_features, alpha)
+        assert output.shape == tokens.shape
+    
+    def test_no_learned_gate(self, tokens, controller_features, alpha, d_model, d_ctrl):
+        """Should work without learned gate."""
+        injector = AlphaGatedInjection(d_model, d_ctrl, use_learned_gate=False)
+        output = injector(tokens, controller_features, alpha)
+        assert output.shape == tokens.shape
+    
+    def test_none_alpha_fallback(self, tokens, controller_features, d_model, d_ctrl):
+        """Should fallback to uniform when alpha is None."""
+        injector = AlphaGatedInjection(d_model, d_ctrl)
+        output = injector(tokens, controller_features, alpha=None)
+        assert output.shape == tokens.shape
+    
+    def test_gradient_flow(self, tokens, controller_features, alpha, d_model, d_ctrl):
+        """Gradients should flow through to controller features."""
+        injector = AlphaGatedInjection(d_model, d_ctrl)
+        tokens.requires_grad_(True)
+        controller_features.requires_grad_(True)
+        alpha.requires_grad_(True)
+        
+        output = injector(tokens, controller_features, alpha)
+        loss = output.sum()
+        loss.backward()
+        
+        assert tokens.grad is not None
+        assert controller_features.grad is not None
+        assert alpha.grad is not None
+    
+    def test_confident_routing_stronger_injection(self, tokens, controller_features, d_model, d_ctrl):
+        """With entropy aggregation, confident routing should give stronger injection."""
+        injector = AlphaGatedInjection(d_model, d_ctrl, alpha_aggregation="entropy", use_learned_gate=False)
+        
+        B = tokens.size(0)
+        n_heads = 8
+        
+        # Confident alpha (one-hot-ish)
+        confident_alpha = torch.zeros(B, n_heads)
+        confident_alpha[:, 0] = 1.0
+        
+        # Uniform alpha (max entropy)
+        uniform_alpha = torch.ones(B, n_heads) / n_heads
+        
+        output_confident = injector(tokens, controller_features, confident_alpha)
+        output_uniform = injector(tokens, controller_features, uniform_alpha)
+        
+        # Confident should have larger deviation from input
+        diff_confident = (output_confident - tokens).abs().mean()
+        diff_uniform = (output_uniform - tokens).abs().mean()
+        
+        assert diff_confident > diff_uniform
+
+
 # =============================================================================
 # Test FeatureInjector (Main Interface)
 # =============================================================================
@@ -278,6 +380,27 @@ class TestFeatureInjector:
         assert output.shape == tokens.shape
         assert memory is not None
         assert memory.shape == (batch_size, 1, d_model)
+    
+    def test_alpha_gated_mode(self, tokens, controller_features, d_model, d_ctrl, batch_size):
+        """Alpha-gated mode should use routing weights to modulate injection."""
+        injector = FeatureInjector(d_model, d_ctrl, mode="alpha_gated")
+        n_heads = 8
+        alpha = torch.softmax(torch.randn(batch_size, n_heads), dim=-1)
+        output, memory = injector(tokens, controller_features, alpha=alpha)
+        assert output.shape == tokens.shape
+        assert memory is None
+    
+    def test_alpha_gated_mode_with_options(self, tokens, controller_features, d_model, d_ctrl, batch_size):
+        """Alpha-gated mode should accept configuration options."""
+        injector = FeatureInjector(
+            d_model, d_ctrl, mode="alpha_gated",
+            alpha_aggregation="entropy",
+            use_learned_gate=False,
+        )
+        n_heads = 8
+        alpha = torch.softmax(torch.randn(batch_size, n_heads), dim=-1)
+        output, memory = injector(tokens, controller_features, alpha=alpha)
+        assert output.shape == tokens.shape
     
     def test_backward_compatibility_default(self, tokens, controller_features, d_model, d_ctrl):
         """Default mode should be 'none' for backward compatibility."""
@@ -525,4 +648,18 @@ class TestParameterCounts:
         params = sum(p.numel() for p in injector.parameters())
         # Should be larger than other modes
         assert params > 0
+    
+    def test_alpha_gated_mode_params(self, base_params):
+        """Alpha-gated mode should have proj + optional gate parameters."""
+        # With learned gate
+        injector_with_gate = FeatureInjector(**base_params, mode="alpha_gated", use_learned_gate=True)
+        params_with_gate = sum(p.numel() for p in injector_with_gate.parameters())
+        
+        # Without learned gate
+        injector_no_gate = FeatureInjector(**base_params, mode="alpha_gated", use_learned_gate=False)
+        params_no_gate = sum(p.numel() for p in injector_no_gate.parameters())
+        
+        # With gate should have more params
+        assert params_with_gate > params_no_gate
+        assert params_no_gate > 0
 

@@ -8,6 +8,9 @@
 
 - 📄 **Paper**: [BERT/GPT with Inner-Thinking Cycles: Iterative Refinement via Dynamic Head Routing](https://doi.org/10.5281/zenodo.17959628) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17959628.svg)](https://doi.org/10.5281/zenodo.17959628)
 
+- 🆕 **Feature Injection (Next Feature Prediction)**: Controllers can now inject knowledge into token embeddings
+  - 6 modes: `none`, `broadcast`, `film`, `depth_token`, `cross_attn`, `alpha_gated`
+  - Conceptually analogous to next-token prediction, but for feature space
 
 - 🆕 **New Controllers**: Added **Mamba** (O(N) linear SSM) and **Diffusion** (iterative denoising) depth controllers
   - Mamba: Selective State Space Models for efficient routing ([Gu & Dao, 2024](https://arxiv.org/abs/2312.00752))
@@ -946,6 +949,7 @@ model = HybridPoHHRMSolver(
 | `film` | `γ * x + β` | FiLM modulation (scale/shift) | Stable conditioning, modulation |
 | `depth_token` | Prepend `z` token | Attention-based knowledge sharing | Transformer-native, selective |
 | `cross_attn` | `x + CrossAttn(x, memory)` | Cross-attention to depth memory bank | Most expressive, history access |
+| `alpha_gated` | `x + α_agg * (r·W)` | Alpha-modulated broadcast | Coupled routing + injection |
 
 **When to use each mode:**
 
@@ -954,6 +958,21 @@ model = HybridPoHHRMSolver(
 - **`film`** — Stable modulation without adding new information (acts like "context conditioning")
 - **`depth_token`** — Transformer-native approach where tokens can selectively attend to depth knowledge
 - **`cross_attn`** — Most expressive; different tokens can retrieve different past depth information
+- **`alpha_gated`** — Coupled approach where injection strength follows routing confidence (coherent α + injection)
+
+**Example with alpha-gated injection:**
+
+```python
+# Alpha-gated: injection strength modulated by routing weights
+model = HybridPoHHRMSolver(
+    d_model=512, n_heads=8,
+    injection_mode="alpha_gated",
+    injection_kwargs={
+        "alpha_aggregation": "entropy",  # "mean", "max", or "entropy"
+        "use_learned_gate": True,        # Combine with learned gate
+    },
+)
+```
 
 **Example with cross-attention memory:**
 
