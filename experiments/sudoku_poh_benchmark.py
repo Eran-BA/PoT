@@ -196,6 +196,22 @@ def main():
     parser.add_argument('--hrm-grad-style', action='store_true',
                        help='Use HRM-style gradients (only last L+H call). Default: all calls in last H_cycle.')
     
+    # Feature injection modes
+    parser.add_argument('--injection-mode', type=str, default='none',
+                       choices=['none', 'broadcast', 'film', 'depth_token', 'cross_attn', 'alpha_gated'],
+                       help='Feature injection mode for controller knowledge into tokens')
+    parser.add_argument('--injection-memory-size', type=int, default=16,
+                       help='Memory bank size for cross_attn injection mode')
+    parser.add_argument('--injection-n-heads', type=int, default=4,
+                       help='Number of attention heads for cross_attn injection mode')
+    parser.add_argument('--alpha-aggregation', type=str, default='mean',
+                       choices=['mean', 'max', 'entropy'],
+                       help='Alpha aggregation mode for alpha_gated injection')
+    parser.add_argument('--use-learned-gate', action='store_true',
+                       help='Use learned gate in alpha_gated injection (default: True)')
+    parser.add_argument('--no-learned-gate', action='store_true',
+                       help='Disable learned gate in alpha_gated injection')
+    
     # ACT (Adaptive Computation Time) - like HRM's adaptive outer steps
     parser.add_argument('--halt-max-steps', type=int, default=1,
                        help='Max ACT outer steps (1=no ACT, >1=ACT enabled like HRM). HRM uses 8 or 16.')
@@ -348,6 +364,19 @@ def main():
         if args.controller == 'mamba' and args.optimize_mamba:
             controller_kwargs['use_fast_path'] = True
         
+        # Build injection kwargs
+        injection_kwargs = None
+        if args.injection_mode == 'cross_attn':
+            injection_kwargs = {
+                'memory_size': args.injection_memory_size,
+                'n_heads': args.injection_n_heads,
+            }
+        elif args.injection_mode == 'alpha_gated':
+            injection_kwargs = {
+                'alpha_aggregation': args.alpha_aggregation,
+                'use_learned_gate': not args.no_learned_gate,
+            }
+        
         model = HybridPoHHRMSolver(
             d_model=args.d_model,
             n_heads=args.n_heads,
@@ -364,10 +393,15 @@ def main():
             halt_exploration_prob=args.halt_exploration_prob,
             controller_type=args.controller,
             controller_kwargs=controller_kwargs if controller_kwargs else None,
+            injection_mode=args.injection_mode,
+            injection_kwargs=injection_kwargs,
         ).to(device)
         print_rank0(f"Hybrid model: H_cycles={args.H_cycles}, L_cycles={args.L_cycles}")
         print_rank0(f"H_layers={args.H_layers}, L_layers={args.L_layers}, dropout={args.dropout}")
         print_rank0(f"Controller: {args.controller}")
+        print_rank0(f"Injection mode: {args.injection_mode}")
+        if injection_kwargs:
+            print_rank0(f"  Injection kwargs: {injection_kwargs}")
         if args.controller == 'mamba' and args.optimize_mamba:
             print_rank0(f"  Mamba optimization: ENABLED (torch.compile)")
         print_rank0(f"Gradient style: {'HRM (last L+H only)' if args.hrm_grad_style else 'Full (last H_cycle)'}")
