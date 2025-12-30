@@ -22,9 +22,31 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Dict, Any
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+def _sinusoidal_position_embedding(max_len: int, d_model: int) -> torch.Tensor:
+    """Generate sinusoidal positional embeddings (Vaswani et al., 2017).
+    
+    Args:
+        max_len: Maximum sequence length
+        d_model: Embedding dimension
+        
+    Returns:
+        [max_len, d_model] tensor of positional embeddings
+    """
+    pe = torch.zeros(max_len, d_model)
+    position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+    div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+    
+    pe[:, 0::2] = torch.sin(position * div_term)
+    pe[:, 1::2] = torch.cos(position * div_term[:d_model // 2])  # Handle odd d_model
+    
+    return pe
 
 
 @dataclass
@@ -77,6 +99,9 @@ class CausalDepthTransformerRouter(nn.Module):
         temperature: Softmax temperature for routing (default: 1.0)
         topk: Optional top-k sparsification after softmax (default: None)
         entropy_reg: Entropy regularization coefficient (default: 1e-3)
+        use_learned_depth_pe: If True, use learned positional embeddings for depth.
+            If False (default), use fixed sinusoidal embeddings which generalize
+            better to unseen depths.
     """
 
     def __init__(
@@ -92,6 +117,7 @@ class CausalDepthTransformerRouter(nn.Module):
         temperature: float = 1.0,
         topk: Optional[int] = None,
         entropy_reg: float = 1e-3,
+        use_learned_depth_pe: bool = False,
     ):
         super().__init__()
         assert d_ctrl % n_ctrl_heads == 0, "d_ctrl must be divisible by n_ctrl_heads"
@@ -109,6 +135,7 @@ class CausalDepthTransformerRouter(nn.Module):
         self.topk = topk
         self.max_depth = max_depth
         self.entropy_reg = entropy_reg
+        self.use_learned_depth_pe = use_learned_depth_pe
 
         # Pool token states -> controller input
         self.pool_ln = nn.LayerNorm(d_model)
@@ -119,9 +146,17 @@ class CausalDepthTransformerRouter(nn.Module):
             nn.Linear(d_ctrl, d_ctrl),
         )
 
-        # Learned depth positional embeddings
-        self.depth_pos = nn.Parameter(torch.zeros(max_depth, d_ctrl))
-        nn.init.normal_(self.depth_pos, mean=0.0, std=0.02)
+        # Depth positional embeddings
+        if use_learned_depth_pe:
+            # Learned: can adapt to task but limited to trained depths
+            self.depth_pos = nn.Parameter(torch.zeros(max_depth, d_ctrl))
+            nn.init.normal_(self.depth_pos, mean=0.0, std=0.02)
+        else:
+            # Fixed sinusoidal: generalizes to any depth, more stable
+            self.register_buffer(
+                "depth_pos",
+                _sinusoidal_position_embedding(max_depth, d_ctrl)
+            )
 
         # Causal depth Transformer over sequence length = (t+1)
         enc_layer = nn.TransformerEncoderLayer(
