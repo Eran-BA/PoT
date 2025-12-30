@@ -913,9 +913,19 @@ Different controller choices offer trade-offs in:
 
 ---
 
-### Feature Injection Modes (NEW)
+### Feature Injection Modes (NEW) — Next Feature Prediction
 
 Beyond routing-only controllers, PoT now supports **feature injection** — injecting controller knowledge back into token embeddings, not just into routing weights α.
+
+**Conceptual insight:** This is **next feature injection prediction**. The controller observes the current reasoning state and "predicts" what features should be injected into tokens for the next reasoning step.
+
+| Paradigm | Prediction Target |
+|----------|-------------------|
+| LLMs (GPT) | Next **token** |
+| Diffusion | Next **noise level** state |
+| Feature Injection | Next **feature state** to inject |
+
+The controller produces a feature vector `r` that shapes what knowledge flows into the token embeddings before the next iteration — essentially predicting the feature context needed for continued reasoning.
 
 ```python
 from src.pot.core import INJECTION_MODES
