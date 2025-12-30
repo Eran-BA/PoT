@@ -422,6 +422,7 @@ class PoTDepthTransformerRouter(nn.Module):
                 "temperature": self.temperature,
                 "depth_step": t,
                 "internal_gate_weights": [gw.detach() for gw in all_gate_weights],
+                "features": r_t,  # [B, d_ctrl] - injectable controller feature
             }
 
         return alpha, cache, aux

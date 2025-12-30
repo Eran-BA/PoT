@@ -223,6 +223,7 @@ class HRMPointerController(nn.Module):
                 "alphas": alphas.detach(),
                 "entropy": entropy.detach(),
                 "temperature": float(T.detach().cpu()),
+                "features": z_L_cond,  # [B, d_ctrl] - injectable controller feature
             }
             if topk_idx is not None:
                 aux["topk_idx"] = topk_idx.detach()

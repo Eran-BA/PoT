@@ -953,6 +953,7 @@ class SwinDepthController(nn.Module):
                 "depth_step": t,
                 "grid_size": (H, W),
                 "reduced_spatial_size": S_reduced,
+                "features": y_pooled,  # [B, d_ctrl] - injectable controller feature
             }
         
         return alpha, cache, aux

@@ -172,6 +172,8 @@ class HybridHRMBase(nn.Module):
         allow_early_halt_eval: bool = False,
         controller_type: str = "gru",
         controller_kwargs: dict = None,
+        injection_mode: str = "none",
+        injection_kwargs: dict = None,
     ):
         super().__init__()
         
@@ -184,6 +186,7 @@ class HybridHRMBase(nn.Module):
         self.halt_exploration_prob = halt_exploration_prob
         self.allow_early_halt_eval = allow_early_halt_eval
         self.controller_type = controller_type
+        self.injection_mode = injection_mode
         self.verbose = False  # Set to True to see inner-loop progress
         
         # Embedding scaling factor (CRITICAL: HRM uses this!)
@@ -194,17 +197,22 @@ class HybridHRMBase(nn.Module):
         self.register_buffer('H_init', torch.randn(d_model) * 1.0)
         self.register_buffer('L_init', torch.randn(d_model) * 1.0)
         
-        # Two-timescale reasoning modules with PoT head routing
+        # Two-timescale reasoning modules with PoT head routing and feature injection
         ctrl_kwargs = controller_kwargs or {}
+        inj_kwargs = injection_kwargs or {}
         self.L_level = ReasoningModule(
             d_model, n_heads, L_layers, d_ff, dropout, T,
             controller_type=controller_type,
             controller_kwargs=ctrl_kwargs,
+            injection_mode=injection_mode,
+            injection_kwargs=inj_kwargs,
         )
         self.H_level = ReasoningModule(
             d_model, n_heads, H_layers, d_ff, dropout, T,
             controller_type=controller_type,
             controller_kwargs=ctrl_kwargs,
+            injection_mode=injection_mode,
+            injection_kwargs=inj_kwargs,
         )
         
         # Output normalization
@@ -271,6 +279,10 @@ class HybridHRMBase(nn.Module):
         L_ptr_state = self._init_controller_state(self.L_level.pointer_controller, B, device)
         H_ptr_state = self._init_controller_state(self.H_level.pointer_controller, B, device)
         
+        # Initialize injection memory (for cross_attn mode)
+        L_inj_mem = None
+        H_inj_mem = None
+        
         if hrm_grad_style:
             # HRM-style: ONLY the very last L_level call and very last H_level call get gradients
             with torch.no_grad():
@@ -279,20 +291,20 @@ class HybridHRMBase(nn.Module):
                         # Skip the very last L_step of the very last H_step
                         is_last_L = (H_step == self.H_cycles - 1) and (L_step == self.L_cycles - 1)
                         if not is_last_L:
-                            z_L, L_ptr_state = self.L_level(z_L, z_H + input_emb, L_ptr_state)
+                            z_L, L_ptr_state, L_inj_mem = self.L_level(z_L, z_H + input_emb, L_ptr_state, injection_memory=L_inj_mem)
                     
                     # Skip the very last H_step
                     is_last_H = (H_step == self.H_cycles - 1)
                     if not is_last_H:
-                        z_H, H_ptr_state = self.H_level(z_H, z_L, H_ptr_state)
+                        z_H, H_ptr_state, H_inj_mem = self.H_level(z_H, z_L, H_ptr_state, injection_memory=H_inj_mem)
             
             # Detach to cut gradient history
             z_H = z_H.detach()
             z_L = z_L.detach()
             
             # ONLY these 2 calls get gradients
-            z_L, L_ptr_state = self.L_level(z_L, z_H + input_emb, L_ptr_state)
-            z_H, H_ptr_state = self.H_level(z_H, z_L, H_ptr_state)
+            z_L, L_ptr_state, L_inj_mem = self.L_level(z_L, z_H + input_emb, L_ptr_state, injection_memory=L_inj_mem)
+            z_H, H_ptr_state, H_inj_mem = self.H_level(z_H, z_L, H_ptr_state, injection_memory=H_inj_mem)
         else:
             # Alternative: All calls in last H_cycle get gradients
             for H_step in range(self.H_cycles):
@@ -300,17 +312,17 @@ class HybridHRMBase(nn.Module):
                 
                 for L_step in range(self.L_cycles):
                     if use_grad:
-                        z_L, L_ptr_state = self.L_level(z_L, z_H + input_emb, L_ptr_state)
+                        z_L, L_ptr_state, L_inj_mem = self.L_level(z_L, z_H + input_emb, L_ptr_state, injection_memory=L_inj_mem)
                     else:
                         with torch.no_grad():
-                            z_L, L_ptr_state = self.L_level(z_L, z_H + input_emb, L_ptr_state)
+                            z_L, L_ptr_state, L_inj_mem = self.L_level(z_L, z_H + input_emb, L_ptr_state, injection_memory=L_inj_mem)
                         z_L = z_L.detach()
                 
                 if use_grad:
-                    z_H, H_ptr_state = self.H_level(z_H, z_L, H_ptr_state)
+                    z_H, H_ptr_state, H_inj_mem = self.H_level(z_H, z_L, H_ptr_state, injection_memory=H_inj_mem)
                 else:
                     with torch.no_grad():
-                        z_H, H_ptr_state = self.H_level(z_H, z_L, H_ptr_state)
+                        z_H, H_ptr_state, H_inj_mem = self.H_level(z_H, z_L, H_ptr_state, injection_memory=H_inj_mem)
                     z_H = z_H.detach()
         
         # Normalize output
@@ -365,6 +377,7 @@ class HybridHRMBase(nn.Module):
         """
         z_H, z_L = carry.z_H, carry.z_L
         L_ptr_state, H_ptr_state = carry.L_ptr_state, carry.H_ptr_state
+        L_inj_mem, H_inj_mem = None, None  # Initialize injection memory
         
         if use_grad:
             # With gradients (only on last step typically)
@@ -374,7 +387,7 @@ class HybridHRMBase(nn.Module):
                     is_last = (H_step == self.H_cycles - 1) and (L_step == self.L_cycles - 1)
                     if not is_last:
                         with torch.no_grad():
-                            z_L, L_ptr_state = self.L_level(z_L, z_H + input_emb, L_ptr_state)
+                            z_L, L_ptr_state, L_inj_mem = self.L_level(z_L, z_H + input_emb, L_ptr_state, injection_memory=L_inj_mem)
                     if self.verbose:
                         iter_num = H_step * self.L_cycles + L_step + 1
                         total = self.H_cycles * self.L_cycles
@@ -383,27 +396,27 @@ class HybridHRMBase(nn.Module):
                 
                 if H_step < self.H_cycles - 1:
                     with torch.no_grad():
-                        z_H, H_ptr_state = self.H_level(z_H, z_L, H_ptr_state)
+                        z_H, H_ptr_state, H_inj_mem = self.H_level(z_H, z_L, H_ptr_state, injection_memory=H_inj_mem)
             
             # Detach before final calls with grad
             z_H = z_H.detach()
             z_L = z_L.detach()
             
             # Final calls WITH gradients
-            z_L, L_ptr_state = self.L_level(z_L, z_H + input_emb, L_ptr_state)
-            z_H, H_ptr_state = self.H_level(z_H, z_L, H_ptr_state)
+            z_L, L_ptr_state, L_inj_mem = self.L_level(z_L, z_H + input_emb, L_ptr_state, injection_memory=L_inj_mem)
+            z_H, H_ptr_state, H_inj_mem = self.H_level(z_H, z_L, H_ptr_state, injection_memory=H_inj_mem)
         else:
             # Without gradients
             with torch.no_grad():
                 for H_step in range(self.H_cycles):
                     for L_step in range(self.L_cycles):
-                        z_L, L_ptr_state = self.L_level(z_L, z_H + input_emb, L_ptr_state)
+                        z_L, L_ptr_state, L_inj_mem = self.L_level(z_L, z_H + input_emb, L_ptr_state, injection_memory=L_inj_mem)
                         if self.verbose:
                             iter_num = H_step * self.L_cycles + L_step + 1
                             total = self.H_cycles * self.L_cycles
                             print(f"\r    H={H_step+1}/{self.H_cycles} L={L_step+1}/{self.L_cycles} "
                                   f"[{iter_num}/{total}]", end="", flush=True)
-                    z_H, H_ptr_state = self.H_level(z_H, z_L, H_ptr_state)
+                    z_H, H_ptr_state, H_inj_mem = self.H_level(z_H, z_L, H_ptr_state, injection_memory=H_inj_mem)
         
         # Normalize and compute Q-values
         hidden = self.final_norm(z_H)
@@ -734,6 +747,7 @@ class HybridHRMBase(nn.Module):
         
         z_H, z_L = carry.z_H, carry.z_L
         L_ptr_state, H_ptr_state = carry.L_ptr_state, carry.H_ptr_state
+        L_inj_mem, H_inj_mem = None, None  # Initialize injection memory
         
         # Run H_cycles x L_cycles inner iterations with HRM-style gradients
         # Only the final L and H calls get gradients
@@ -742,7 +756,7 @@ class HybridHRMBase(nn.Module):
                 for L_step in range(self.L_cycles):
                     is_last = (H_step == self.H_cycles - 1) and (L_step == self.L_cycles - 1)
                     if not is_last:
-                        z_L, L_ptr_state = self.L_level(z_L, z_H + input_emb, L_ptr_state)
+                        z_L, L_ptr_state, L_inj_mem = self.L_level(z_L, z_H + input_emb, L_ptr_state, injection_memory=L_inj_mem)
                     if self.verbose:
                         iter_num = H_step * self.L_cycles + L_step + 1
                         total = self.H_cycles * self.L_cycles
@@ -750,15 +764,15 @@ class HybridHRMBase(nn.Module):
                               f"[{iter_num}/{total}]", end="", flush=True)
                 
                 if H_step < self.H_cycles - 1:
-                    z_H, H_ptr_state = self.H_level(z_H, z_L, H_ptr_state)
+                    z_H, H_ptr_state, H_inj_mem = self.H_level(z_H, z_L, H_ptr_state, injection_memory=H_inj_mem)
         
         # Detach before final calls with grad
         z_H = z_H.detach()
         z_L = z_L.detach()
         
         # Final calls WITH gradients (these are the only ones that backprop)
-        z_L, L_ptr_state = self.L_level(z_L, z_H + input_emb, L_ptr_state)
-        z_H, H_ptr_state = self.H_level(z_H, z_L, H_ptr_state)
+        z_L, L_ptr_state, L_inj_mem = self.L_level(z_L, z_H + input_emb, L_ptr_state, injection_memory=L_inj_mem)
+        z_H, H_ptr_state, H_inj_mem = self.H_level(z_H, z_L, H_ptr_state, injection_memory=H_inj_mem)
         
         if self.verbose:
             print()  # newline after inner progress
@@ -796,10 +810,11 @@ class HybridHRMBase(nn.Module):
                     temp_H_ptr = H_ptr_state
                     
                     # One more reasoning step (without grad)
+                    temp_L_inj_mem, temp_H_inj_mem = None, None
                     for H_step in range(self.H_cycles):
                         for L_step in range(self.L_cycles):
-                            temp_z_L, temp_L_ptr = self.L_level(temp_z_L, temp_z_H + input_emb, temp_L_ptr)
-                        temp_z_H, temp_H_ptr = self.H_level(temp_z_H, temp_z_L, temp_H_ptr)
+                            temp_z_L, temp_L_ptr, temp_L_inj_mem = self.L_level(temp_z_L, temp_z_H + input_emb, temp_L_ptr, injection_memory=temp_L_inj_mem)
+                        temp_z_H, temp_H_ptr, temp_H_inj_mem = self.H_level(temp_z_H, temp_z_L, temp_H_ptr, injection_memory=temp_H_inj_mem)
                     
                     next_q_logits = self.q_head(temp_z_H[:, 0])
                     next_q_halt = next_q_logits[:, 0]

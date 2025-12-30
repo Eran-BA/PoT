@@ -913,6 +913,50 @@ Different controller choices offer trade-offs in:
 
 ---
 
+### Feature Injection Modes (NEW)
+
+Beyond routing-only controllers, PoT now supports **feature injection** — injecting controller knowledge back into token embeddings, not just into routing weights α.
+
+```python
+from src.pot.core import INJECTION_MODES
+print(INJECTION_MODES)
+# ['none', 'broadcast', 'film', 'depth_token', 'cross_attn']
+
+# Example: Solver with FiLM injection
+model = HybridPoHHRMSolver(
+    d_model=512, n_heads=8,
+    injection_mode="film",  # NEW
+)
+```
+
+| Mode | Formula | Description | Use Case |
+|------|---------|-------------|----------|
+| `none` | Pass-through | Routing-only (default, backward compatible) | Baseline, interpretability |
+| `broadcast` | `x + gate * broadcast(r·W)` | Gated broadcast to all tokens | Quick improvement, global context |
+| `film` | `γ * x + β` | FiLM modulation (scale/shift) | Stable conditioning, modulation |
+| `depth_token` | Prepend `z` token | Attention-based knowledge sharing | Transformer-native, selective |
+| `cross_attn` | `x + CrossAttn(x, memory)` | Cross-attention to depth memory bank | Most expressive, history access |
+
+**When to use each mode:**
+
+- **`none`** — When you want pure head routing without feature injection (baseline, interpretability)
+- **`broadcast`** — Quick way to inject global depth context into all tokens (risk: can overpower tokens if not gated)
+- **`film`** — Stable modulation without adding new information (acts like "context conditioning")
+- **`depth_token`** — Transformer-native approach where tokens can selectively attend to depth knowledge
+- **`cross_attn`** — Most expressive; different tokens can retrieve different past depth information
+
+**Example with cross-attention memory:**
+
+```python
+model = HybridPoHHRMSolver(
+    d_model=512, n_heads=8,
+    injection_mode="cross_attn",
+    injection_kwargs={"memory_size": 16, "n_heads": 4},
+)
+```
+
+---
+
 ### 5️⃣ Causal Depth Transformer Controller — Mermaid Diagram
 
 ```mermaid

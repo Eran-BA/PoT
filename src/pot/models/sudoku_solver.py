@@ -354,6 +354,8 @@ class HybridPoHHRMSolver(HybridHRMBase):
         allow_early_halt_eval: If True, enable Q-learning based early halting during eval
         controller_type: Type of depth controller ("gru", "lstm", "xlstm", "mingru", "transformer", "pot_transformer", "swin", "mamba", "diffusion")
         controller_kwargs: Additional kwargs for controller creation
+        injection_mode: Feature injection mode ("none", "broadcast", "film", "depth_token", "cross_attn")
+        injection_kwargs: Additional kwargs for FeatureInjector
     """
     
     def __init__(
@@ -376,6 +378,8 @@ class HybridPoHHRMSolver(HybridHRMBase):
         allow_early_halt_eval: bool = False,  # Enable early halting during eval
         controller_type: str = "gru",  # NEW: controller type
         controller_kwargs: dict = None,  # NEW: controller kwargs
+        injection_mode: str = "none",  # Feature injection mode
+        injection_kwargs: dict = None,  # Feature injection kwargs
     ):
         # Initialize base class with ACT parameters
         super().__init__(
@@ -395,6 +399,8 @@ class HybridPoHHRMSolver(HybridHRMBase):
             allow_early_halt_eval=allow_early_halt_eval,
             controller_type=controller_type,
             controller_kwargs=controller_kwargs,
+            injection_mode=injection_mode,
+            injection_kwargs=injection_kwargs,
         )
         
         self.vocab_size = vocab_size

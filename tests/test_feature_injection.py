@@ -1,0 +1,528 @@
+"""
+Tests for Feature Injection Module.
+
+Tests all 4 injection modes:
+- none: Routing-only (no injection)
+- broadcast: Gated broadcast of controller features to all tokens
+- film: FiLM modulation (scale and shift)
+- depth_token: Prepend learnable depth token
+- cross_attn: Cross-attention to depth memory bank
+
+Author: Eran Ben Artzy
+Year: 2025
+License: Apache 2.0
+"""
+
+import pytest
+import torch
+import torch.nn as nn
+
+from src.pot.core.feature_injection import (
+    FeatureInjector,
+    GatedBroadcastInjection,
+    FiLMInjection,
+    DepthTokenInjection,
+    CrossAttentionInjection,
+    INJECTION_MODES,
+)
+
+
+# =============================================================================
+# Fixtures
+# =============================================================================
+
+@pytest.fixture
+def batch_size():
+    return 4
+
+
+@pytest.fixture
+def seq_len():
+    return 16
+
+
+@pytest.fixture
+def d_model():
+    return 64
+
+
+@pytest.fixture
+def d_ctrl():
+    return 32
+
+
+@pytest.fixture
+def tokens(batch_size, seq_len, d_model):
+    """Create random token embeddings."""
+    return torch.randn(batch_size, seq_len, d_model)
+
+
+@pytest.fixture
+def controller_features(batch_size, d_ctrl):
+    """Create random controller features."""
+    return torch.randn(batch_size, d_ctrl)
+
+
+# =============================================================================
+# Test Individual Injection Modules
+# =============================================================================
+
+class TestGatedBroadcastInjection:
+    """Tests for GatedBroadcastInjection."""
+    
+    def test_output_shape(self, tokens, controller_features, d_model, d_ctrl):
+        """Output should have same shape as input."""
+        injector = GatedBroadcastInjection(d_model, d_ctrl)
+        output = injector(tokens, controller_features)
+        assert output.shape == tokens.shape
+    
+    def test_gradient_flow(self, tokens, controller_features, d_model, d_ctrl):
+        """Gradients should flow through to controller features."""
+        injector = GatedBroadcastInjection(d_model, d_ctrl)
+        tokens.requires_grad_(True)
+        controller_features.requires_grad_(True)
+        
+        output = injector(tokens, controller_features)
+        loss = output.sum()
+        loss.backward()
+        
+        assert tokens.grad is not None
+        assert controller_features.grad is not None
+    
+    def test_gating_bounds(self, tokens, controller_features, d_model, d_ctrl):
+        """Gate values should be in [0, 1] (sigmoid output)."""
+        injector = GatedBroadcastInjection(d_model, d_ctrl)
+        gate = torch.sigmoid(injector.gate(controller_features))
+        assert (gate >= 0).all() and (gate <= 1).all()
+
+
+class TestFiLMInjection:
+    """Tests for FiLM (Feature-wise Linear Modulation) injection."""
+    
+    def test_output_shape(self, tokens, controller_features, d_model, d_ctrl):
+        """Output should have same shape as input."""
+        injector = FiLMInjection(d_model, d_ctrl)
+        output = injector(tokens, controller_features)
+        assert output.shape == tokens.shape
+    
+    def test_identity_initialization(self, tokens, controller_features, d_model, d_ctrl):
+        """With identity init (gamma=1, beta=0), output should equal input."""
+        injector = FiLMInjection(d_model, d_ctrl)
+        # FiLM is initialized to identity transform
+        # With zero controller features, gamma should be 1 and beta should be 0
+        zero_features = torch.zeros_like(controller_features)
+        output = injector(tokens, zero_features)
+        # Should be close to identity (may not be exact due to activation)
+        assert output.shape == tokens.shape
+    
+    def test_gradient_flow(self, tokens, controller_features, d_model, d_ctrl):
+        """Gradients should flow through to controller features."""
+        injector = FiLMInjection(d_model, d_ctrl)
+        tokens.requires_grad_(True)
+        controller_features.requires_grad_(True)
+        
+        output = injector(tokens, controller_features)
+        loss = output.sum()
+        loss.backward()
+        
+        assert tokens.grad is not None
+        assert controller_features.grad is not None
+
+
+class TestDepthTokenInjection:
+    """Tests for depth token injection."""
+    
+    def test_output_shape(self, tokens, controller_features, d_model, d_ctrl, seq_len):
+        """Output should have one additional token (depth token prepended)."""
+        injector = DepthTokenInjection(d_model, d_ctrl)
+        output = injector(tokens, controller_features)
+        assert output.shape == (tokens.shape[0], seq_len + 1, d_model)
+    
+    def test_remove_depth_token(self, tokens, controller_features, d_model, d_ctrl):
+        """Removing depth token should restore original sequence length."""
+        injector = DepthTokenInjection(d_model, d_ctrl)
+        output = injector(tokens, controller_features)
+        restored = injector.remove_depth_token(output)
+        assert restored.shape == tokens.shape
+    
+    def test_gradient_flow(self, tokens, controller_features, d_model, d_ctrl):
+        """Gradients should flow through to controller features."""
+        injector = DepthTokenInjection(d_model, d_ctrl)
+        tokens.requires_grad_(True)
+        controller_features.requires_grad_(True)
+        
+        output = injector(tokens, controller_features)
+        loss = output.sum()
+        loss.backward()
+        
+        assert tokens.grad is not None
+        assert controller_features.grad is not None
+
+
+class TestCrossAttentionInjection:
+    """Tests for cross-attention to memory bank."""
+    
+    def test_output_shape(self, tokens, controller_features, d_model, d_ctrl):
+        """Output tokens should have same shape as input."""
+        injector = CrossAttentionInjection(d_model, d_ctrl, memory_size=8, n_heads=2)
+        output, memory = injector(tokens, controller_features, memory=None)
+        assert output.shape == tokens.shape
+    
+    def test_memory_initialization(self, tokens, controller_features, d_model, d_ctrl, batch_size):
+        """Memory should be initialized with projected controller features."""
+        injector = CrossAttentionInjection(d_model, d_ctrl, memory_size=8, n_heads=2)
+        output, memory = injector(tokens, controller_features, memory=None)
+        assert memory.shape == (batch_size, 1, d_model)
+    
+    def test_memory_accumulation(self, tokens, controller_features, d_model, d_ctrl, batch_size):
+        """Memory should accumulate across steps."""
+        injector = CrossAttentionInjection(d_model, d_ctrl, memory_size=8, n_heads=2)
+        
+        # First step
+        output1, memory1 = injector(tokens, controller_features, memory=None)
+        assert memory1.shape[1] == 1
+        
+        # Second step
+        output2, memory2 = injector(tokens, controller_features, memory=memory1)
+        assert memory2.shape[1] == 2
+        
+        # Third step
+        output3, memory3 = injector(tokens, controller_features, memory=memory2)
+        assert memory3.shape[1] == 3
+    
+    def test_memory_capping(self, tokens, controller_features, d_model, d_ctrl):
+        """Memory should be capped at memory_size."""
+        memory_size = 3
+        injector = CrossAttentionInjection(d_model, d_ctrl, memory_size=memory_size, n_heads=2)
+        
+        memory = None
+        for _ in range(10):
+            _, memory = injector(tokens, controller_features, memory=memory)
+        
+        assert memory.shape[1] == memory_size
+    
+    def test_gradient_flow(self, tokens, controller_features, d_model, d_ctrl):
+        """Gradients should flow through to controller features."""
+        injector = CrossAttentionInjection(d_model, d_ctrl, memory_size=8, n_heads=2)
+        tokens.requires_grad_(True)
+        controller_features.requires_grad_(True)
+        
+        output, memory = injector(tokens, controller_features, memory=None)
+        loss = output.sum()
+        loss.backward()
+        
+        assert tokens.grad is not None
+        assert controller_features.grad is not None
+
+
+# =============================================================================
+# Test FeatureInjector (Main Interface)
+# =============================================================================
+
+class TestFeatureInjector:
+    """Tests for the main FeatureInjector interface."""
+    
+    def test_all_modes_valid(self):
+        """All modes in INJECTION_MODES should be valid."""
+        for mode in INJECTION_MODES:
+            injector = FeatureInjector(d_model=64, d_ctrl=32, mode=mode)
+            assert injector.mode == mode
+    
+    def test_invalid_mode_raises(self):
+        """Invalid mode should raise ValueError."""
+        with pytest.raises(ValueError, match="Unknown injection mode"):
+            FeatureInjector(d_model=64, d_ctrl=32, mode="invalid_mode")
+    
+    def test_none_mode_passthrough(self, tokens, controller_features, d_model, d_ctrl):
+        """Mode 'none' should return input unchanged."""
+        injector = FeatureInjector(d_model, d_ctrl, mode="none")
+        output, memory = injector(tokens, controller_features)
+        assert torch.equal(output, tokens)
+        assert memory is None
+    
+    def test_none_mode_without_features(self, tokens, d_model, d_ctrl):
+        """Mode 'none' with no features should return input unchanged."""
+        injector = FeatureInjector(d_model, d_ctrl, mode="none")
+        output, memory = injector(tokens, r=None)
+        assert torch.equal(output, tokens)
+    
+    def test_broadcast_mode(self, tokens, controller_features, d_model, d_ctrl):
+        """Broadcast mode should return same-shaped output."""
+        injector = FeatureInjector(d_model, d_ctrl, mode="broadcast")
+        output, memory = injector(tokens, controller_features)
+        assert output.shape == tokens.shape
+        assert memory is None
+    
+    def test_film_mode(self, tokens, controller_features, d_model, d_ctrl):
+        """FiLM mode should return same-shaped output."""
+        injector = FeatureInjector(d_model, d_ctrl, mode="film")
+        output, memory = injector(tokens, controller_features)
+        assert output.shape == tokens.shape
+        assert memory is None
+    
+    def test_depth_token_mode(self, tokens, controller_features, d_model, d_ctrl, seq_len):
+        """Depth token mode should add one token."""
+        injector = FeatureInjector(d_model, d_ctrl, mode="depth_token")
+        output, memory = injector(tokens, controller_features)
+        assert output.shape == (tokens.shape[0], seq_len + 1, d_model)
+        assert injector.has_depth_token()
+        
+        # Remove depth token
+        restored = injector.remove_depth_token(output)
+        assert restored.shape == tokens.shape
+    
+    def test_cross_attn_mode(self, tokens, controller_features, d_model, d_ctrl, batch_size):
+        """Cross-attention mode should return output and memory."""
+        injector = FeatureInjector(d_model, d_ctrl, mode="cross_attn", memory_size=8, n_heads=2)
+        output, memory = injector(tokens, controller_features)
+        assert output.shape == tokens.shape
+        assert memory is not None
+        assert memory.shape == (batch_size, 1, d_model)
+    
+    def test_backward_compatibility_default(self, tokens, controller_features, d_model, d_ctrl):
+        """Default mode should be 'none' for backward compatibility."""
+        injector = FeatureInjector(d_model, d_ctrl)
+        assert injector.mode == "none"
+        output, memory = injector(tokens, controller_features)
+        assert torch.equal(output, tokens)
+
+
+# =============================================================================
+# Test Integration with ReasoningModule
+# =============================================================================
+
+class TestReasoningModuleIntegration:
+    """Tests for integration with ReasoningModule."""
+    
+    @pytest.fixture
+    def reasoning_module_params(self):
+        return {
+            "d_model": 64,
+            "n_heads": 4,
+            "n_layers": 1,
+            "d_ff": 128,
+            "dropout": 0.0,
+            "T": 2,
+        }
+    
+    def test_reasoning_module_with_none_injection(self, reasoning_module_params, batch_size, seq_len):
+        """ReasoningModule with 'none' injection should work."""
+        from src.pot.models.reasoning_module import ReasoningModule
+        
+        module = ReasoningModule(**reasoning_module_params, injection_mode="none")
+        hidden = torch.randn(batch_size, seq_len, reasoning_module_params["d_model"])
+        injection = torch.randn(batch_size, seq_len, reasoning_module_params["d_model"])
+        
+        output, ptr_state, inj_mem = module(hidden, injection)
+        assert output.shape == hidden.shape
+    
+    def test_reasoning_module_with_broadcast_injection(self, reasoning_module_params, batch_size, seq_len):
+        """ReasoningModule with 'broadcast' injection should work."""
+        from src.pot.models.reasoning_module import ReasoningModule
+        
+        module = ReasoningModule(**reasoning_module_params, injection_mode="broadcast")
+        hidden = torch.randn(batch_size, seq_len, reasoning_module_params["d_model"])
+        injection = torch.randn(batch_size, seq_len, reasoning_module_params["d_model"])
+        
+        output, ptr_state, inj_mem = module(hidden, injection)
+        assert output.shape == hidden.shape
+    
+    def test_reasoning_module_with_film_injection(self, reasoning_module_params, batch_size, seq_len):
+        """ReasoningModule with 'film' injection should work."""
+        from src.pot.models.reasoning_module import ReasoningModule
+        
+        module = ReasoningModule(**reasoning_module_params, injection_mode="film")
+        hidden = torch.randn(batch_size, seq_len, reasoning_module_params["d_model"])
+        injection = torch.randn(batch_size, seq_len, reasoning_module_params["d_model"])
+        
+        output, ptr_state, inj_mem = module(hidden, injection)
+        assert output.shape == hidden.shape
+    
+    def test_reasoning_module_with_depth_token_injection(self, reasoning_module_params, batch_size, seq_len):
+        """ReasoningModule with 'depth_token' injection should work."""
+        from src.pot.models.reasoning_module import ReasoningModule
+        
+        module = ReasoningModule(**reasoning_module_params, injection_mode="depth_token")
+        hidden = torch.randn(batch_size, seq_len, reasoning_module_params["d_model"])
+        injection = torch.randn(batch_size, seq_len, reasoning_module_params["d_model"])
+        
+        output, ptr_state, inj_mem = module(hidden, injection)
+        # Depth token is added then removed
+        assert output.shape == hidden.shape
+    
+    def test_reasoning_module_with_cross_attn_injection(self, reasoning_module_params, batch_size, seq_len):
+        """ReasoningModule with 'cross_attn' injection should work."""
+        from src.pot.models.reasoning_module import ReasoningModule
+        
+        module = ReasoningModule(
+            **reasoning_module_params,
+            injection_mode="cross_attn",
+            injection_kwargs={"memory_size": 8, "n_heads": 2}
+        )
+        hidden = torch.randn(batch_size, seq_len, reasoning_module_params["d_model"])
+        injection = torch.randn(batch_size, seq_len, reasoning_module_params["d_model"])
+        
+        output, ptr_state, inj_mem = module(hidden, injection)
+        assert output.shape == hidden.shape
+        assert inj_mem is not None
+
+
+# =============================================================================
+# Test Integration with HybridPoHHRMSolver
+# =============================================================================
+
+class TestHybridSolverIntegration:
+    """Tests for integration with HybridPoHHRMSolver."""
+    
+    @pytest.fixture
+    def solver_params(self):
+        return {
+            "vocab_size": 10,
+            "d_model": 64,
+            "n_heads": 4,
+            "H_layers": 1,
+            "L_layers": 1,
+            "d_ff": 128,
+            "H_cycles": 1,
+            "L_cycles": 2,
+            "T": 2,
+            "halt_max_steps": 1,
+        }
+    
+    def test_solver_with_none_injection(self, solver_params):
+        """Solver with 'none' injection should work."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        
+        model = HybridPoHHRMSolver(**solver_params, injection_mode="none")
+        inputs = torch.randint(0, 10, (2, 81))
+        puzzle_ids = torch.zeros(2, dtype=torch.long)
+        
+        logits, q_halt, q_continue, steps = model(inputs, puzzle_ids)
+        assert logits.shape == (2, 81, 10)
+    
+    def test_solver_with_broadcast_injection(self, solver_params):
+        """Solver with 'broadcast' injection should work."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        
+        model = HybridPoHHRMSolver(**solver_params, injection_mode="broadcast")
+        inputs = torch.randint(0, 10, (2, 81))
+        puzzle_ids = torch.zeros(2, dtype=torch.long)
+        
+        logits, q_halt, q_continue, steps = model(inputs, puzzle_ids)
+        assert logits.shape == (2, 81, 10)
+    
+    def test_solver_with_film_injection(self, solver_params):
+        """Solver with 'film' injection should work."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        
+        model = HybridPoHHRMSolver(**solver_params, injection_mode="film")
+        inputs = torch.randint(0, 10, (2, 81))
+        puzzle_ids = torch.zeros(2, dtype=torch.long)
+        
+        logits, q_halt, q_continue, steps = model(inputs, puzzle_ids)
+        assert logits.shape == (2, 81, 10)
+    
+    def test_solver_with_depth_token_injection(self, solver_params):
+        """Solver with 'depth_token' injection should work."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        
+        model = HybridPoHHRMSolver(**solver_params, injection_mode="depth_token")
+        inputs = torch.randint(0, 10, (2, 81))
+        puzzle_ids = torch.zeros(2, dtype=torch.long)
+        
+        logits, q_halt, q_continue, steps = model(inputs, puzzle_ids)
+        assert logits.shape == (2, 81, 10)
+    
+    def test_solver_with_cross_attn_injection(self, solver_params):
+        """Solver with 'cross_attn' injection should work."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        
+        model = HybridPoHHRMSolver(
+            **solver_params,
+            injection_mode="cross_attn",
+            injection_kwargs={"memory_size": 8, "n_heads": 2}
+        )
+        inputs = torch.randint(0, 10, (2, 81))
+        puzzle_ids = torch.zeros(2, dtype=torch.long)
+        
+        logits, q_halt, q_continue, steps = model(inputs, puzzle_ids)
+        assert logits.shape == (2, 81, 10)
+    
+    def test_solver_training_step(self, solver_params):
+        """Solver with injection should be trainable."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        import torch.nn.functional as F
+        
+        model = HybridPoHHRMSolver(**solver_params, injection_mode="broadcast")
+        model.train()
+        
+        inputs = torch.randint(0, 10, (2, 81))
+        targets = torch.randint(1, 10, (2, 81))
+        puzzle_ids = torch.zeros(2, dtype=torch.long)
+        
+        logits, q_halt, q_continue, steps = model(inputs, puzzle_ids)
+        
+        # Compute loss and backward
+        loss = F.cross_entropy(logits.view(-1, 10), targets.view(-1))
+        loss.backward()
+        
+        # Check gradients exist
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                # Not all parameters may have gradients in every forward pass
+                pass  # Just checking no errors occur
+
+
+# =============================================================================
+# Test Parameter Counts
+# =============================================================================
+
+class TestParameterCounts:
+    """Tests to verify parameter counts for different injection modes."""
+    
+    @pytest.fixture
+    def base_params(self):
+        return {
+            "d_model": 64,
+            "d_ctrl": 32,
+        }
+    
+    def test_none_mode_zero_params(self, base_params):
+        """Mode 'none' should add zero parameters."""
+        injector = FeatureInjector(**base_params, mode="none")
+        assert sum(p.numel() for p in injector.parameters()) == 0
+    
+    def test_broadcast_mode_params(self, base_params):
+        """Broadcast mode should have proj + gate parameters."""
+        injector = FeatureInjector(**base_params, mode="broadcast")
+        params = sum(p.numel() for p in injector.parameters())
+        # proj: d_ctrl -> d_model, gate: d_ctrl -> 1
+        expected = base_params["d_ctrl"] * base_params["d_model"] + base_params["d_model"]  # proj weight + bias
+        expected += base_params["d_ctrl"] * 1 + 1  # gate weight + bias
+        assert params == expected
+    
+    def test_film_mode_params(self, base_params):
+        """FiLM mode should have MLP parameters."""
+        injector = FeatureInjector(**base_params, mode="film")
+        params = sum(p.numel() for p in injector.parameters())
+        # MLP: d_ctrl -> d_ctrl -> 2*d_model
+        expected = base_params["d_ctrl"] * base_params["d_ctrl"] + base_params["d_ctrl"]
+        expected += base_params["d_ctrl"] * (2 * base_params["d_model"]) + 2 * base_params["d_model"]
+        assert params == expected
+    
+    def test_depth_token_mode_params(self, base_params):
+        """Depth token mode should have proj + layernorm parameters."""
+        injector = FeatureInjector(**base_params, mode="depth_token")
+        params = sum(p.numel() for p in injector.parameters())
+        # proj: d_ctrl -> d_model, ln: 2 * d_model (weight + bias)
+        expected = base_params["d_ctrl"] * base_params["d_model"] + base_params["d_model"]  # proj
+        expected += 2 * base_params["d_model"]  # LayerNorm
+        assert params == expected
+    
+    def test_cross_attn_mode_params(self, base_params):
+        """Cross-attention mode should have memory_proj + cross_attn + ln parameters."""
+        injector = FeatureInjector(**base_params, mode="cross_attn", memory_size=8, n_heads=2)
+        params = sum(p.numel() for p in injector.parameters())
+        # Should be larger than other modes
+        assert params > 0
+

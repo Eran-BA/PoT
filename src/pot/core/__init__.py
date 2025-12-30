@@ -16,6 +16,7 @@ from .swin_depth_controller import SwinDepthController, SwinDepthCache
 from .mamba_controller import MambaDepthController, MambaDepthState
 from .diffusion_controller import DiffusionDepthController, DiffusionDepthState
 from .controller_factory import create_controller, get_controller_info, CONTROLLER_TYPES
+from .feature_injection import FeatureInjector, INJECTION_MODES
 from .pointer_block import PointerBlock
 from .losses import ranknet_loss, soft_sort_loss
 from .metrics import compute_mask_aware_kendall_tau
@@ -51,6 +52,9 @@ __all__ = [
     # Controllers - Diffusion (iterative denoising)
     "DiffusionDepthController",
     "DiffusionDepthState",
+    # Feature Injection
+    "FeatureInjector",
+    "INJECTION_MODES",
     # Blocks
     "PointerBlock",
     # Losses

@@ -438,6 +438,7 @@ class DiffusionDepthController(nn.Module):
                 "temperature": self.temperature,
                 "depth_step": state.step,
                 "sigma": sigma.item(),
+                "features": z_new,  # [B, d_ctrl] - injectable controller feature
             }
         
         return alpha, new_state, aux

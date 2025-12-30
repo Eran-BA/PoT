@@ -490,6 +490,7 @@ class MambaDepthController(nn.Module):
                 "entropy": entropy.detach(),
                 "temperature": self.temperature,
                 "depth_step": state.step,
+                "features": h_new,  # [B, d_ctrl] - injectable controller feature
             }
         
         return alpha, new_state, aux

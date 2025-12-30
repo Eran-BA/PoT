@@ -301,6 +301,7 @@ class CausalDepthTransformerRouter(nn.Module):
                 "entropy": entropy.detach(),
                 "temperature": self.temperature,
                 "depth_step": t,
+                "features": r_t,  # [B, d_ctrl] - injectable controller feature
             }
 
         return alpha, cache, aux

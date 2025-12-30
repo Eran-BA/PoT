@@ -226,6 +226,7 @@ class LSTMDepthController(nn.Module):
                 "entropy": entropy.detach(),
                 "temperature": self.temperature,
                 "depth_step": state.step,
+                "features": h_new,  # [B, d_ctrl] - injectable controller feature
             }
         
         return alpha, new_state, aux
@@ -500,6 +501,7 @@ class xLSTMDepthController(nn.Module):
                 "entropy": entropy.detach(),
                 "temperature": self.temperature,
                 "depth_step": state.step,
+                "features": h_new,  # [B, d_ctrl] - injectable controller feature
             }
         
         return alpha, new_state, aux
@@ -692,6 +694,7 @@ class minGRUDepthController(nn.Module):
                 "alphas": alpha.detach(),
                 "entropy": entropy.detach(),
                 "temperature": self.temperature,
+                "features": h_new,  # [B, d_ctrl] - injectable controller feature
             }
         
         return alpha, h_new, aux
