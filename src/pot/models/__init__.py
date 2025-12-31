@@ -16,6 +16,7 @@ from .hrm_layers import RMSNorm, SwiGLU
 from .adaptive_halting import QHaltingController
 from .sudoku_solver import PoHSudokuSolver, HybridPoHHRMSolver, BaselineSudokuSolver
 from .hybrid_nli import HybridPoHHRMForNLI
+from .arc_solver import HybridPoHARCSolver, BaselineARCSolver
 
 __all__ = [
     "PoHGPT",
@@ -33,5 +34,8 @@ __all__ = [
     "BaselineSudokuSolver",
     # NLI
     "HybridPoHHRMForNLI",
+    # ARC solvers
+    "HybridPoHARCSolver",
+    "BaselineARCSolver",
 ]
 
