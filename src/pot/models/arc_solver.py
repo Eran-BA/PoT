@@ -122,19 +122,46 @@ class HybridPoHARCSolver(HybridHRMBase):
             else nn.Identity()
         )
         
-        # ARC-specific: Position embedding (900 positions)
-        self.pos_embed = nn.Parameter(
-            torch.randn(1, self.seq_len, d_model) * embed_init_std
-        )
-        
-        # Optional: 2D position embedding for spatial reasoning
+        # ARC-specific: FIXED sinusoidal position embeddings (like original Transformer)
+        # Using 2D row/col sinusoidal embeddings for spatial reasoning
         self.use_2d_pos = True
+        
+        # Create fixed sinusoidal embeddings
+        pos_embed_1d = self._create_sinusoidal_embeddings(self.seq_len, d_model)
+        self.register_buffer('pos_embed', pos_embed_1d.unsqueeze(0))  # [1, 900, d]
+        
         if self.use_2d_pos:
-            self.row_embed = nn.Parameter(torch.randn(1, 30, d_model) * embed_init_std)
-            self.col_embed = nn.Parameter(torch.randn(1, 30, d_model) * embed_init_std)
+            row_embed = self._create_sinusoidal_embeddings(30, d_model)
+            col_embed = self._create_sinusoidal_embeddings(30, d_model)
+            self.register_buffer('row_embed', row_embed.unsqueeze(0))  # [1, 30, d]
+            self.register_buffer('col_embed', col_embed.unsqueeze(0))  # [1, 30, d]
         
         # ARC-specific: Output projection
         self.output_proj = nn.Linear(d_model, vocab_size)
+    
+    @staticmethod
+    def _create_sinusoidal_embeddings(seq_len: int, d_model: int) -> torch.Tensor:
+        """
+        Create fixed sinusoidal position embeddings (Vaswani et al., 2017).
+        
+        PE(pos, 2i) = sin(pos / 10000^(2i/d_model))
+        PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))
+        
+        Args:
+            seq_len: Sequence length
+            d_model: Embedding dimension
+            
+        Returns:
+            [seq_len, d_model] tensor of position embeddings
+        """
+        position = torch.arange(seq_len).unsqueeze(1).float()
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-torch.log(torch.tensor(10000.0)) / d_model))
+        
+        pe = torch.zeros(seq_len, d_model)
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        
+        return pe
     
     def _compute_input_embedding(
         self, 
@@ -254,11 +281,16 @@ class BaselineARCSolver(nn.Module):
         self.seq_len = ARC_SEQ_LEN
         
         self.input_embed = nn.Embedding(vocab_size, d_model)
-        self.pos_embed = nn.Parameter(torch.randn(1, self.seq_len, d_model) * 0.02)
         
-        # 2D position embeddings
-        self.row_embed = nn.Parameter(torch.randn(1, 30, d_model) * 0.02)
-        self.col_embed = nn.Parameter(torch.randn(1, 30, d_model) * 0.02)
+        # Fixed sinusoidal position embeddings (like HRM)
+        pos_embed_1d = self._create_sinusoidal_embeddings(self.seq_len, d_model)
+        self.register_buffer('pos_embed', pos_embed_1d.unsqueeze(0))  # [1, 900, d]
+        
+        # 2D position embeddings (fixed sinusoidal)
+        row_embed = self._create_sinusoidal_embeddings(30, d_model)
+        col_embed = self._create_sinusoidal_embeddings(30, d_model)
+        self.register_buffer('row_embed', row_embed.unsqueeze(0))  # [1, 30, d]
+        self.register_buffer('col_embed', col_embed.unsqueeze(0))  # [1, 30, d]
         
         encoder_layer = nn.TransformerEncoderLayer(
             d_model, n_heads, d_ff, dropout, batch_first=True, norm_first=True
@@ -281,4 +313,16 @@ class BaselineARCSolver(nn.Module):
         logits = self.output_proj(x)
         
         return logits, None, None, 1
+    
+    @staticmethod
+    def _create_sinusoidal_embeddings(seq_len: int, d_model: int) -> torch.Tensor:
+        """Create fixed sinusoidal position embeddings."""
+        position = torch.arange(seq_len).unsqueeze(1).float()
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-torch.log(torch.tensor(10000.0)) / d_model))
+        
+        pe = torch.zeros(seq_len, d_model)
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        
+        return pe
 
