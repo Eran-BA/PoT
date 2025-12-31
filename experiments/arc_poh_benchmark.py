@@ -280,7 +280,11 @@ def main():
     parser.add_argument('--model', choices=['baseline', 'hybrid'], default='hybrid')
     parser.add_argument('--d-model', type=int, default=512)
     parser.add_argument('--n-heads', type=int, default=8)
+    parser.add_argument('--n-layers', type=int, default=2, help='Layers for baseline model')
     parser.add_argument('--d-ff', type=int, default=2048)
+    parser.add_argument('--R', type=int, default=8, help='Refinement iterations (baseline)')
+    parser.add_argument('--T', type=int, default=4, help='HRM outer period')
+    parser.add_argument('--max-halt', type=int, default=16, help='Max halting steps')
     parser.add_argument('--dropout', type=float, default=0.0)
     
     # Hybrid model args
