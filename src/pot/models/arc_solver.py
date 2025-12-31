@@ -85,6 +85,8 @@ class HybridPoHARCSolver(HybridHRMBase):
         controller_kwargs: dict = None,
         injection_mode: str = "none",
         injection_kwargs: dict = None,
+        use_rope: bool = True,  # Use RoPE by default (like HRM)
+        rope_base: float = 10000.0,
     ):
         super().__init__(
             d_model=d_model,
@@ -105,10 +107,13 @@ class HybridPoHARCSolver(HybridHRMBase):
             controller_kwargs=controller_kwargs,
             injection_mode=injection_mode,
             injection_kwargs=injection_kwargs,
+            use_rope=use_rope,  # Pass to base class
+            rope_base=rope_base,
         )
         
         self.vocab_size = vocab_size
         embed_init_std = 1.0 / self.embed_scale
+        self._use_rope = use_rope
         
         # ARC-specific: Input embedding (vocab 12)
         self.input_embed = nn.Embedding(vocab_size, d_model)
@@ -122,19 +127,25 @@ class HybridPoHARCSolver(HybridHRMBase):
             else nn.Identity()
         )
         
-        # ARC-specific: FIXED sinusoidal position embeddings (like original Transformer)
-        # Using 2D row/col sinusoidal embeddings for spatial reasoning
-        self.use_2d_pos = True
-        
-        # Create fixed sinusoidal embeddings
-        pos_embed_1d = self._create_sinusoidal_embeddings(self.seq_len, d_model)
-        self.register_buffer('pos_embed', pos_embed_1d.unsqueeze(0))  # [1, 900, d]
-        
-        if self.use_2d_pos:
-            row_embed = self._create_sinusoidal_embeddings(30, d_model)
-            col_embed = self._create_sinusoidal_embeddings(30, d_model)
-            self.register_buffer('row_embed', row_embed.unsqueeze(0))  # [1, 30, d]
-            self.register_buffer('col_embed', col_embed.unsqueeze(0))  # [1, 30, d]
+        # Position embeddings: RoPE or fallback to sinusoidal
+        # RoPE is applied inside attention (Q/K rotation), not added to input
+        # Only create sinusoidal embeddings if NOT using RoPE
+        if not use_rope:
+            # ARC-specific: FIXED sinusoidal position embeddings (like original Transformer)
+            # Using 2D row/col sinusoidal embeddings for spatial reasoning
+            self.use_2d_pos = True
+            
+            # Create fixed sinusoidal embeddings
+            pos_embed_1d = self._create_sinusoidal_embeddings(self.seq_len, d_model)
+            self.register_buffer('pos_embed', pos_embed_1d.unsqueeze(0))  # [1, 900, d]
+            
+            if self.use_2d_pos:
+                row_embed = self._create_sinusoidal_embeddings(30, d_model)
+                col_embed = self._create_sinusoidal_embeddings(30, d_model)
+                self.register_buffer('row_embed', row_embed.unsqueeze(0))  # [1, 30, d]
+                self.register_buffer('col_embed', col_embed.unsqueeze(0))  # [1, 30, d]
+        else:
+            self.use_2d_pos = False
         
         # ARC-specific: Output projection
         self.output_proj = nn.Linear(d_model, vocab_size)
@@ -168,22 +179,28 @@ class HybridPoHARCSolver(HybridHRMBase):
         input_seq: torch.Tensor, 
         puzzle_ids: torch.Tensor
     ) -> torch.Tensor:
-        """Compute scaled input embedding with optional 2D positional encoding."""
+        """
+        Compute scaled input embedding.
+        
+        When using RoPE: position information is injected via Q/K rotation in attention
+        When not using RoPE: adds fixed sinusoidal 2D position embeddings
+        """
         B = input_seq.size(0)
         
         # Input embedding
         input_emb = self.input_embed(input_seq)
         
-        # Add position embedding
-        if self.use_2d_pos:
-            # Combine 1D, row, and column embeddings
-            row_pos = self.row_embed.repeat(1, 30, 1)  # [1, 30, d] -> [1, 900, d]
-            col_pos = self.col_embed.repeat_interleave(30, dim=1)  # [1, 30, d] -> [1, 900, d]
-            pos_emb = self.pos_embed + row_pos + col_pos
-        else:
-            pos_emb = self.pos_embed
-        
-        input_emb = input_emb + pos_emb
+        # Add position embedding (only if NOT using RoPE)
+        # RoPE applies positional information inside attention via Q/K rotation
+        if not self._use_rope:
+            if self.use_2d_pos:
+                # Combine 1D, row, and column embeddings
+                row_pos = self.row_embed.repeat(1, 30, 1)  # [1, 30, d] -> [1, 900, d]
+                col_pos = self.col_embed.repeat_interleave(30, dim=1)  # [1, 30, d] -> [1, 900, d]
+                pos_emb = self.pos_embed + row_pos + col_pos
+            else:
+                pos_emb = self.pos_embed
+            input_emb = input_emb + pos_emb
         
         # Add puzzle embedding (broadcast to all positions)
         max_puzzle_id = self.puzzle_emb.num_puzzles - 1

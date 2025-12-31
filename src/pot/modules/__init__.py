@@ -25,6 +25,12 @@ from .positional import (
     SinusoidalPositionalEncoding,
     apply_rotary_pos_emb,
 )
+from .rope import (
+    RotaryEmbedding,
+    apply_rotary_pos_emb as apply_rope,
+    rotate_half,
+    CosSin,
+)
 
 __all__ = [
     "PoHConfig",
@@ -37,5 +43,9 @@ __all__ = [
     "PositionalEncoding",
     "SinusoidalPositionalEncoding",
     "apply_rotary_pos_emb",
+    "RotaryEmbedding",
+    "apply_rope",
+    "rotate_half",
+    "CosSin",
 ]
 

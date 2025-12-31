@@ -13,12 +13,126 @@ License: Apache 2.0
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import Optional, Tuple, Any, Dict
 
 from src.pot.core.hrm_controller import HRMPointerController, HRMState
 from src.pot.core.controller_factory import create_controller, CONTROLLER_TYPES
 from src.pot.core.feature_injection import FeatureInjector, INJECTION_MODES
 from src.pot.models.hrm_layers import RMSNorm, SwiGLU
+from src.pot.modules.rope import RotaryEmbedding, apply_rotary_pos_emb, CosSin
+
+
+class RoPEMultiheadAttention(nn.Module):
+    """
+    Multi-head attention with Rotary Position Embeddings (RoPE).
+    
+    Based on HRM's Attention class, this applies RoPE to Q and K vectors
+    before computing attention. Compatible with nn.MultiheadAttention interface.
+    
+    Args:
+        d_model: Hidden dimension size
+        n_heads: Number of attention heads
+        dropout: Dropout rate (default 0.0)
+        batch_first: If True, input is [B, T, D] (default True)
+        
+    Note:
+        Unlike nn.MultiheadAttention, this requires cos_sin tuple from RotaryEmbedding.
+        Pass via forward(q, k, v, cos_sin=...).
+    """
+    
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        dropout: float = 0.0,
+        batch_first: bool = True,
+    ):
+        super().__init__()
+        assert d_model % n_heads == 0, f"d_model ({d_model}) must be divisible by n_heads ({n_heads})"
+        
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.head_dim = d_model // n_heads
+        self.batch_first = batch_first
+        self.dropout = dropout
+        
+        # QKV projection (fused for efficiency)
+        self.qkv_proj = nn.Linear(d_model, 3 * d_model, bias=False)
+        
+        # Output projection
+        self.out_proj = nn.Linear(d_model, d_model, bias=False)
+        
+        # Dropout for attention weights
+        self.attn_dropout = nn.Dropout(dropout)
+    
+    def forward(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        cos_sin: Optional[CosSin] = None,
+        need_weights: bool = False,
+        attn_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """
+        Forward pass with RoPE.
+        
+        Args:
+            query: Query tensor [B, T, D] (batch_first=True)
+            key: Key tensor [B, T, D]
+            value: Value tensor [B, T, D]
+            cos_sin: Tuple of (cos, sin) from RotaryEmbedding, or None to skip RoPE
+            need_weights: Whether to return attention weights (default False)
+            attn_mask: Optional attention mask
+            
+        Returns:
+            output: [B, T, D]
+            attn_weights: Optional attention weights if need_weights=True
+        """
+        # Self-attention: query == key == value
+        B, T, D = query.shape
+        
+        # Project to Q, K, V
+        qkv = self.qkv_proj(query)  # [B, T, 3*D]
+        qkv = qkv.view(B, T, 3, self.n_heads, self.head_dim)
+        q, k, v = qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]  # Each [B, T, n_heads, head_dim]
+        
+        # Apply RoPE to Q and K
+        if cos_sin is not None:
+            cos, sin = cos_sin
+            # Slice to sequence length
+            cos = cos[:T]
+            sin = sin[:T]
+            q, k = apply_rotary_pos_emb(q, k, cos, sin)
+        
+        # Reshape for attention: [B, n_heads, T, head_dim]
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+        
+        # Scaled dot-product attention
+        scale = self.head_dim ** -0.5
+        attn_weights = torch.matmul(q, k.transpose(-2, -1)) * scale  # [B, n_heads, T, T]
+        
+        if attn_mask is not None:
+            attn_weights = attn_weights + attn_mask
+        
+        attn_weights = F.softmax(attn_weights, dim=-1)
+        attn_weights = self.attn_dropout(attn_weights)
+        
+        # Apply attention to values
+        attn_output = torch.matmul(attn_weights, v)  # [B, n_heads, T, head_dim]
+        
+        # Reshape back to [B, T, D]
+        attn_output = attn_output.transpose(1, 2).contiguous().view(B, T, D)
+        
+        # Output projection
+        output = self.out_proj(attn_output)
+        
+        if need_weights:
+            return output, attn_weights
+        return output, None
 
 
 class ReasoningModule(nn.Module):
@@ -36,6 +150,7 @@ class ReasoningModule(nn.Module):
     - SwiGLU feedforward layers
     - Configurable dropout for regularization
     - Switchable controller type (GRU, LSTM, xLSTM, minGRU, Transformer, etc.)
+    - Optional RoPE (Rotary Position Embeddings) for position-aware attention
     
     Args:
         d_model: Hidden dimension size
@@ -48,6 +163,7 @@ class ReasoningModule(nn.Module):
         controller_kwargs: Additional kwargs for controller creation
         injection_mode: Feature injection mode ("none", "broadcast", "film", "depth_token", "cross_attn")
         injection_kwargs: Additional kwargs for FeatureInjector
+        use_rope: Whether to use Rotary Position Embeddings (default False)
     """
     
     def __init__(
@@ -62,6 +178,7 @@ class ReasoningModule(nn.Module):
         controller_kwargs: Optional[dict] = None,
         injection_mode: str = "none",  # Feature injection mode
         injection_kwargs: Optional[dict] = None,
+        use_rope: bool = False,  # Use Rotary Position Embeddings
     ):
         super().__init__()
         self.d_model = d_model
@@ -69,6 +186,7 @@ class ReasoningModule(nn.Module):
         self.n_layers = n_layers
         self.controller_type = controller_type
         self.injection_mode = injection_mode
+        self.use_rope = use_rope
         
         # PoT Pointer Controller for head routing
         ctrl_kwargs = controller_kwargs or {}
@@ -95,10 +213,17 @@ class ReasoningModule(nn.Module):
         )
         
         # Transformer layers with configurable dropout
-        self.attn_layers = nn.ModuleList([
-            nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
-            for _ in range(n_layers)
-        ])
+        # Use RoPE attention if requested, otherwise standard nn.MultiheadAttention
+        if use_rope:
+            self.attn_layers = nn.ModuleList([
+                RoPEMultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
+                for _ in range(n_layers)
+            ])
+        else:
+            self.attn_layers = nn.ModuleList([
+                nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
+                for _ in range(n_layers)
+            ])
         self.ffn_layers = nn.ModuleList([
             SwiGLU(d_model, d_ff, dropout=dropout) for _ in range(n_layers)
         ])
@@ -112,6 +237,7 @@ class ReasoningModule(nn.Module):
         ptr_state: Optional[Any] = None,
         depth_step: int = 0,  # For transformer controller
         injection_memory: Optional[torch.Tensor] = None,  # For cross_attn mode
+        cos_sin: Optional[CosSin] = None,  # For RoPE: (cos, sin) from RotaryEmbedding
     ) -> Tuple[torch.Tensor, Any, Optional[torch.Tensor]]:
         """
         Forward pass with input injection and PoT head routing.
@@ -124,6 +250,7 @@ class ReasoningModule(nn.Module):
             ptr_state: Optional pointer controller state for recurrence
             depth_step: Current depth step (used by transformer controller)
             injection_memory: Memory for cross_attn injection mode [B, T, d_model]
+            cos_sin: Optional (cos, sin) tuple from RotaryEmbedding for RoPE attention
             
         Returns:
             output: Processed hidden state [B, seq_len, d_model]
@@ -187,7 +314,11 @@ class ReasoningModule(nn.Module):
             self.norm1_layers, self.norm2_layers
         ):
             # Attention with PoT head routing
-            attn_out, _ = attn(x, x, x, need_weights=False)
+            # Use RoPE if available (RoPEMultiheadAttention accepts cos_sin)
+            if self.use_rope:
+                attn_out, _ = attn(x, x, x, cos_sin=cos_sin, need_weights=False)
+            else:
+                attn_out, _ = attn(x, x, x, need_weights=False)
             d_head = D // self.n_heads
             attn_out_heads = attn_out.view(B, T, self.n_heads, d_head)
             
