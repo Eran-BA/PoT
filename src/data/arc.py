@@ -168,20 +168,20 @@ def grids_to_seq_pair(
 
 class ARCDataset(Dataset):
     """
-    ARC dataset loader with optional ON-THE-FLY augmentation.
+    ARC dataset loader with ON-THE-FLY augmentation (like Sudoku).
     
-    Compatible with HRM's preprocessed format (arc-2-aug-1000) or minimal format.
+    Always uses on-the-fly augmentation for training:
+    - Color permutation (1-9 shuffled, 0 fixed)
+    - Dihedral transforms (8 rotations/flips)
+    - Translational augmentation (random position in 30x30)
     
-    HRM-style datasets (num_aug=1000) have pre-computed augmentations, so on-the-fly
-    augmentation should be disabled. Minimal datasets (num_aug=0) should use on-the-fly
-    augmentation for variety.
+    This gives infinite variety every epoch, better than pre-computed.
     
     Args:
         data_dir: Path to dataset directory
         split: 'train' or 'test'
         subset: Subset name (default 'all')
-        augment: Whether to apply on-the-fly augmentation
-                 None = auto-detect based on dataset size
+        augment: Whether to apply on-the-fly augmentation (default: True for train)
     """
     
     def __init__(
@@ -194,7 +194,6 @@ class ARCDataset(Dataset):
         self.data_dir = Path(data_dir) / split
         self.split = split
         self.subset = subset
-        self._augment_override = augment  # Will be resolved after loading
         
         # Try HRM format first (preprocessed .npy files)
         inputs_path = self.data_dir / f'{subset}__inputs.npy'
@@ -208,26 +207,19 @@ class ARCDataset(Dataset):
                 f"Run the dataset builder script first."
             )
         
-        # Auto-detect augmentation mode based on dataset size
-        # HRM-style pre-augmented datasets (1000 augs) have many more examples per puzzle
-        # Minimal datasets need on-the-fly augmentation
-        if self._augment_override is not None:
-            self.augment = self._augment_override
-        elif split != 'train':
-            self.augment = False  # Never augment test set
+        # On-the-fly augmentation (like Sudoku) - always for training
+        if augment is not None:
+            self.augment = augment
         else:
-            # Heuristic: if >10x examples vs puzzles, assume pre-augmented
-            examples_per_puzzle = len(self.inputs) / max(1, self.num_puzzles)
-            self.augment = examples_per_puzzle < 50  # Pre-aug typically has 100-1000x
+            self.augment = (split == 'train')  # Simple: train=augment, test=no augment
         
         # Epoch indices for shuffling
         self._epoch_indices = np.arange(len(self.inputs))
         if split == 'train':
             np.random.shuffle(self._epoch_indices)
         
-        aug_mode = 'ON-THE-FLY' if self.augment else 'PRE-COMPUTED (OFF)'
         print(f"[{split}/{subset}] Loaded {len(self.inputs)} examples ({self.num_puzzles} puzzles)")
-        print(f"  Augmentation: {aug_mode}")
+        print(f"  Augmentation: {'ON-THE-FLY' if self.augment else 'OFF'}")
     
     def _load_npy_format(self, inputs_path: Path, labels_path: Path):
         """Load HRM-style preprocessed format."""
