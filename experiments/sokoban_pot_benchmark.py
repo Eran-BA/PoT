@@ -88,16 +88,40 @@ class BenchmarkConfig:
     difficulty: str = "medium"
     download: bool = True
     
-    # Model
-    model_type: str = "pot"  # "pot" or "baseline"
+    # Model type
+    model_type: str = "pot"  # "pot", "hybrid", or "baseline"
+    
+    # Architecture
     d_model: int = 256
     n_heads: int = 4
     n_layers: int = 2
     d_ff: int = 512
     dropout: float = 0.1
-    R: int = 4  # PoT refinement steps
     conv_layers: int = 3
     conv_filters: int = 64
+    
+    # SimplePoT (model_type="pot")
+    R: int = 4  # PoT refinement steps
+    
+    # HybridPoT (model_type="hybrid")
+    H_cycles: int = 2
+    L_cycles: int = 6
+    H_layers: int = 2
+    L_layers: int = 2
+    T: int = 4
+    halt_max_steps: int = 2
+    
+    # Controller
+    controller_type: str = "transformer"
+    d_ctrl: Optional[int] = None
+    max_depth: int = 32
+    hrm_grad_style: bool = False
+    
+    # Feature injection
+    injection_mode: str = "none"
+    injection_memory_size: int = 16
+    injection_n_heads: int = 4
+    alpha_aggregation: str = "mean"
     
     # Training mode
     mode: str = "heuristic"  # "heuristic", "ppo", or "combined"
@@ -115,11 +139,20 @@ class BenchmarkConfig:
     # Common
     batch_size: int = 64
     learning_rate: float = 1e-4
+    warmup_steps: int = 100
+    lr_min_ratio: float = 0.0
+    grad_clip: float = 1.0
+    weight_decay: float = 0.01
     eval_interval: int = 5
     
     # Evaluation
     max_eval_steps: int = 200
     eval_episodes: int = 100
+    
+    # Logging
+    wandb: bool = False
+    project: str = "sokoban-pot"
+    run_name: Optional[str] = None
     
     # Output
     output_dir: str = "experiments/results/sokoban_benchmark"
@@ -140,18 +173,67 @@ def parse_args() -> BenchmarkConfig:
     parser.add_argument('--download', action='store_true',
                         help='Download Boxoban dataset if not present')
     
-    # Model
+    # Model type
     parser.add_argument('--model-type', type=str, default='pot',
-                        choices=['pot', 'baseline'])
-    parser.add_argument('--d-model', type=int, default=256)
-    parser.add_argument('--n-heads', type=int, default=4)
-    parser.add_argument('--n-layers', type=int, default=2)
-    parser.add_argument('--d-ff', type=int, default=512)
-    parser.add_argument('--dropout', type=float, default=0.1)
+                        choices=['pot', 'hybrid', 'baseline'],
+                        help='pot=SimplePoT, hybrid=HybridPoT with H/L cycles, baseline=CNN')
+    
+    # Architecture
+    parser.add_argument('--d-model', type=int, default=256,
+                        help='Hidden dimension')
+    parser.add_argument('--n-heads', type=int, default=4,
+                        help='Number of attention heads')
+    parser.add_argument('--n-layers', type=int, default=2,
+                        help='Number of transformer layers (for simple model)')
+    parser.add_argument('--d-ff', type=int, default=512,
+                        help='FFN dimension')
+    parser.add_argument('--dropout', type=float, default=0.1,
+                        help='Dropout rate')
+    parser.add_argument('--conv-layers', type=int, default=3,
+                        help='Convolutional layers for feature extraction')
+    parser.add_argument('--conv-filters', type=int, default=64,
+                        help='Convolutional filters')
+    
+    # SimplePoT (model_type="pot")
     parser.add_argument('--R', type=int, default=4,
-                        help='Number of PoT refinement steps')
-    parser.add_argument('--conv-layers', type=int, default=3)
-    parser.add_argument('--conv-filters', type=int, default=64)
+                        help='Number of PoT refinement steps (for simple model)')
+    
+    # HybridPoT (model_type="hybrid")
+    parser.add_argument('--H-cycles', type=int, default=2,
+                        help='H_level (slow) cycles per ACT step')
+    parser.add_argument('--L-cycles', type=int, default=6,
+                        help='L_level (fast) cycles per H_cycle')
+    parser.add_argument('--H-layers', type=int, default=2,
+                        help='Layers in H_level module')
+    parser.add_argument('--L-layers', type=int, default=2,
+                        help='Layers in L_level module')
+    parser.add_argument('--T', type=int, default=4,
+                        help='HRM period for pointer controller')
+    parser.add_argument('--halt-max-steps', type=int, default=2,
+                        help='Max halting steps for ACT')
+    
+    # Controller
+    parser.add_argument('--controller-type', type=str, default='transformer',
+                        choices=['transformer', 'pot_transformer', 'swin', 'diffusion', 'gru', 'lstm'],
+                        help='Controller type for PoT')
+    parser.add_argument('--d-ctrl', type=int, default=None,
+                        help='Controller hidden dimension (default: d_model // 4)')
+    parser.add_argument('--max-depth', type=int, default=32,
+                        help='Maximum refinement depth for controller')
+    parser.add_argument('--hrm-grad-style', action='store_true',
+                        help='Use HRM-style gradients (only last L+H call)')
+    
+    # Feature injection
+    parser.add_argument('--injection-mode', type=str, default='none',
+                        choices=['none', 'broadcast', 'film', 'depth_token', 'cross_attn', 'alpha_gated'],
+                        help='Feature injection mode for controller knowledge into tokens')
+    parser.add_argument('--injection-memory-size', type=int, default=16,
+                        help='Memory bank size for cross_attn injection mode')
+    parser.add_argument('--injection-n-heads', type=int, default=4,
+                        help='Number of attention heads for cross_attn injection mode')
+    parser.add_argument('--alpha-aggregation', type=str, default='mean',
+                        choices=['mean', 'max', 'last'],
+                        help='How to aggregate alpha weights across layers')
     
     # Training mode
     parser.add_argument('--mode', type=str, default='heuristic',
@@ -168,14 +250,30 @@ def parse_args() -> BenchmarkConfig:
     parser.add_argument('--ppo-n-envs', type=int, default=8)
     parser.add_argument('--ppo-n-steps', type=int, default=128)
     
-    # Common
+    # Common training
     parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--learning-rate', type=float, default=1e-4)
+    parser.add_argument('--warmup-steps', type=int, default=100,
+                        help='LR warmup steps (HRM uses 2000)')
+    parser.add_argument('--lr-min-ratio', type=float, default=0.0,
+                        help='Minimum LR ratio for cosine annealing')
+    parser.add_argument('--grad-clip', type=float, default=1.0,
+                        help='Gradient clipping max norm')
+    parser.add_argument('--weight-decay', type=float, default=0.01,
+                        help='Weight decay')
     parser.add_argument('--eval-interval', type=int, default=5)
     
     # Evaluation
     parser.add_argument('--max-eval-steps', type=int, default=200)
     parser.add_argument('--eval-episodes', type=int, default=100)
+    
+    # Logging
+    parser.add_argument('--wandb', action='store_true',
+                        help='Enable W&B logging')
+    parser.add_argument('--project', type=str, default='sokoban-pot',
+                        help='W&B project name')
+    parser.add_argument('--run-name', type=str, default=None,
+                        help='W&B run name (auto-generated if not set)')
     
     # Output
     parser.add_argument('--output-dir', type=str,
@@ -199,6 +297,20 @@ def parse_args() -> BenchmarkConfig:
         d_ff=args.d_ff,
         dropout=args.dropout,
         R=args.R,
+        H_cycles=args.H_cycles,
+        L_cycles=args.L_cycles,
+        H_layers=args.H_layers,
+        L_layers=args.L_layers,
+        T=args.T,
+        halt_max_steps=args.halt_max_steps,
+        controller_type=args.controller_type,
+        d_ctrl=args.d_ctrl,
+        max_depth=args.max_depth,
+        hrm_grad_style=args.hrm_grad_style,
+        injection_mode=args.injection_mode,
+        injection_memory_size=args.injection_memory_size,
+        injection_n_heads=args.injection_n_heads,
+        alpha_aggregation=args.alpha_aggregation,
         conv_layers=args.conv_layers,
         conv_filters=args.conv_filters,
         mode=args.mode,
@@ -210,9 +322,16 @@ def parse_args() -> BenchmarkConfig:
         ppo_n_steps=args.ppo_n_steps,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
+        warmup_steps=args.warmup_steps,
+        lr_min_ratio=args.lr_min_ratio,
+        grad_clip=args.grad_clip,
+        weight_decay=args.weight_decay,
         eval_interval=args.eval_interval,
         max_eval_steps=args.max_eval_steps,
         eval_episodes=args.eval_episodes,
+        wandb=args.wandb,
+        project=args.project,
+        run_name=args.run_name,
         output_dir=args.output_dir,
         seed=args.seed,
     )
@@ -224,7 +343,25 @@ def parse_args() -> BenchmarkConfig:
 
 def create_model(config: BenchmarkConfig, device: torch.device) -> nn.Module:
     """Create Sokoban solver model based on config."""
+    
+    # Build controller kwargs
+    controller_kwargs = {}
+    if config.d_ctrl is not None:
+        controller_kwargs['d_ctrl'] = config.d_ctrl
+    controller_kwargs['max_depth'] = config.max_depth
+    
+    # Build injection kwargs
+    injection_kwargs = {}
+    if config.injection_mode != 'none':
+        injection_kwargs = {
+            'injection_mode': config.injection_mode,
+            'memory_size': config.injection_memory_size,
+            'n_heads': config.injection_n_heads,
+            'alpha_aggregation': config.alpha_aggregation,
+        }
+    
     if config.model_type == "pot":
+        # Simple PoT with R refinement steps
         model = PoTSokobanSolver(
             d_model=config.d_model,
             n_heads=config.n_heads,
@@ -232,16 +369,53 @@ def create_model(config: BenchmarkConfig, device: torch.device) -> nn.Module:
             d_ff=config.d_ff,
             dropout=config.dropout,
             R=config.R,
+            controller_type=config.controller_type,
+            max_depth=config.max_depth,
             conv_layers=config.conv_layers,
             conv_filters=config.conv_filters,
         )
+        print(f"\nModel: PoTSokobanSolver (Simple)")
+        print(f"  R={config.R}, n_layers={config.n_layers}")
+        
+    elif config.model_type == "hybrid":
+        # TODO: Implement HybridPoTSokobanSolver when available
+        # For now, fall back to simple PoT with total iterations = H_cycles * L_cycles
+        total_iters = config.H_cycles * config.L_cycles
+        model = PoTSokobanSolver(
+            d_model=config.d_model,
+            n_heads=config.n_heads,
+            n_layers=config.n_layers,
+            d_ff=config.d_ff,
+            dropout=config.dropout,
+            R=total_iters,  # Use total iterations
+            controller_type=config.controller_type,
+            max_depth=config.max_depth,
+            conv_layers=config.conv_layers,
+            conv_filters=config.conv_filters,
+        )
+        print(f"\nModel: PoTSokobanSolver (Hybrid-style)")
+        print(f"  H_cycles={config.H_cycles}, L_cycles={config.L_cycles} (R={total_iters})")
+        print(f"  H_layers={config.H_layers}, L_layers={config.L_layers}")
+        print(f"  T={config.T}, halt_max_steps={config.halt_max_steps}")
+        
     else:
+        # Baseline CNN
         model = BaselineSokobanSolver(
             n_filters=config.conv_filters,
             n_layers=config.conv_layers + 1,
             d_hidden=config.d_model,
             dropout=config.dropout,
         )
+        print(f"\nModel: BaselineSokobanSolver (CNN)")
+    
+    # Common info
+    print(f"  d_model={config.d_model}, n_heads={config.n_heads}")
+    print(f"  controller={config.controller_type}, max_depth={config.max_depth}")
+    if config.injection_mode != 'none':
+        print(f"  injection_mode={config.injection_mode}")
+    
+    num_params = sum(p.numel() for p in model.parameters())
+    print(f"  Total params: {num_params:,} ({num_params/1e6:.2f}M)")
     
     return model.to(device)
 
@@ -433,8 +607,12 @@ def run_benchmark(config: BenchmarkConfig) -> Dict[str, Any]:
     print("\n" + "=" * 60)
     print("RESULTS SUMMARY")
     print("=" * 60)
-    print(f"Model: {config.model_type}, R={config.R}")
+    if config.model_type == 'hybrid':
+        print(f"Model: {config.model_type}, H_cycles={config.H_cycles}, L_cycles={config.L_cycles}")
+    else:
+        print(f"Model: {config.model_type}, R={config.R}")
     print(f"Mode: {config.mode}")
+    print(f"Controller: {config.controller_type}, max_depth={config.max_depth}")
     print(f"Solve Rate @50:  {eval_results['solve_rate@50']:.2%}")
     print(f"Solve Rate @100: {eval_results['solve_rate@100']:.2%}")
     print(f"Solve Rate @200: {eval_results['solve_rate@200']:.2%}")

@@ -147,6 +147,7 @@ class PoTSokobanSolver(nn.Module):
         conv_filters: int = 64,
         controller_type: str = "transformer",
         controller_kwargs: Optional[Dict] = None,
+        max_depth: int = None,
     ):
         super().__init__()
         
@@ -178,12 +179,14 @@ class PoTSokobanSolver(nn.Module):
         self.encoder = nn.TransformerEncoder(encoder_layer, n_layers)
         
         # PoT depth controller
+        # max_depth defaults to max(R, 16) if not specified
+        effective_max_depth = max_depth if max_depth is not None else max(R, 16)
         ctrl_kwargs = controller_kwargs or {}
         self.controller = create_controller(
             controller_type=controller_type,
             d_model=d_model,
             n_heads=n_heads,
-            max_depth=max(R, 16),
+            max_depth=effective_max_depth,
             **ctrl_kwargs,
         )
         
