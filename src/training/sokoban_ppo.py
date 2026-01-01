@@ -661,6 +661,7 @@ def train_ppo(
     save_dir: str = "experiments/results/sokoban_ppo",
     verbose: bool = True,
     wandb_log: bool = False,
+    resume: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Train Sokoban solver with PPO.
@@ -674,6 +675,7 @@ def train_ppo(
         save_dir: Directory to save results
         verbose: If True, print progress
         wandb_log: If True, log to Weights & Biases
+        resume: Optional checkpoint path or W&B artifact reference to resume from
     
     Returns:
         Dictionary with training results
@@ -698,6 +700,56 @@ def train_ppo(
     # Trainer
     trainer = SokobanPPOTrainer(actor_critic, config, device)
     
+    # Resume from checkpoint if specified
+    start_update = 0
+    best_reward = float('-inf')
+    
+    if resume:
+        if verbose:
+            print(f"\nResuming from checkpoint: {resume}")
+        
+        # Handle W&B artifact references
+        if "/" in str(resume) and ":" in str(resume) and not os.path.exists(resume):
+            if verbose:
+                print(f"  Detected W&B artifact reference, downloading...")
+            import wandb
+            api = wandb.Api()
+            artifact = api.artifact(resume)
+            artifact_dir = artifact.download()
+            checkpoint_files = [f for f in os.listdir(artifact_dir) 
+                              if f.endswith('.pt') or f.endswith('.pth')]
+            if not checkpoint_files:
+                raise FileNotFoundError(f"No checkpoint file found in artifact: {resume}")
+            resume = os.path.join(artifact_dir, checkpoint_files[0])
+            if verbose:
+                print(f"  Downloaded to: {resume}")
+        
+        checkpoint = torch.load(resume, map_location=device)
+        
+        # Load model state
+        if 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+        else:
+            model.load_state_dict(checkpoint)
+        
+        # Load optimizer and scheduler state
+        if 'optimizer_state_dict' in checkpoint:
+            trainer.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if 'scheduler_state_dict' in checkpoint and trainer.scheduler is not None:
+            trainer.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            if verbose:
+                print(f"  ✓ Scheduler state restored")
+        elif 'scheduler_state_dict' not in checkpoint:
+            if verbose:
+                print(f"  ⚠️  No scheduler state in checkpoint - LR schedule restarting")
+        
+        # Restore training state
+        start_update = checkpoint.get('update', checkpoint.get('timestep', 0) // (config.n_steps * config.n_envs))
+        best_reward = checkpoint.get('best_reward', checkpoint.get('mean_reward', float('-inf')))
+        
+        if verbose:
+            print(f"  ✓ Resumed from update {start_update}, best_reward={best_reward:.3f}")
+    
     # Training loop
     n_updates = config.total_timesteps // (config.n_steps * config.n_envs)
     
@@ -709,9 +761,9 @@ def train_ppo(
         'entropy': [],
     }
     
-    best_reward = float('-inf')
+    # best_reward already initialized above (considering resume)
     
-    for update in tqdm(range(n_updates), desc="PPO Training", disable=not verbose):
+    for update in tqdm(range(start_update, n_updates), desc="PPO Training", disable=not verbose):
         # Collect rollouts
         rollout_stats = trainer.collect_rollouts(train_env, buffer, config.n_steps)
         
@@ -771,19 +823,29 @@ def train_ppo(
             # Save best
             if rollout_stats['mean_reward'] > best_reward:
                 best_reward = rollout_stats['mean_reward']
-                torch.save({
+                checkpoint_data = {
+                    'update': update,
                     'timestep': timestep,
                     'model_state_dict': model.state_dict(),
-                    'mean_reward': best_reward,
+                    'optimizer_state_dict': trainer.optimizer.state_dict(),
+                    'best_reward': best_reward,
                     'eval_stats': eval_stats,
-                }, save_path / 'best_model.pt')
+                }
+                if trainer.scheduler is not None:
+                    checkpoint_data['scheduler_state_dict'] = trainer.scheduler.state_dict()
+                torch.save(checkpoint_data, save_path / 'best_model.pt')
     
     # Save final
-    torch.save({
+    final_checkpoint = {
+        'update': n_updates,
         'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': trainer.optimizer.state_dict(),
         'history': history,
         'config': config,
-    }, save_path / 'final_model.pt')
+    }
+    if trainer.scheduler is not None:
+        final_checkpoint['scheduler_state_dict'] = trainer.scheduler.state_dict()
+    torch.save(final_checkpoint, save_path / 'final_model.pt')
     
     return {
         'history': history,

@@ -188,6 +188,10 @@ def parse_args():
     parser.add_argument('--seed', type=int, default=42,
                        help='Random seed')
     
+    # Resume
+    parser.add_argument('--resume', type=str, default=None,
+                       help='Resume from checkpoint (local path or W&B artifact)')
+    
     return parser.parse_args()
 
 
@@ -484,15 +488,22 @@ def train_ppo(args, model, train_loader, val_loader, device, train_dataset):
         device=device,
     )
     
-    # Training loop
+    # Resume from checkpoint if specified
+    start_epoch = 1
     best_val_acc = 0.0
     history = []
+    
+    if args.resume:
+        print(f"\nResuming from checkpoint: {args.resume}")
+        start_epoch, best_val_acc = load_checkpoint(
+            args.resume, model, trainer=trainer, device=device
+        )
     
     print("\n" + "=" * 60)
     print("PPO Training")
     print("=" * 60)
     
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         # Train
         train_metrics = trainer.train_epoch(train_loader, epoch)
         
@@ -520,7 +531,11 @@ def train_ppo(args, model, train_loader, val_loader, device, train_dataset):
             
             if val_metrics['slot_accuracy'] > best_val_acc:
                 best_val_acc = val_metrics['slot_accuracy']
-                save_checkpoint(model, args.output_dir, 'best_model.pt')
+                save_checkpoint(
+                    model, args.output_dir, 'best_model.pt',
+                    trainer=trainer, epoch=epoch, 
+                    best_val_acc=best_val_acc, config=vars(args)
+                )
                 print(f"  [NEW BEST] Saved checkpoint")
             
             history.append({
@@ -658,11 +673,72 @@ def evaluate_supervised(model, dataloader, device):
     )
 
 
-def save_checkpoint(model, output_dir, filename):
-    """Save model checkpoint."""
+def save_checkpoint(model, output_dir, filename, trainer=None, epoch=None, 
+                    best_val_acc=None, config=None):
+    """Save full checkpoint with optimizer and scheduler state."""
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), output_path / filename)
+    
+    checkpoint = {
+        'model_state_dict': model.state_dict(),
+        'epoch': epoch,
+        'best_val_acc': best_val_acc,
+        'config': config,
+    }
+    
+    # Include optimizer and scheduler state if trainer provided
+    if trainer is not None:
+        checkpoint['actor_optimizer_state_dict'] = trainer.actor_optimizer.state_dict()
+        checkpoint['critic_optimizer_state_dict'] = trainer.critic_optimizer.state_dict()
+        if hasattr(trainer, 'scheduler') and trainer.scheduler is not None:
+            checkpoint['scheduler_state_dict'] = trainer.scheduler.state_dict()
+    
+    torch.save(checkpoint, output_path / filename)
+
+
+def load_checkpoint(checkpoint_path, model, trainer=None, device='cpu'):
+    """Load checkpoint with optional optimizer/scheduler state."""
+    # Handle W&B artifact references
+    if "/" in str(checkpoint_path) and ":" in str(checkpoint_path) and not os.path.exists(checkpoint_path):
+        print(f"  Detected W&B artifact reference, downloading...")
+        import wandb
+        api = wandb.Api()
+        artifact = api.artifact(checkpoint_path)
+        artifact_dir = artifact.download()
+        checkpoint_files = [f for f in os.listdir(artifact_dir) 
+                          if f.endswith('.pt') or f.endswith('.pth')]
+        if not checkpoint_files:
+            raise FileNotFoundError(f"No checkpoint file found in artifact: {checkpoint_path}")
+        checkpoint_path = os.path.join(artifact_dir, checkpoint_files[0])
+        print(f"  Downloaded to: {checkpoint_path}")
+    
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    
+    # Handle both old-style (just state_dict) and new-style (full checkpoint)
+    if 'model_state_dict' in checkpoint:
+        model.load_state_dict(checkpoint['model_state_dict'])
+        start_epoch = checkpoint.get('epoch', 0) + 1
+        best_val_acc = checkpoint.get('best_val_acc', 0.0)
+        
+        # Restore optimizer and scheduler state
+        if trainer is not None:
+            if 'actor_optimizer_state_dict' in checkpoint:
+                trainer.actor_optimizer.load_state_dict(checkpoint['actor_optimizer_state_dict'])
+            if 'critic_optimizer_state_dict' in checkpoint:
+                trainer.critic_optimizer.load_state_dict(checkpoint['critic_optimizer_state_dict'])
+            if 'scheduler_state_dict' in checkpoint and hasattr(trainer, 'scheduler') and trainer.scheduler is not None:
+                trainer.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                print(f"  ✓ Scheduler state restored")
+            elif 'scheduler_state_dict' not in checkpoint:
+                print(f"  ⚠️  No scheduler state in checkpoint - LR schedule restarting")
+        
+        print(f"  ✓ Resumed from epoch {start_epoch - 1}, best_val_acc={best_val_acc*100:.2f}%")
+        return start_epoch, best_val_acc
+    else:
+        # Old-style checkpoint (just model state dict)
+        model.load_state_dict(checkpoint)
+        print(f"  ⚠️  Old-style checkpoint - only model weights loaded")
+        return 1, 0.0
 
 
 def save_results(args, history, best_val_acc, test_metrics):

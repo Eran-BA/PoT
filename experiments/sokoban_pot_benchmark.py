@@ -143,6 +143,9 @@ class BenchmarkConfig:
     output_dir: str = "experiments/results/sokoban_benchmark"
     seed: int = 42
     
+    # Resume
+    resume: Optional[str] = None
+    
     # Device
     device: str = "auto"
 
@@ -264,6 +267,10 @@ def parse_args() -> BenchmarkConfig:
                         default='experiments/results/sokoban_benchmark')
     parser.add_argument('--seed', type=int, default=42)
     
+    # Resume
+    parser.add_argument('--resume', type=str, default=None,
+                        help='Resume from checkpoint (local path or W&B artifact)')
+    
     # Ablation
     parser.add_argument('--ablate-R', action='store_true',
                         help='Run ablation over R={1,2,4,8}')
@@ -317,6 +324,7 @@ def parse_args() -> BenchmarkConfig:
         run_name=args.run_name,
         output_dir=args.output_dir,
         seed=args.seed,
+        resume=args.resume,
     )
 
 
@@ -556,6 +564,7 @@ def run_benchmark(config: BenchmarkConfig) -> Dict[str, Any]:
         device,
         save_dir=str(output_dir / 'ppo'),
         wandb_log=config.wandb,
+        resume=config.resume,
     )
     
     results['ppo'] = {
