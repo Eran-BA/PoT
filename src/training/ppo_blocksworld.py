@@ -414,13 +414,27 @@ class BlocksworldPPOTrainer:
         avg_metrics['good_reward'] = reward[is_valid].mean().item() if is_valid.any() else 0
         avg_metrics['bad_reward'] = reward[~is_valid].mean().item() if (~is_valid).any() else 0
         
-        # Track prediction accuracy
+        # Track prediction accuracy - separate good vs bad for fair comparison
         with torch.no_grad():
             predicted = action
-            slot_acc = (predicted == goals).float().mean().item()
+            matches = (predicted == goals).float()  # [B, N]
+            
+            # Overall metrics (for backward compat)
+            slot_acc = matches.mean().item()
             exact_match = (predicted == goals).all(dim=1).float().mean().item()
             avg_metrics['slot_accuracy'] = slot_acc
             avg_metrics['exact_match'] = exact_match
+            
+            # Good samples only (comparable to val which has no bad samples)
+            if is_valid.any():
+                good_matches = matches[is_valid]
+                good_slot_acc = good_matches.mean().item()
+                good_exact = (predicted[is_valid] == goals[is_valid]).all(dim=1).float().mean().item()
+                avg_metrics['good_slot_accuracy'] = good_slot_acc
+                avg_metrics['good_exact_match'] = good_exact
+            else:
+                avg_metrics['good_slot_accuracy'] = 0.0
+                avg_metrics['good_exact_match'] = 0.0
         
         return avg_metrics
     

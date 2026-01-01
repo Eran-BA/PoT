@@ -499,8 +499,11 @@ def train_ppo(args, model, train_loader, val_loader, device, train_dataset):
             print(f"  Train - Policy Loss: {train_metrics['policy_loss']:.4f}, "
                   f"Value Loss: {train_metrics['value_loss']:.4f}, "
                   f"Entropy: {train_metrics['entropy']:.4f}")
-            print(f"  Train - Slot Acc: {train_metrics['slot_accuracy']*100:.2f}%, "
-                  f"Exact Match: {train_metrics['exact_match']*100:.2f}%")
+            # Show good-only metrics for fair comparison with val (which has no bad samples)
+            good_slot = train_metrics.get('good_slot_accuracy', train_metrics['slot_accuracy'])
+            good_exact = train_metrics.get('good_exact_match', train_metrics['exact_match'])
+            print(f"  Train - Slot Acc (good only): {good_slot*100:.2f}%, "
+                  f"Exact Match: {good_exact*100:.2f}%")
             print(f"  Train - Mean Reward: {train_metrics['mean_reward']:.3f} "
                   f"(good: {train_metrics['good_reward']:.3f}, "
                   f"bad: {train_metrics['bad_reward']:.3f})")
