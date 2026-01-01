@@ -354,10 +354,8 @@ def create_actor_critic(
             controller_kwargs['d_ctrl'] = d_ctrl
         controller_kwargs['max_depth'] = max_depth
         
-        # Build injection kwargs
+        # Build injection kwargs (don't include injection_mode - passed separately)
         inj_kwargs = injection_kwargs or {}
-        if injection_mode != 'none':
-            inj_kwargs['injection_mode'] = injection_mode
         
         # Create hybrid actor with H/L cycles (aligned with Sudoku)
         actor = HybridPoTBlocksworldSolver(
@@ -380,7 +378,7 @@ def create_actor_critic(
             halt_exploration_prob=halt_exploration_prob,
             allow_early_halt_eval=allow_early_halt_eval,
             injection_mode=injection_mode,
-            injection_kwargs=inj_kwargs if injection_mode != 'none' else None,
+            injection_kwargs=inj_kwargs if inj_kwargs else None,
         )
     else:
         from src.pot.models.blocksworld_solver import SimplePoTBlocksworldSolver
