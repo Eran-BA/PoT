@@ -20,11 +20,6 @@ from .ppo_blocksworld import (
     PPOConfig as BlocksworldPPOConfig,
     RolloutBuffer as BlocksworldRolloutBuffer,
 )
-from .sokoban_heuristic import (
-    HeuristicTrainingConfig,
-    train as train_sokoban_heuristic,
-    evaluate_solve_rate,
-)
 from .sokoban_ppo import (
     PPOConfig as SokobanPPOConfig,
     SokobanPPOTrainer,
@@ -46,10 +41,6 @@ __all__ = [
     "BlocksworldPPOTrainer",
     "BlocksworldPPOConfig",
     "BlocksworldRolloutBuffer",
-    # Sokoban Heuristic
-    "HeuristicTrainingConfig",
-    "train_sokoban_heuristic",
-    "evaluate_solve_rate",
     # Sokoban PPO
     "SokobanPPOConfig",
     "SokobanPPOTrainer",

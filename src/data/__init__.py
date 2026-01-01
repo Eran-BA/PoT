@@ -38,7 +38,6 @@ from .sokoban import (
     board_hash,
     augment_board,
     collect_training_states,
-    create_heuristic_dataset,
     save_sampled_states,
     load_sampled_states,
     TILE_WALL, TILE_FLOOR, TILE_PLAYER, TILE_BOX, TILE_TARGET,
@@ -52,8 +51,6 @@ from .sokoban_rules import (
     is_deadlock,
     is_action_legal,
     get_player_pos,
-    compute_heuristic_score,
-    get_best_action_by_heuristic,
     random_walk,
 )
 
@@ -95,7 +92,6 @@ __all__ = [
     "board_hash",
     "augment_board",
     "collect_training_states",
-    "create_heuristic_dataset",
     "save_sampled_states",
     "load_sampled_states",
     "TILE_WALL",
@@ -116,8 +112,6 @@ __all__ = [
     "is_deadlock",
     "is_action_legal",
     "get_player_pos",
-    "compute_heuristic_score",
-    "get_best_action_by_heuristic",
     "random_walk",
 ]
 

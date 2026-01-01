@@ -4,15 +4,12 @@ Sokoban PoT Benchmark.
 
 Full benchmark for Sokoban puzzle solving with PoT iterative refinement.
 
-Training modes:
-1. Heuristic pretraining: Cross-entropy on heuristic-guided pseudo-labels
-2. PPO fine-tuning: Reinforcement learning with reward shaping
-3. Combined: Pretrain with heuristic, then fine-tune with PPO
+Training: Pure PPO (reinforcement learning with reward shaping)
 
 Ablations:
 - Refinement steps R: {1, 2, 4, 8}
 - Augmentations: on/off
-- Model: PoT vs Baseline
+- Model: PoT vs Baseline vs HybridPoT
 
 Metrics:
 - Solve Rate @N (N=50, 100, 200)
@@ -48,7 +45,6 @@ from src.data.sokoban import (
     SokobanStateDataset,
     load_boxoban_levels,
     download_boxoban_dataset,
-    create_heuristic_dataset,
     board_to_onehot,
 )
 from src.data.sokoban_rules import (
@@ -57,18 +53,11 @@ from src.data.sokoban_rules import (
     is_solved,
     is_deadlock,
     get_legal_action_list,
-    compute_heuristic_score,
 )
 from src.pot.models.sokoban_solver import (
     PoTSokobanSolver,
     BaselineSokobanSolver,
     SokobanActorCritic,
-)
-from src.training.sokoban_heuristic import (
-    HeuristicTrainingConfig,
-    train as train_heuristic,
-    evaluate_solve_rate,
-    collate_fn,
 )
 from src.training.sokoban_ppo import (
     PPOConfig,
@@ -126,12 +115,7 @@ class BenchmarkConfig:
     alpha_aggregation: str = "mean"
     
     # Training mode
-    mode: str = "heuristic"  # "heuristic", "ppo", or "combined"
-    
-    # Heuristic training
-    heuristic_epochs: int = 30
-    steps_per_level: int = 500
-    augment: bool = True
+    mode: str = "ppo"  # Pure PPO training (no domain heuristics)
     
     # PPO training
     ppo_timesteps: int = 500_000
@@ -241,15 +225,10 @@ def parse_args() -> BenchmarkConfig:
                         choices=['mean', 'max', 'last'],
                         help='How to aggregate alpha weights across layers')
     
-    # Training mode
-    parser.add_argument('--mode', type=str, default='heuristic',
-                        choices=['heuristic', 'ppo', 'combined'])
-    
-    # Heuristic training
-    parser.add_argument('--heuristic-epochs', type=int, default=30)
-    parser.add_argument('--steps-per-level', type=int, default=500)
-    parser.add_argument('--no-augment', action='store_true',
-                        help='Disable geometric augmentations')
+    # Training mode (PPO only - pure RL without domain heuristics)
+    parser.add_argument('--mode', type=str, default='ppo',
+                        choices=['ppo'],
+                        help='Training mode (only PPO supported)')
     
     # PPO training
     parser.add_argument('--ppo-timesteps', type=int, default=500_000)
@@ -322,9 +301,6 @@ def parse_args() -> BenchmarkConfig:
         conv_layers=args.conv_layers,
         conv_filters=args.conv_filters,
         mode=args.mode,
-        heuristic_epochs=args.heuristic_epochs,
-        steps_per_level=args.steps_per_level,
-        augment=not args.no_augment,
         ppo_timesteps=args.ppo_timesteps,
         ppo_n_envs=args.ppo_n_envs,
         ppo_n_steps=args.ppo_n_steps,
@@ -543,75 +519,37 @@ def run_benchmark(config: BenchmarkConfig) -> Dict[str, Any]:
     
     start_time = time.time()
     
-    # Training
-    if config.mode in ['heuristic', 'combined']:
-        print("\n" + "=" * 60)
-        print("Phase 1: Heuristic Pretraining")
-        print("=" * 60)
-        
-        heuristic_config = HeuristicTrainingConfig(
-            data_dir=config.data_dir,
-            difficulty=config.difficulty,
-            steps_per_level=config.steps_per_level,
-            augment=config.augment,
-            model_type=config.model_type,
-            d_model=config.d_model,
-            n_heads=config.n_heads,
-            n_layers=config.n_layers,
-            d_ff=config.d_ff,
-            dropout=config.dropout,
-            R=config.R,
-            epochs=config.heuristic_epochs,
-            batch_size=config.batch_size,
-            learning_rate=config.learning_rate,
-            eval_interval=config.eval_interval,
-            save_dir=str(output_dir / 'heuristic'),
-        )
-        
-        heuristic_results = train_heuristic(heuristic_config, device)
-        
-        results['heuristic'] = {
-            'best_val_acc': heuristic_results['best_val_acc'],
-            'history': {
-                'train_loss': heuristic_results['history']['train_loss'][-5:],
-                'train_acc': heuristic_results['history']['train_acc'][-5:],
-            }
-        }
-        
-        # Use the trained model
-        model = heuristic_results['model']
+    # PPO Training
+    print("\n" + "=" * 60)
+    print("PPO Training")
+    print("=" * 60)
     
-    if config.mode in ['ppo', 'combined']:
-        print("\n" + "=" * 60)
-        print("Phase 2: PPO Fine-tuning" if config.mode == 'combined' else "PPO Training")
-        print("=" * 60)
-        
-        ppo_config = PPOConfig(
-            max_episode_steps=config.max_eval_steps,
-            n_envs=config.ppo_n_envs,
-            n_steps=config.ppo_n_steps,
-            batch_size=config.batch_size,
-            learning_rate=config.learning_rate,
-            total_timesteps=config.ppo_timesteps,
-            eval_interval=config.ppo_timesteps // 10,
-            eval_episodes=config.eval_episodes,
-        )
-        
-        ppo_results = train_ppo(
-            model,
-            train_levels,
-            val_levels,
-            ppo_config,
-            device,
-            save_dir=str(output_dir / 'ppo'),
-        )
-        
-        results['ppo'] = {
-            'best_reward': ppo_results['best_reward'],
-            'final_reward': ppo_results['history']['mean_reward'][-1] if ppo_results['history']['mean_reward'] else 0,
-        }
-        
-        model = ppo_results['model']
+    ppo_config = PPOConfig(
+        max_episode_steps=config.max_eval_steps,
+        n_envs=config.ppo_n_envs,
+        n_steps=config.ppo_n_steps,
+        batch_size=config.batch_size,
+        learning_rate=config.learning_rate,
+        total_timesteps=config.ppo_timesteps,
+        eval_interval=config.ppo_timesteps // 10,
+        eval_episodes=config.eval_episodes,
+    )
+    
+    ppo_results = train_ppo(
+        model,
+        train_levels,
+        val_levels,
+        ppo_config,
+        device,
+        save_dir=str(output_dir / 'ppo'),
+    )
+    
+    results['ppo'] = {
+        'best_reward': ppo_results['best_reward'],
+        'final_reward': ppo_results['history']['mean_reward'][-1] if ppo_results['history']['mean_reward'] else 0,
+    }
+    
+    model = ppo_results['model']
     
     # Final evaluation
     print("\n" + "=" * 60)
