@@ -87,6 +87,7 @@ class HybridPoHARCSolver(HybridHRMBase):
         injection_kwargs: dict = None,
         use_rope: bool = True,  # Use RoPE by default (like HRM)
         rope_base: float = 10000.0,
+        use_flash_attn: bool = True,  # Use Flash Attention when available
     ):
         super().__init__(
             d_model=d_model,
@@ -109,6 +110,7 @@ class HybridPoHARCSolver(HybridHRMBase):
             injection_kwargs=injection_kwargs,
             use_rope=use_rope,  # Pass to base class
             rope_base=rope_base,
+            use_flash_attn=use_flash_attn,  # Pass to base class
         )
         
         self.vocab_size = vocab_size

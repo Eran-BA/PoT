@@ -242,6 +242,7 @@ class ReasoningModule(nn.Module):
         injection_mode: Feature injection mode ("none", "broadcast", "film", "depth_token", "cross_attn")
         injection_kwargs: Additional kwargs for FeatureInjector
         use_rope: Whether to use Rotary Position Embeddings (default False)
+        use_flash_attn: Whether to use Flash Attention when available (default True)
     """
     
     def __init__(
@@ -257,6 +258,7 @@ class ReasoningModule(nn.Module):
         injection_mode: str = "none",  # Feature injection mode
         injection_kwargs: Optional[dict] = None,
         use_rope: bool = False,  # Use Rotary Position Embeddings
+        use_flash_attn: bool = True,  # Use Flash Attention when available
     ):
         super().__init__()
         self.d_model = d_model
@@ -265,6 +267,7 @@ class ReasoningModule(nn.Module):
         self.controller_type = controller_type
         self.injection_mode = injection_mode
         self.use_rope = use_rope
+        self.use_flash_attn = use_flash_attn
         
         # PoT Pointer Controller for head routing
         ctrl_kwargs = controller_kwargs or {}
@@ -294,7 +297,7 @@ class ReasoningModule(nn.Module):
         # Use RoPE attention if requested, otherwise standard nn.MultiheadAttention
         if use_rope:
             self.attn_layers = nn.ModuleList([
-                RoPEMultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
+                RoPEMultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True, use_flash_attn=use_flash_attn)
                 for _ in range(n_layers)
             ])
         else:

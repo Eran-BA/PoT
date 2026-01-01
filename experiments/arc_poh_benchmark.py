@@ -307,6 +307,16 @@ def main():
     parser.add_argument('--hrm-grad-style', action='store_true',
                         help='Use HRM-style gradients (only last L+H call)')
     
+    # Position embeddings and Flash Attention
+    parser.add_argument('--use-rope', action='store_true', default=True,
+                        help='Use RoPE (Rotary Position Embeddings) like HRM (default: True)')
+    parser.add_argument('--no-rope', action='store_true',
+                        help='Disable RoPE, use sinusoidal position embeddings instead')
+    parser.add_argument('--use-flash-attn', action='store_true', default=True,
+                        help='Use Flash Attention when available for 3-5x speedup (default: True)')
+    parser.add_argument('--no-flash-attn', action='store_true',
+                        help='Disable Flash Attention, use standard PyTorch attention')
+    
     # Feature injection modes
     parser.add_argument('--injection-mode', type=str, default='none',
                         choices=['none', 'broadcast', 'film', 'depth_token', 'cross_attn', 'alpha_gated'],
@@ -443,6 +453,10 @@ def main():
                 'use_learned_gate': not args.no_learned_gate,
             }
         
+        # Resolve --no-rope and --no-flash-attn flags
+        use_rope = args.use_rope and not args.no_rope
+        use_flash_attn = args.use_flash_attn and not args.no_flash_attn
+        
         model = HybridPoHARCSolver(
             d_model=args.d_model,
             n_heads=args.n_heads,
@@ -459,6 +473,8 @@ def main():
             hrm_grad_style=args.hrm_grad_style,
             injection_mode=args.injection_mode,
             injection_kwargs=injection_kwargs,
+            use_rope=use_rope,
+            use_flash_attn=use_flash_attn,
         ).to(device)
         print_rank0(f"Hybrid model: H_cycles={args.H_cycles}, L_cycles={args.L_cycles}")
         print_rank0(f"H_layers={args.H_layers}, L_layers={args.L_layers}, dropout={args.dropout}")
@@ -468,6 +484,8 @@ def main():
             print_rank0(f"  Injection kwargs: {injection_kwargs}")
         if args.controller == 'mamba' and args.optimize_mamba:
             print_rank0(f"  Mamba optimization: ENABLED (torch.compile)")
+        print_rank0(f"Position encoding: {'RoPE' if use_rope else 'Sinusoidal'}")
+        print_rank0(f"Flash Attention: {'ENABLED' if model.L_level.attn_layers[0].use_flash_attn else 'DISABLED'}")
         print_rank0(f"Gradient style: {'HRM (last L+H only)' if args.hrm_grad_style else 'Full (last H_cycle)'}")
         if args.halt_max_steps > 1:
             print_rank0(f"ACT enabled: halt_max_steps={args.halt_max_steps}, exploration={args.halt_exploration_prob}")
