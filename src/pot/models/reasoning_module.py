@@ -22,19 +22,33 @@ from src.pot.core.feature_injection import FeatureInjector, INJECTION_MODES
 from src.pot.models.hrm_layers import RMSNorm, SwiGLU
 from src.pot.modules.rope import RotaryEmbedding, apply_rotary_pos_emb, CosSin
 
+# Try to import Flash Attention for faster long-sequence attention
+try:
+    from flash_attn import flash_attn_func
+    FLASH_ATTN_AVAILABLE = True
+except ImportError:
+    try:
+        from flash_attn_interface import flash_attn_func
+        FLASH_ATTN_AVAILABLE = True
+    except ImportError:
+        FLASH_ATTN_AVAILABLE = False
+        flash_attn_func = None
+
 
 class RoPEMultiheadAttention(nn.Module):
     """
     Multi-head attention with Rotary Position Embeddings (RoPE).
     
     Based on HRM's Attention class, this applies RoPE to Q and K vectors
-    before computing attention. Compatible with nn.MultiheadAttention interface.
+    before computing attention. Uses Flash Attention when available for
+    O(N) memory and faster computation on long sequences.
     
     Args:
         d_model: Hidden dimension size
         n_heads: Number of attention heads
         dropout: Dropout rate (default 0.0)
         batch_first: If True, input is [B, T, D] (default True)
+        use_flash_attn: If True, use Flash Attention when available (default True)
         
     Note:
         Unlike nn.MultiheadAttention, this requires cos_sin tuple from RotaryEmbedding.
@@ -47,6 +61,7 @@ class RoPEMultiheadAttention(nn.Module):
         n_heads: int,
         dropout: float = 0.0,
         batch_first: bool = True,
+        use_flash_attn: bool = True,
     ):
         super().__init__()
         assert d_model % n_heads == 0, f"d_model ({d_model}) must be divisible by n_heads ({n_heads})"
@@ -56,6 +71,7 @@ class RoPEMultiheadAttention(nn.Module):
         self.head_dim = d_model // n_heads
         self.batch_first = batch_first
         self.dropout = dropout
+        self.use_flash_attn = use_flash_attn and FLASH_ATTN_AVAILABLE
         
         # QKV projection (fused for efficiency)
         self.qkv_proj = nn.Linear(d_model, 3 * d_model, bias=False)
@@ -63,8 +79,78 @@ class RoPEMultiheadAttention(nn.Module):
         # Output projection
         self.out_proj = nn.Linear(d_model, d_model, bias=False)
         
-        # Dropout for attention weights
+        # Dropout for attention weights (only used in non-Flash path)
         self.attn_dropout = nn.Dropout(dropout)
+    
+    def _flash_attention(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor, 
+        v: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Flash Attention path - O(N) memory, fused CUDA kernels.
+        
+        Args:
+            q, k, v: [B, T, n_heads, head_dim]
+            
+        Returns:
+            output: [B, T, n_heads, head_dim]
+        """
+        # Flash attention expects [B, T, n_heads, head_dim]
+        # and handles softmax scaling internally
+        attn_output = flash_attn_func(
+            q, k, v,
+            dropout_p=self.dropout if self.training else 0.0,
+            causal=False,  # Non-causal for bidirectional reasoning
+        )
+        # Handle different flash_attn versions
+        if isinstance(attn_output, tuple):
+            attn_output = attn_output[0]
+        return attn_output
+    
+    def _standard_attention(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        attn_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Standard PyTorch attention path - O(N²) memory.
+        
+        Args:
+            q, k, v: [B, T, n_heads, head_dim]
+            attn_mask: Optional attention mask
+            
+        Returns:
+            output: [B, T, n_heads, head_dim]
+            attn_weights: [B, n_heads, T, T]
+        """
+        B, T, H, D = q.shape
+        
+        # Reshape for attention: [B, n_heads, T, head_dim]
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+        
+        # Scaled dot-product attention
+        scale = D ** -0.5
+        attn_weights = torch.matmul(q, k.transpose(-2, -1)) * scale  # [B, n_heads, T, T]
+        
+        if attn_mask is not None:
+            attn_weights = attn_weights + attn_mask
+        
+        attn_weights = F.softmax(attn_weights, dim=-1)
+        attn_weights_dropped = self.attn_dropout(attn_weights)
+        
+        # Apply attention to values
+        attn_output = torch.matmul(attn_weights_dropped, v)  # [B, n_heads, T, head_dim]
+        
+        # Reshape back to [B, T, n_heads, head_dim]
+        attn_output = attn_output.transpose(1, 2)
+        
+        return attn_output, attn_weights
     
     def forward(
         self,
@@ -76,7 +162,7 @@ class RoPEMultiheadAttention(nn.Module):
         attn_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
-        Forward pass with RoPE.
+        Forward pass with RoPE and optional Flash Attention.
         
         Args:
             query: Query tensor [B, T, D] (batch_first=True)
@@ -84,11 +170,12 @@ class RoPEMultiheadAttention(nn.Module):
             value: Value tensor [B, T, D]
             cos_sin: Tuple of (cos, sin) from RotaryEmbedding, or None to skip RoPE
             need_weights: Whether to return attention weights (default False)
-            attn_mask: Optional attention mask
+                         Note: Flash Attention doesn't support returning weights
+            attn_mask: Optional attention mask (only used in standard path)
             
         Returns:
             output: [B, T, D]
-            attn_weights: Optional attention weights if need_weights=True
+            attn_weights: Optional attention weights if need_weights=True (None if Flash)
         """
         # Self-attention: query == key == value
         B, T, D = query.shape
@@ -106,33 +193,24 @@ class RoPEMultiheadAttention(nn.Module):
             sin = sin[:T]
             q, k = apply_rotary_pos_emb(q, k, cos, sin)
         
-        # Reshape for attention: [B, n_heads, T, head_dim]
-        q = q.transpose(1, 2)
-        k = k.transpose(1, 2)
-        v = v.transpose(1, 2)
+        # Choose attention implementation
+        if self.use_flash_attn and not need_weights and attn_mask is None:
+            # Flash Attention path (fast, O(N) memory)
+            attn_output = self._flash_attention(q, k, v)
+            attn_weights = None
+        else:
+            # Standard attention path (supports weights and masks)
+            attn_output, attn_weights = self._standard_attention(q, k, v, attn_mask)
+            if not need_weights:
+                attn_weights = None
         
-        # Scaled dot-product attention
-        scale = self.head_dim ** -0.5
-        attn_weights = torch.matmul(q, k.transpose(-2, -1)) * scale  # [B, n_heads, T, T]
-        
-        if attn_mask is not None:
-            attn_weights = attn_weights + attn_mask
-        
-        attn_weights = F.softmax(attn_weights, dim=-1)
-        attn_weights = self.attn_dropout(attn_weights)
-        
-        # Apply attention to values
-        attn_output = torch.matmul(attn_weights, v)  # [B, n_heads, T, head_dim]
-        
-        # Reshape back to [B, T, D]
-        attn_output = attn_output.transpose(1, 2).contiguous().view(B, T, D)
+        # Reshape to [B, T, D]
+        attn_output = attn_output.contiguous().view(B, T, D)
         
         # Output projection
         output = self.out_proj(attn_output)
         
-        if need_weights:
-            return output, attn_weights
-        return output, None
+        return output, attn_weights
 
 
 class ReasoningModule(nn.Module):
