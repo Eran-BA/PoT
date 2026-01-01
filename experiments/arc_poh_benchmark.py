@@ -599,7 +599,25 @@ def main():
     
     if args.resume:
         print_rank0(f"\nResuming from: {args.resume}")
-        checkpoint = torch.load(args.resume, map_location=device)
+        
+        # Check if it's a W&B artifact reference (format: entity/project/artifact:version)
+        if "/" in args.resume and ":" in args.resume and not os.path.exists(args.resume):
+            print_rank0("  Detected W&B artifact reference, downloading...")
+            import wandb
+            api = wandb.Api()
+            artifact = api.artifact(args.resume)
+            artifact_dir = artifact.download()
+            # Find the checkpoint file in the artifact
+            checkpoint_files = [f for f in os.listdir(artifact_dir) 
+                              if f.endswith('.pt') or f.endswith('.pth')]
+            if not checkpoint_files:
+                raise FileNotFoundError(f"No checkpoint file found in artifact: {args.resume}")
+            checkpoint_path = os.path.join(artifact_dir, checkpoint_files[0])
+            print_rank0(f"  Downloaded to: {checkpoint_path}")
+        else:
+            checkpoint_path = args.resume
+        
+        checkpoint = torch.load(checkpoint_path, map_location=device)
         if distributed:
             model.module.load_state_dict(checkpoint['model_state_dict'])
         else:
