@@ -611,6 +611,14 @@ def main():
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             if puzzle_optimizer and 'puzzle_optimizer_state_dict' in checkpoint:
                 puzzle_optimizer.load_state_dict(checkpoint['puzzle_optimizer_state_dict'])
+            # Load scheduler state to preserve LR schedule
+            if 'scheduler_state_dict' in checkpoint:
+                scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                print_rank0(f"  ✓ Scheduler state restored (LR={scheduler.get_last_lr()[0]:.2e})")
+            else:
+                print_rank0(f"  ⚠️  No scheduler state in checkpoint - LR schedule restarting from step 0")
+            if puzzle_scheduler and 'puzzle_scheduler_state_dict' in checkpoint:
+                puzzle_scheduler.load_state_dict(checkpoint['puzzle_scheduler_state_dict'])
         
         # Resume from next epoch
         start_epoch = checkpoint.get('epoch', 0) + 1
@@ -723,11 +731,14 @@ def main():
                         'epoch': epoch,
                         'model_state_dict': state_dict,
                         'optimizer_state_dict': optimizer.state_dict(),
+                        'scheduler_state_dict': scheduler.state_dict(),
                         'test_grid_acc': best_grid_acc,
                         'config': vars(args),
                     }
                     if puzzle_optimizer:
                         checkpoint_data['puzzle_optimizer_state_dict'] = puzzle_optimizer.state_dict()
+                    if puzzle_scheduler:
+                        checkpoint_data['puzzle_scheduler_state_dict'] = puzzle_scheduler.state_dict()
                     torch.save(checkpoint_data, checkpoint_path)
                     
                     # Save as W&B artifact
