@@ -42,7 +42,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.data.sokoban import (
     SokobanDataset,
-    SokobanStateDataset,
     load_boxoban_levels,
     download_boxoban_dataset,
     board_to_onehot,

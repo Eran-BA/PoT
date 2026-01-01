@@ -572,6 +572,83 @@ class SokobanPPOTrainer:
 
 
 # =============================================================================
+# Evaluation
+# =============================================================================
+
+def evaluate_solve_rate(
+    model: nn.Module,
+    levels: List[np.ndarray],
+    device: torch.device,
+    max_steps: int = 200,
+) -> Dict[str, float]:
+    """
+    Evaluate model solve rate on a set of levels.
+    
+    Args:
+        model: Trained model
+        levels: List of levels to evaluate
+        device: Torch device
+        max_steps: Maximum steps per level
+    
+    Returns:
+        Dictionary with solve_rate, deadlock_rate, avg_steps
+    """
+    model.eval()
+    
+    solved = 0
+    deadlocked = 0
+    total_steps = []
+    
+    with torch.no_grad():
+        for level in levels:
+            board = level.copy()
+            steps = 0
+            
+            while steps < max_steps:
+                if is_solved(board):
+                    solved += 1
+                    total_steps.append(steps)
+                    break
+                
+                if is_deadlock(board):
+                    deadlocked += 1
+                    break
+                
+                # Get model prediction
+                board_onehot = board_to_onehot(board)
+                obs = torch.from_numpy(board_onehot).float().unsqueeze(0).to(device)
+                
+                # Get action
+                if hasattr(model, 'get_action'):
+                    action, _, _, _ = model.get_action(obs)
+                    action = action.item()
+                else:
+                    logits = model(obs)
+                    if isinstance(logits, tuple):
+                        logits = logits[0]
+                    # Mask illegal actions
+                    legal = legal_actions(board)
+                    logits_np = logits.cpu().numpy()[0]
+                    logits_np[~legal] = float('-inf')
+                    action = int(np.argmax(logits_np))
+                
+                # Execute action
+                board, _ = step(board, action)
+                steps += 1
+            
+            if steps >= max_steps:
+                # Didn't solve or deadlock
+                pass
+    
+    n_levels = len(levels)
+    return {
+        'solve_rate': solved / n_levels if n_levels > 0 else 0.0,
+        'deadlock_rate': deadlocked / n_levels if n_levels > 0 else 0.0,
+        'avg_steps': np.mean(total_steps) if total_steps else 0.0,
+    }
+
+
+# =============================================================================
 # Main Training Function
 # =============================================================================
 
@@ -657,8 +734,6 @@ def train_ppo(
         
         # Evaluate
         if timestep >= config.eval_interval and timestep % config.eval_interval < config.n_steps * config.n_envs:
-            from src.training.sokoban_heuristic import evaluate_solve_rate
-            
             eval_stats = evaluate_solve_rate(
                 model, val_levels[:config.eval_episodes], device,
                 max_steps=config.max_episode_steps,

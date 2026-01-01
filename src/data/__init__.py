@@ -28,7 +28,6 @@ from .blocksworld_planner import (
 )
 from .sokoban import (
     SokobanDataset,
-    SokobanStateDataset,
     load_boxoban_levels,
     download_boxoban_dataset,
     board_to_onehot,
@@ -37,9 +36,6 @@ from .sokoban import (
     parse_level_string,
     board_hash,
     augment_board,
-    collect_training_states,
-    save_sampled_states,
-    load_sampled_states,
     TILE_WALL, TILE_FLOOR, TILE_PLAYER, TILE_BOX, TILE_TARGET,
     TILE_BOX_ON_TARGET, TILE_PLAYER_ON_TARGET, NUM_TILE_TYPES,
     BOARD_HEIGHT, BOARD_WIDTH, NUM_ACTIONS,
@@ -82,7 +78,6 @@ __all__ = [
     "BLOCKSWORLD_DOMAIN_PDDL",
     # Sokoban
     "SokobanDataset",
-    "SokobanStateDataset",
     "load_boxoban_levels",
     "download_boxoban_dataset",
     "board_to_onehot",
@@ -91,9 +86,6 @@ __all__ = [
     "parse_level_string",
     "board_hash",
     "augment_board",
-    "collect_training_states",
-    "save_sampled_states",
-    "load_sampled_states",
     "TILE_WALL",
     "TILE_FLOOR",
     "TILE_PLAYER",
