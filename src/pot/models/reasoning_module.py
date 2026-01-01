@@ -97,6 +97,14 @@ class RoPEMultiheadAttention(nn.Module):
         Returns:
             output: [B, T, n_heads, head_dim]
         """
+        # Flash Attention requires fp16 or bf16
+        orig_dtype = q.dtype
+        if orig_dtype not in (torch.float16, torch.bfloat16):
+            # Convert to bf16 (better precision than fp16)
+            q = q.to(torch.bfloat16)
+            k = k.to(torch.bfloat16)
+            v = v.to(torch.bfloat16)
+        
         # Flash attention expects [B, T, n_heads, head_dim]
         # and handles softmax scaling internally
         attn_output = flash_attn_func(
@@ -107,6 +115,11 @@ class RoPEMultiheadAttention(nn.Module):
         # Handle different flash_attn versions
         if isinstance(attn_output, tuple):
             attn_output = attn_output[0]
+        
+        # Convert back to original dtype
+        if orig_dtype not in (torch.float16, torch.bfloat16):
+            attn_output = attn_output.to(orig_dtype)
+        
         return attn_output
     
     def _standard_attention(
