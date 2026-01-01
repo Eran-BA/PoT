@@ -115,7 +115,9 @@ def parse_args():
     parser.add_argument('--dropout', type=float, default=0.1,
                        help='Dropout rate')
     parser.add_argument('--controller-type', type=str, default='transformer',
-                       help='Controller type for PoT')
+                       help='Controller type for PoT (transformer, pot_transformer, swin, diffusion)')
+    parser.add_argument('--max-depth', type=int, default=32,
+                       help='Maximum refinement depth for controller')
     parser.add_argument('--share-embeddings', action='store_true',
                        help='Share embeddings between actor and critic')
     
@@ -320,6 +322,7 @@ def create_actor_critic_model(args, device):
         L_cycles=args.L_cycles,
         T=args.T,
         halt_max_steps=args.halt_max_steps,
+        max_depth=args.max_depth,
     )
     
     # Count parameters
@@ -332,9 +335,9 @@ def create_actor_critic_model(args, device):
     print(f"  Critic params: {critic_params:,} ({critic_params/1e6:.2f}M)")
     print(f"  Total params: {total_params:,} ({total_params/1e6:.2f}M)")
     if args.model_type == 'hybrid':
-        print(f"  H_cycles={args.H_cycles}, L_cycles={args.L_cycles}, T={args.T}")
+        print(f"  H_cycles={args.H_cycles}, L_cycles={args.L_cycles}, T={args.T}, max_depth={args.max_depth}")
     else:
-        print(f"  R={args.R}, d_model={args.d_model}")
+        print(f"  R={args.R}, d_model={args.d_model}, max_depth={args.max_depth}")
     
     return model.to(device)
 
@@ -374,9 +377,10 @@ def create_supervised_model(args, device):
             R=args.R,
             controller_type=args.controller_type,
             goal_conditioned=True,
+            max_depth=args.max_depth,
         )
         model_name = "SimplePoTBlocksworldSolver"
-        config_str = f"R={args.R}, d_model={args.d_model}"
+        config_str = f"R={args.R}, d_model={args.d_model}, max_depth={args.max_depth}"
     
     total_params = sum(p.numel() for p in model.parameters())
     print(f"\nModel: {model_name}")

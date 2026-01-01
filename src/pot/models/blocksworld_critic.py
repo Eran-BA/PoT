@@ -295,6 +295,7 @@ def create_actor_critic(
     L_cycles: int = 8,
     T: int = 4,
     halt_max_steps: int = 1,
+    max_depth: int = 32,
 ) -> BlocksworldActorCritic:
     """
     Factory function to create Actor-Critic for Blocksworld.
@@ -314,6 +315,7 @@ def create_actor_critic(
         L_cycles: L_level cycles per H_cycle (hybrid model)
         T: HRM period for pointer controller (hybrid model)
         halt_max_steps: Max halting steps for ACT (hybrid model)
+        max_depth: Maximum refinement depth for controller
     
     Returns:
         BlocksworldActorCritic instance
@@ -351,6 +353,7 @@ def create_actor_critic(
             R=R,
             controller_type=controller_type,
             goal_conditioned=True,
+            max_depth=max_depth,
         )
     
     # Create critic (simpler architecture)

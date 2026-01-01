@@ -400,6 +400,7 @@ class SimplePoTBlocksworldSolver(nn.Module):
         R: int = 8,
         controller_type: str = "transformer",
         goal_conditioned: bool = False,
+        max_depth: int = None,
     ):
         super().__init__()
         
@@ -424,12 +425,14 @@ class SimplePoTBlocksworldSolver(nn.Module):
         self.pre_norm = nn.LayerNorm(d_model)
         
         # Depth controller
+        # max_depth defaults to R*2 if not specified
+        effective_max_depth = max_depth if max_depth is not None else R * 2
         self.controller = create_controller(
             controller_type=controller_type,
             d_model=d_model,
             n_heads=n_heads,
             dropout=dropout,
-            max_depth=R * 2,  # Allow for longer depths if needed
+            max_depth=effective_max_depth,
         )
         
         # Transformer layers
