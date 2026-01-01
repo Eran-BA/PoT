@@ -627,7 +627,7 @@ def evaluate_solve_rate(
                     if isinstance(logits, tuple):
                         logits = logits[0]
                     # Mask illegal actions
-                    legal = legal_actions(board)
+                    legal = legal_actions(board).astype(bool)
                     logits_np = logits.cpu().numpy()[0]
                     logits_np[~legal] = float('-inf')
                     action = int(np.argmax(logits_np))
