@@ -71,6 +71,12 @@ class HybridPoTBlocksworldSolver(HybridHRMBase):
         controller_type: str = "transformer",  # CausalDepthTransformerRouter
         controller_kwargs: dict = None,
         goal_conditioned: bool = False,
+        # NEW: Parameters aligned with Sudoku's HybridPoHHRMSolver
+        hrm_grad_style: bool = False,  # If True, only last L+H get gradients
+        halt_exploration_prob: float = 0.1,  # Exploration for Q-learning
+        allow_early_halt_eval: bool = False,  # Enable early halting during eval
+        injection_mode: str = "none",  # Feature injection: "none", "broadcast", "film", etc.
+        injection_kwargs: dict = None,
     ):
         # Sequence length = number of blocks
         seq_len = num_blocks
@@ -78,7 +84,7 @@ class HybridPoTBlocksworldSolver(HybridHRMBase):
         # Vocab size: table + blocks + holding
         vocab_size = num_blocks + 2
         
-        # Initialize base class
+        # Initialize base class with ALL parameters (aligned with Sudoku)
         super().__init__(
             d_model=d_model,
             n_heads=n_heads,
@@ -93,6 +99,12 @@ class HybridPoTBlocksworldSolver(HybridHRMBase):
             halt_max_steps=halt_max_steps,
             controller_type=controller_type,
             controller_kwargs=controller_kwargs,
+            # NEW: Aligned with Sudoku
+            hrm_grad_style=hrm_grad_style,
+            halt_exploration_prob=halt_exploration_prob,
+            allow_early_halt_eval=allow_early_halt_eval,
+            injection_mode=injection_mode,
+            injection_kwargs=injection_kwargs,
         )
         
         self.num_blocks = num_blocks

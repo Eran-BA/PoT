@@ -129,6 +129,10 @@ def parse_args():
                        help='Maximum refinement depth for controller')
     parser.add_argument('--hrm-grad-style', action='store_true',
                        help='Use HRM-style gradients (only last L+H call)')
+    parser.add_argument('--halt-exploration-prob', type=float, default=0.1,
+                       help='Exploration probability for Q-learning halting')
+    parser.add_argument('--allow-early-halt-eval', action='store_true',
+                       help='Enable Q-learning based early halting during eval')
     
     # Feature injection arguments
     parser.add_argument('--injection-mode', type=str, default='none',
@@ -375,6 +379,10 @@ def create_actor_critic_model(args, device):
         d_ctrl=args.d_ctrl,
         injection_mode=args.injection_mode,
         injection_kwargs=injection_kwargs,
+        # NEW: Aligned with Sudoku
+        hrm_grad_style=args.hrm_grad_style,
+        halt_exploration_prob=args.halt_exploration_prob,
+        allow_early_halt_eval=args.allow_early_halt_eval,
     )
     
     # Count parameters

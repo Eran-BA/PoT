@@ -116,6 +116,8 @@ class BenchmarkConfig:
     d_ctrl: Optional[int] = None
     max_depth: int = 32
     hrm_grad_style: bool = False
+    halt_exploration_prob: float = 0.1
+    allow_early_halt_eval: bool = False
     
     # Feature injection
     injection_mode: str = "none"
@@ -222,6 +224,10 @@ def parse_args() -> BenchmarkConfig:
                         help='Maximum refinement depth for controller')
     parser.add_argument('--hrm-grad-style', action='store_true',
                         help='Use HRM-style gradients (only last L+H call)')
+    parser.add_argument('--halt-exploration-prob', type=float, default=0.1,
+                        help='Exploration probability for Q-learning halting')
+    parser.add_argument('--allow-early-halt-eval', action='store_true',
+                        help='Enable Q-learning based early halting during eval')
     
     # Feature injection
     parser.add_argument('--injection-mode', type=str, default='none',
@@ -307,6 +313,8 @@ def parse_args() -> BenchmarkConfig:
         d_ctrl=args.d_ctrl,
         max_depth=args.max_depth,
         hrm_grad_style=args.hrm_grad_style,
+        halt_exploration_prob=args.halt_exploration_prob,
+        allow_early_halt_eval=args.allow_early_halt_eval,
         injection_mode=args.injection_mode,
         injection_memory_size=args.injection_memory_size,
         injection_n_heads=args.injection_n_heads,
@@ -378,25 +386,39 @@ def create_model(config: BenchmarkConfig, device: torch.device) -> nn.Module:
         print(f"  R={config.R}, n_layers={config.n_layers}")
         
     elif config.model_type == "hybrid":
-        # TODO: Implement HybridPoTSokobanSolver when available
-        # For now, fall back to simple PoT with total iterations = H_cycles * L_cycles
-        total_iters = config.H_cycles * config.L_cycles
-        model = PoTSokobanSolver(
+        # Full HybridPoTSokobanSolver (aligned with Sudoku's HybridPoHHRMSolver)
+        from src.pot.models.sokoban_solver import HybridPoTSokobanSolver
+        
+        model = HybridPoTSokobanSolver(
             d_model=config.d_model,
             n_heads=config.n_heads,
-            n_layers=config.n_layers,
+            H_layers=config.H_layers,
+            L_layers=config.L_layers,
             d_ff=config.d_ff,
             dropout=config.dropout,
-            R=total_iters,  # Use total iterations
-            controller_type=config.controller_type,
-            max_depth=config.max_depth,
+            H_cycles=config.H_cycles,
+            L_cycles=config.L_cycles,
+            T=config.T,
             conv_layers=config.conv_layers,
             conv_filters=config.conv_filters,
+            controller_type=config.controller_type,
+            controller_kwargs={'d_ctrl': config.d_ctrl, 'max_depth': config.max_depth},
+            hrm_grad_style=config.hrm_grad_style,
+            halt_max_steps=config.halt_max_steps,
+            halt_exploration_prob=config.halt_exploration_prob,
+            allow_early_halt_eval=config.allow_early_halt_eval,
+            injection_mode=config.injection_mode,
+            injection_kwargs={
+                'memory_size': config.injection_memory_size,
+                'n_heads': config.injection_n_heads,
+                'alpha_aggregation': config.alpha_aggregation,
+            } if config.injection_mode != 'none' else None,
         )
-        print(f"\nModel: PoTSokobanSolver (Hybrid-style)")
-        print(f"  H_cycles={config.H_cycles}, L_cycles={config.L_cycles} (R={total_iters})")
+        print(f"\nModel: HybridPoTSokobanSolver")
+        print(f"  H_cycles={config.H_cycles}, L_cycles={config.L_cycles}")
         print(f"  H_layers={config.H_layers}, L_layers={config.L_layers}")
         print(f"  T={config.T}, halt_max_steps={config.halt_max_steps}")
+        print(f"  hrm_grad_style={config.hrm_grad_style}, injection_mode={config.injection_mode}")
         
     else:
         # Baseline CNN

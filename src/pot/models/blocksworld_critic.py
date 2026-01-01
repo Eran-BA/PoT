@@ -312,6 +312,10 @@ def create_actor_critic(
     d_ctrl: int = None,
     injection_mode: str = 'none',
     injection_kwargs: dict = None,
+    # NEW: Parameters aligned with Sudoku's HybridPoHHRMSolver
+    hrm_grad_style: bool = False,
+    halt_exploration_prob: float = 0.1,
+    allow_early_halt_eval: bool = False,
 ) -> BlocksworldActorCritic:
     """
     Factory function to create Actor-Critic for Blocksworld.
@@ -355,7 +359,7 @@ def create_actor_critic(
         if injection_mode != 'none':
             inj_kwargs['injection_mode'] = injection_mode
         
-        # Create hybrid actor with H/L cycles
+        # Create hybrid actor with H/L cycles (aligned with Sudoku)
         actor = HybridPoTBlocksworldSolver(
             num_blocks=num_blocks,
             d_model=d_model,
@@ -371,6 +375,12 @@ def create_actor_critic(
             controller_type=controller_type,
             controller_kwargs=controller_kwargs,
             goal_conditioned=True,
+            # NEW: Aligned with Sudoku
+            hrm_grad_style=hrm_grad_style,
+            halt_exploration_prob=halt_exploration_prob,
+            allow_early_halt_eval=allow_early_halt_eval,
+            injection_mode=injection_mode,
+            injection_kwargs=inj_kwargs if injection_mode != 'none' else None,
         )
     else:
         from src.pot.models.blocksworld_solver import SimplePoTBlocksworldSolver

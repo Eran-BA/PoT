@@ -29,6 +29,7 @@ from .blocksworld_critic import (
 )
 from .sokoban_solver import (
     PoTSokobanSolver,
+    HybridPoTSokobanSolver,
     BaselineSokobanSolver,
     SokobanActorCritic,
     SokobanConvEncoder,
@@ -63,6 +64,7 @@ __all__ = [
     "create_actor_critic",
     # Sokoban solvers
     "PoTSokobanSolver",
+    "HybridPoTSokobanSolver",
     "BaselineSokobanSolver",
     "SokobanActorCritic",
     "SokobanConvEncoder",

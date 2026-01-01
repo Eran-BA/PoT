@@ -458,6 +458,207 @@ class BaselineSokobanSolver(nn.Module):
 
 
 # =============================================================================
+# Hybrid PoT Sokoban Solver (HybridHRMBase)
+# =============================================================================
+
+from src.pot.models.hybrid_hrm import HybridHRMBase
+from src.pot.models.hrm_layers import RMSNorm, SwiGLU
+
+
+class HybridPoTSokobanSolver(HybridHRMBase):
+    """
+    Hybrid PoT Sokoban solver with two-timescale reasoning (aligned with Sudoku).
+    
+    Uses the HybridHRMBase architecture for iterative refinement:
+    - L_level: Fast reasoning, updates every inner step
+    - H_level: Slow reasoning, updates every outer step
+    - Both use PoT head routing via CausalDepthTransformerRouter
+    - ACT: Adaptive computation time with Q-learning
+    
+    Architecture:
+        1. Conv encoder: 10x10x7 -> 100 tokens of d_model
+        2. HybridHRM two-timescale refinement
+        3. Action head: pool -> 4 logits
+        4. Value head: pool -> 1 scalar
+    
+    Args:
+        d_model: Hidden dimension
+        n_heads: Number of attention heads
+        H_layers: Layers in H_level module
+        L_layers: Layers in L_level module
+        d_ff: Feedforward dimension
+        dropout: Dropout rate
+        H_cycles: Fixed outer loop iterations per ACT step
+        L_cycles: Fixed inner loop iterations per H_cycle
+        T: HRM period for pointer controller
+        conv_layers: Number of conv layers in encoder
+        conv_filters: Number of filters per conv layer
+        controller_type: Type of depth controller
+        controller_kwargs: Additional kwargs for controller
+        hrm_grad_style: If True, only last L+H get gradients
+        halt_max_steps: Maximum ACT outer steps (1 = no ACT)
+        halt_exploration_prob: Exploration probability for Q-learning
+        allow_early_halt_eval: Enable early halting during eval
+        injection_mode: Feature injection mode
+        injection_kwargs: Additional kwargs for FeatureInjector
+    """
+    
+    def __init__(
+        self,
+        d_model: int = 256,
+        n_heads: int = 4,
+        H_layers: int = 2,
+        L_layers: int = 2,
+        d_ff: int = 1024,
+        dropout: float = 0.0,
+        H_cycles: int = 2,
+        L_cycles: int = 8,
+        T: int = 4,
+        conv_layers: int = 3,
+        conv_filters: int = 64,
+        controller_type: str = "transformer",
+        controller_kwargs: dict = None,
+        # Aligned with Sudoku's HybridPoHHRMSolver
+        hrm_grad_style: bool = False,
+        halt_max_steps: int = 1,
+        halt_exploration_prob: float = 0.1,
+        allow_early_halt_eval: bool = False,
+        injection_mode: str = "none",
+        injection_kwargs: dict = None,
+    ):
+        # Sequence length = 10x10 grid flattened
+        seq_len = BOARD_HEIGHT * BOARD_WIDTH
+        
+        # Initialize base class with ALL parameters (aligned with Sudoku)
+        super().__init__(
+            d_model=d_model,
+            n_heads=n_heads,
+            H_layers=H_layers,
+            L_layers=L_layers,
+            d_ff=d_ff,
+            seq_len=seq_len,
+            H_cycles=H_cycles,
+            L_cycles=L_cycles,
+            dropout=dropout,
+            T=T,
+            halt_max_steps=halt_max_steps,
+            controller_type=controller_type,
+            controller_kwargs=controller_kwargs,
+            hrm_grad_style=hrm_grad_style,
+            halt_exploration_prob=halt_exploration_prob,
+            allow_early_halt_eval=allow_early_halt_eval,
+            injection_mode=injection_mode,
+            injection_kwargs=injection_kwargs,
+        )
+        
+        self.d_model = d_model
+        embed_init_std = 1.0 / self.embed_scale
+        
+        # Conv encoder for board input
+        self.conv_encoder = SokobanConvEncoder(
+            d_model=d_model,
+            n_filters=conv_filters,
+            n_layers=conv_layers,
+            dropout=dropout,
+        )
+        
+        # Position embedding for 100 tokens
+        self.pos_embed = nn.Parameter(torch.randn(1, seq_len, d_model) * embed_init_std)
+        
+        # Action head
+        self.action_head = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, NUM_ACTIONS),
+        )
+        
+        # Value head
+        self.value_head = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, 1),
+        )
+    
+    def _compute_input_embedding(self, board: torch.Tensor) -> torch.Tensor:
+        """
+        Compute scaled input embedding from board.
+        
+        Args:
+            board: [B, H, W, 7] one-hot encoded board
+        
+        Returns:
+            [B, 100, d_model] input embeddings
+        """
+        # Conv encode: [B, H, W, 7] -> [B, H, W, d_model]
+        spatial = self.conv_encoder(board)
+        
+        # Flatten to tokens: [B, H*W, d_model]
+        B = spatial.size(0)
+        tokens = spatial.view(B, -1, self.d_model)
+        
+        # Add position embedding
+        tokens = tokens + self.pos_embed
+        
+        # Scale embeddings by sqrt(d_model) like HRM
+        return self.embed_scale * tokens
+    
+    def forward(
+        self,
+        board: torch.Tensor,
+        return_aux: bool = True,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Optional[Dict]]:
+        """
+        Forward pass for action prediction.
+        
+        Args:
+            board: [B, H, W, 7] one-hot encoded board
+            return_aux: Whether to return auxiliary info
+        
+        Returns:
+            action_logits: [B, 4] action logits
+            value: [B] state value estimate
+            q_halt: [B] Q-value for halting
+            q_continue: [B] Q-value for continuing
+            aux: Optional dict with auxiliary outputs
+        """
+        input_emb = self._compute_input_embedding(board)
+        
+        if self.halt_max_steps > 1:
+            # Use ACT wrapper
+            act_out = self.act_forward(input_emb)
+            hidden = act_out['hidden']
+            q_halt = act_out['q_halt']
+            q_continue = act_out['q_continue']
+            steps = act_out['steps']
+        else:
+            # Simple reasoning loop
+            hidden, q_halt, q_continue, steps = self.reasoning_loop(input_emb)
+        
+        # Pool over sequence
+        pooled = hidden.mean(dim=1)  # [B, d_model]
+        
+        # Action and value heads
+        action_logits = self.action_head(pooled)  # [B, 4]
+        value = self.value_head(pooled).squeeze(-1)  # [B]
+        
+        aux = {'steps': steps} if return_aux else None
+        return action_logits, value, q_halt, q_continue, aux
+    
+    def get_action_probs(
+        self,
+        board: torch.Tensor,
+        legal_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Get action probabilities."""
+        action_logits, _, _, _, _ = self.forward(board, return_aux=False)
+        
+        if legal_mask is not None:
+            action_logits = action_logits.masked_fill(~legal_mask.bool(), float('-inf'))
+        
+        return F.softmax(action_logits, dim=-1)
+
+
+# =============================================================================
 # Actor-Critic Wrapper for PPO
 # =============================================================================
 
