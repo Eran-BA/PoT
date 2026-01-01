@@ -17,6 +17,11 @@ from .adaptive_halting import QHaltingController
 from .sudoku_solver import PoHSudokuSolver, HybridPoHHRMSolver, BaselineSudokuSolver
 from .hybrid_nli import HybridPoHHRMForNLI
 from .arc_solver import HybridPoHARCSolver, BaselineARCSolver
+from .blocksworld_solver import (
+    HybridPoTBlocksworldSolver,
+    BaselineBlocksworldSolver,
+    SimplePoTBlocksworldSolver,
+)
 
 __all__ = [
     "PoHGPT",
@@ -37,5 +42,9 @@ __all__ = [
     # ARC solvers
     "HybridPoHARCSolver",
     "BaselineARCSolver",
+    # Blocksworld solvers
+    "HybridPoTBlocksworldSolver",
+    "BaselineBlocksworldSolver",
+    "SimplePoTBlocksworldSolver",
 ]
 

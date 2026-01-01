@@ -47,8 +47,8 @@ checkpoints/
 Thumbs.db
 
 # Datasets & Cache
-data/
-datasets/
+/data/
+/datasets/
 .cache/
 *.conllu
 
@@ -66,7 +66,9 @@ tests/outputs/
 temp_*.py
 
 # Execution artifacts
-results/
-experiments/
+experiments/results/
 plots/
+
+# But keep experiment scripts
+!experiments/*.py
 
