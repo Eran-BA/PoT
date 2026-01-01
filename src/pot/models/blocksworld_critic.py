@@ -210,7 +210,7 @@ class BlocksworldActorCritic(nn.Module):
         self,
         state: torch.Tensor,
         goal: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, Any]]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, Any]]:
         """
         Forward pass for both actor and critic.
         
@@ -221,24 +221,33 @@ class BlocksworldActorCritic(nn.Module):
         Returns:
             logits: [B, N, vocab_size] action logits from actor
             value: [B] value estimates from critic
+            q_halt: [B] Q-value for halting (ACT)
+            q_continue: [B] Q-value for continuing (ACT)
             aux: Dictionary with auxiliary outputs
         """
-        # Actor forward
-        logits, aux = self.actor(state, goal)
+        # Actor forward - now returns 4 values: logits, q_halt, q_continue, aux
+        actor_out = self.actor(state, goal)
+        if len(actor_out) == 4:
+            logits, q_halt, q_continue, aux = actor_out
+        else:
+            # Old 2-return format (backwards compatibility)
+            logits, aux = actor_out
+            q_halt = torch.zeros(state.size(0), device=state.device)
+            q_continue = torch.zeros(state.size(0), device=state.device)
         
         # Critic forward
         value = self.critic(state, goal)
         
-        return logits, value, aux
+        return logits, value, q_halt, q_continue, aux
     
     def get_action_and_value(
         self,
         state: torch.Tensor,
         goal: torch.Tensor,
         action: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Get action, log probabilities, entropy, and value.
+        Get action, log probabilities, entropy, value, and Q-values.
         
         Used during PPO rollouts and updates.
         
@@ -252,9 +261,11 @@ class BlocksworldActorCritic(nn.Module):
             log_prob: [B] log probabilities of actions
             entropy: [B] entropy of action distribution
             value: [B] value estimates
+            q_halt: [B] Q-value for halting
+            q_continue: [B] Q-value for continuing
         """
-        # Get logits and value
-        logits, value, _ = self.forward(state, goal)
+        # Get logits, value, and Q-values
+        logits, value, q_halt, q_continue, _ = self.forward(state, goal)
         
         # Create categorical distribution over positions for each block
         # logits: [B, N, vocab_size]
@@ -277,7 +288,7 @@ class BlocksworldActorCritic(nn.Module):
         # Compute entropy for each position, then mean over blocks
         entropy = -(probs * log_probs).sum(dim=-1).mean(dim=-1)  # [B]
         
-        return action, total_log_prob, entropy, value
+        return action, total_log_prob, entropy, value, q_halt, q_continue
 
 
 def create_actor_critic(

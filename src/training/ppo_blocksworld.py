@@ -272,8 +272,8 @@ class BlocksworldPPOTrainer:
         Returns:
             Dictionary of loss metrics
         """
-        # Get current policy outputs
-        action, log_prob, entropy, value = self.actor_critic.get_action_and_value(
+        # Get current policy outputs (now returns 6 values with q_halt/q_continue)
+        action, log_prob, entropy, value, q_halt, q_continue = self.actor_critic.get_action_and_value(
             states, goals, action=actions
         )
         
@@ -293,11 +293,17 @@ class BlocksworldPPOTrainer:
         # Entropy bonus
         entropy_loss = -entropy.mean()
         
-        # Total loss
+        # Q-halt loss: predict if trajectory is correct (positive reward = correct)
+        # Target: 1 if returns > 0 (successful trajectory), 0 otherwise
+        is_correct = (returns > 0).float()
+        q_halt_loss = F.binary_cross_entropy_with_logits(q_halt, is_correct)
+        
+        # Total loss (same 0.5 weight for q_halt as Sudoku/Sokoban)
         total_loss = (
             policy_loss 
             + self.config.value_coef * value_loss 
             + self.config.entropy_coef * entropy_loss
+            + 0.5 * q_halt_loss
         )
         
         # Backward pass
@@ -321,6 +327,7 @@ class BlocksworldPPOTrainer:
             'policy_loss': policy_loss.item(),
             'value_loss': value_loss.item(),
             'entropy': -entropy_loss.item(),
+            'q_halt_loss': q_halt_loss.item(),
             'total_loss': total_loss.item(),
             'approx_kl': approx_kl,
             'clip_fraction': ((ratio - 1).abs() > self.config.clip_epsilon).float().mean().item(),
@@ -357,9 +364,9 @@ class BlocksworldPPOTrainer:
         
         B = states.shape[0]
         
-        # Forward pass: get action, log_prob, entropy, value
+        # Forward pass: get action, log_prob, entropy, value, q_halt, q_continue
         with torch.no_grad():
-            action, old_log_prob, _, old_value = self.actor_critic.get_action_and_value(
+            action, old_log_prob, _, old_value, _, _ = self.actor_critic.get_action_and_value(
                 states, goals
             )
         

@@ -450,6 +450,9 @@ class SimplePoTBlocksworldSolver(nn.Module):
         # Output
         self.final_norm = nn.LayerNorm(d_model)
         self.output_proj = nn.Linear(d_model, self.vocab_size)
+        
+        # Q-head for ACT halt/continue prediction (same as Sokoban/Sudoku)
+        self.q_head = nn.Linear(d_model, 2)  # [q_halt, q_continue]
     
     def _encode_step(
         self,
@@ -501,7 +504,7 @@ class SimplePoTBlocksworldSolver(nn.Module):
         self,
         state: torch.Tensor,
         goal: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, Any]]:
         """
         Forward pass with iterative refinement.
         
@@ -511,6 +514,8 @@ class SimplePoTBlocksworldSolver(nn.Module):
         
         Returns:
             logits: [B, N, vocab_size] next state logits
+            q_halt: [B] Q-value for halting (ACT)
+            q_continue: [B] Q-value for continuing (ACT)
             aux: Dict with alphas and other diagnostics
         """
         B, N = state.shape
@@ -546,7 +551,13 @@ class SimplePoTBlocksworldSolver(nn.Module):
         x = self.final_norm(x)
         logits = self.output_proj(x)
         
-        return logits, {"alphas": alphas}
+        # Q-values for ACT halt/continue (pool sequence, same as Sokoban)
+        x_pool = x.mean(dim=1)  # [B, d_model]
+        q_logits = self.q_head(x_pool)  # [B, 2]
+        q_halt = q_logits[:, 0]  # [B]
+        q_continue = q_logits[:, 1]  # [B]
+        
+        return logits, q_halt, q_continue, {"alphas": alphas}
     
     def predict_next_state(
         self,
@@ -554,7 +565,7 @@ class SimplePoTBlocksworldSolver(nn.Module):
         goal: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Predict next state (greedy argmax)."""
-        logits, _ = self.forward(state, goal)
+        logits, _, _, _ = self.forward(state, goal)
         return logits.argmax(dim=-1)
     
     def rollout(
