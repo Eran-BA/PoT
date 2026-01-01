@@ -485,8 +485,8 @@ class BlocksworldPPOTrainer:
             if num_blocks is not None:
                 num_blocks = num_blocks.to(self.device)
             
-            # Get predictions
-            logits, value, _ = self.actor_critic(states, goals)
+            # Get predictions (5 return values: logits, value, q_halt, q_continue, aux)
+            logits, value, q_halt, q_continue, aux = self.actor_critic(states, goals)
             predicted = logits.argmax(dim=-1)
             
             # Compute metrics
