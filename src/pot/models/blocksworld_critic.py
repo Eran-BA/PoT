@@ -296,6 +296,11 @@ def create_actor_critic(
     T: int = 4,
     halt_max_steps: int = 1,
     max_depth: int = 32,
+    H_layers: int = 2,
+    L_layers: int = 2,
+    d_ctrl: int = None,
+    injection_mode: str = 'none',
+    injection_kwargs: dict = None,
 ) -> BlocksworldActorCritic:
     """
     Factory function to create Actor-Critic for Blocksworld.
@@ -316,6 +321,11 @@ def create_actor_critic(
         T: HRM period for pointer controller (hybrid model)
         halt_max_steps: Max halting steps for ACT (hybrid model)
         max_depth: Maximum refinement depth for controller
+        H_layers: Layers in H_level module (hybrid model)
+        L_layers: Layers in L_level module (hybrid model)
+        d_ctrl: Controller hidden dimension
+        injection_mode: Feature injection mode (none, broadcast, film, etc.)
+        injection_kwargs: Additional injection parameters
     
     Returns:
         BlocksworldActorCritic instance
@@ -323,13 +333,24 @@ def create_actor_critic(
     if model_type == 'hybrid':
         from src.pot.models.blocksworld_solver import HybridPoTBlocksworldSolver
         
+        # Build controller kwargs
+        controller_kwargs = {}
+        if d_ctrl is not None:
+            controller_kwargs['d_ctrl'] = d_ctrl
+        controller_kwargs['max_depth'] = max_depth
+        
+        # Build injection kwargs
+        inj_kwargs = injection_kwargs or {}
+        if injection_mode != 'none':
+            inj_kwargs['injection_mode'] = injection_mode
+        
         # Create hybrid actor with H/L cycles
         actor = HybridPoTBlocksworldSolver(
             num_blocks=num_blocks,
             d_model=d_model,
             n_heads=n_heads,
-            H_layers=n_layers,
-            L_layers=n_layers,
+            H_layers=H_layers,
+            L_layers=L_layers,
             d_ff=d_ff,
             dropout=dropout,
             H_cycles=H_cycles,
@@ -337,6 +358,7 @@ def create_actor_critic(
             T=T,
             halt_max_steps=halt_max_steps,
             controller_type=controller_type,
+            controller_kwargs=controller_kwargs,
             goal_conditioned=True,
         )
     else:

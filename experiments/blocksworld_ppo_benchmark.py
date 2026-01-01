@@ -109,15 +109,39 @@ def parse_args():
     parser.add_argument('--n-heads', type=int, default=4,
                        help='Number of attention heads')
     parser.add_argument('--n-layers', type=int, default=2,
-                       help='Number of transformer layers (H_layers and L_layers for hybrid)')
+                       help='Number of transformer layers (for simple model)')
+    parser.add_argument('--H-layers', type=int, default=2,
+                       help='Layers in H_level module (for hybrid model)')
+    parser.add_argument('--L-layers', type=int, default=2,
+                       help='Layers in L_level module (for hybrid model)')
     parser.add_argument('--d-ff', type=int, default=512,
                        help='Feedforward dimension')
     parser.add_argument('--dropout', type=float, default=0.1,
                        help='Dropout rate')
+    
+    # Controller arguments
     parser.add_argument('--controller-type', type=str, default='transformer',
-                       help='Controller type for PoT (transformer, pot_transformer, swin, diffusion)')
+                       choices=['transformer', 'pot_transformer', 'swin', 'diffusion', 'gru', 'lstm'],
+                       help='Controller type for PoT')
+    parser.add_argument('--d-ctrl', type=int, default=None,
+                       help='Controller hidden dimension (default: d_model // 4)')
     parser.add_argument('--max-depth', type=int, default=32,
                        help='Maximum refinement depth for controller')
+    parser.add_argument('--hrm-grad-style', action='store_true',
+                       help='Use HRM-style gradients (only last L+H call)')
+    
+    # Feature injection arguments
+    parser.add_argument('--injection-mode', type=str, default='none',
+                       choices=['none', 'broadcast', 'film', 'depth_token', 'cross_attn', 'alpha_gated'],
+                       help='Feature injection mode for controller knowledge into tokens')
+    parser.add_argument('--injection-memory-size', type=int, default=16,
+                       help='Memory bank size for cross_attn injection mode')
+    parser.add_argument('--injection-n-heads', type=int, default=4,
+                       help='Number of attention heads for cross_attn injection mode')
+    parser.add_argument('--alpha-aggregation', type=str, default='mean',
+                       choices=['mean', 'max', 'last'],
+                       help='How to aggregate alpha weights across layers')
+    
     parser.add_argument('--share-embeddings', action='store_true',
                        help='Share embeddings between actor and critic')
     
@@ -134,10 +158,24 @@ def parse_args():
                        help='Learning rate (for supervised mode)')
     parser.add_argument('--weight-decay', type=float, default=0.01,
                        help='Weight decay')
+    parser.add_argument('--warmup-steps', type=int, default=100,
+                       help='LR warmup steps (HRM uses 2000)')
+    parser.add_argument('--lr-min-ratio', type=float, default=0.0,
+                       help='Minimum LR ratio for cosine annealing')
+    parser.add_argument('--grad-clip', type=float, default=1.0,
+                       help='Gradient clipping max norm')
     parser.add_argument('--eval-interval', type=int, default=5,
                        help='Evaluation interval (epochs)')
     parser.add_argument('--save-interval', type=int, default=10,
                        help='Checkpoint save interval (epochs)')
+    
+    # Logging
+    parser.add_argument('--wandb', action='store_true',
+                       help='Enable W&B logging')
+    parser.add_argument('--project', type=str, default='blocksworld-ppo',
+                       help='W&B project name')
+    parser.add_argument('--run-name', type=str, default=None,
+                       help='W&B run name (auto-generated if not set)')
     
     # Output
     parser.add_argument('--output-dir', type=str, 
@@ -145,6 +183,8 @@ def parse_args():
                        help='Output directory for results')
     parser.add_argument('--seed', type=int, default=42,
                        help='Random seed')
+    parser.add_argument('--download', action='store_true',
+                       help='Download dataset if not present')
     
     return parser.parse_args()
 
@@ -307,6 +347,15 @@ def create_actor_critic_model(args, device):
     """Create actor-critic model for PPO."""
     from src.pot.models.blocksworld_critic import create_actor_critic
     
+    # Build injection kwargs
+    injection_kwargs = {}
+    if args.injection_mode != 'none':
+        injection_kwargs = {
+            'memory_size': args.injection_memory_size,
+            'n_heads': args.injection_n_heads,
+            'alpha_aggregation': args.alpha_aggregation,
+        }
+    
     model = create_actor_critic(
         num_blocks=args.max_blocks,
         d_model=args.d_model,
@@ -323,6 +372,11 @@ def create_actor_critic_model(args, device):
         T=args.T,
         halt_max_steps=args.halt_max_steps,
         max_depth=args.max_depth,
+        H_layers=args.H_layers,
+        L_layers=args.L_layers,
+        d_ctrl=args.d_ctrl,
+        injection_mode=args.injection_mode,
+        injection_kwargs=injection_kwargs,
     )
     
     # Count parameters
@@ -334,16 +388,27 @@ def create_actor_critic_model(args, device):
     print(f"  Actor params: {actor_params:,} ({actor_params/1e6:.2f}M)")
     print(f"  Critic params: {critic_params:,} ({critic_params/1e6:.2f}M)")
     print(f"  Total params: {total_params:,} ({total_params/1e6:.2f}M)")
+    print(f"  d_model={args.d_model}, n_heads={args.n_heads}, d_ff={args.d_ff}")
+    print(f"  controller={args.controller_type}, d_ctrl={args.d_ctrl}, max_depth={args.max_depth}")
     if args.model_type == 'hybrid':
-        print(f"  H_cycles={args.H_cycles}, L_cycles={args.L_cycles}, T={args.T}, max_depth={args.max_depth}")
+        print(f"  H_cycles={args.H_cycles}, L_cycles={args.L_cycles}, T={args.T}")
+        print(f"  H_layers={args.H_layers}, L_layers={args.L_layers}, halt_max_steps={args.halt_max_steps}")
     else:
-        print(f"  R={args.R}, d_model={args.d_model}, max_depth={args.max_depth}")
+        print(f"  R={args.R}, n_layers={args.n_layers}")
+    if args.injection_mode != 'none':
+        print(f"  injection_mode={args.injection_mode}")
     
     return model.to(device)
 
 
 def create_supervised_model(args, device):
     """Create model for supervised training."""
+    # Build controller kwargs
+    controller_kwargs = {}
+    if args.d_ctrl is not None:
+        controller_kwargs['d_ctrl'] = args.d_ctrl
+    controller_kwargs['max_depth'] = args.max_depth
+    
     if args.model_type == 'hybrid':
         from src.pot.models.blocksworld_solver import HybridPoTBlocksworldSolver
         
@@ -351,8 +416,8 @@ def create_supervised_model(args, device):
             num_blocks=args.max_blocks,
             d_model=args.d_model,
             n_heads=args.n_heads,
-            H_layers=args.n_layers,
-            L_layers=args.n_layers,
+            H_layers=args.H_layers,
+            L_layers=args.L_layers,
             d_ff=args.d_ff,
             dropout=args.dropout,
             H_cycles=args.H_cycles,
@@ -360,10 +425,11 @@ def create_supervised_model(args, device):
             T=args.T,
             halt_max_steps=args.halt_max_steps,
             controller_type=args.controller_type,
+            controller_kwargs=controller_kwargs,
             goal_conditioned=True,
         )
         model_name = "HybridPoTBlocksworldSolver"
-        config_str = f"H_cycles={args.H_cycles}, L_cycles={args.L_cycles}, T={args.T}"
+        config_str = f"H_cycles={args.H_cycles}, L_cycles={args.L_cycles}, T={args.T}, H_layers={args.H_layers}, L_layers={args.L_layers}"
     else:
         from src.pot.models.blocksworld_solver import SimplePoTBlocksworldSolver
         
@@ -380,11 +446,12 @@ def create_supervised_model(args, device):
             max_depth=args.max_depth,
         )
         model_name = "SimplePoTBlocksworldSolver"
-        config_str = f"R={args.R}, d_model={args.d_model}, max_depth={args.max_depth}"
+        config_str = f"R={args.R}, n_layers={args.n_layers}, max_depth={args.max_depth}"
     
     total_params = sum(p.numel() for p in model.parameters())
     print(f"\nModel: {model_name}")
     print(f"  Total params: {total_params:,} ({total_params/1e6:.2f}M)")
+    print(f"  d_model={args.d_model}, n_heads={args.n_heads}, controller={args.controller_type}")
     print(f"  {config_str}")
     
     return model.to(device)
