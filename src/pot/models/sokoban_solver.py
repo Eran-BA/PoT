@@ -208,11 +208,14 @@ class PoTSokobanSolver(nn.Module):
             nn.Linear(d_model // 2, 1),
         )
         
+        # Q-head for ACT halt/continue prediction (same as HybridPoHHRMSolver)
+        self.q_head = nn.Linear(d_model, 2)  # [q_halt, q_continue]
+        
     def forward(
         self,
         board: torch.Tensor,
         return_aux: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, Any]]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, Any]]:
         """
         Forward pass for action prediction.
         
@@ -223,6 +226,8 @@ class PoTSokobanSolver(nn.Module):
         Returns:
             action_logits: [B, 4] action logits
             value: [B] state value estimate
+            q_halt: [B] Q-value for halting (ACT)
+            q_continue: [B] Q-value for continuing (ACT)
             aux: Dict with auxiliary metrics (alphas, entropies, etc.)
         """
         B = board.shape[0]
@@ -261,13 +266,18 @@ class PoTSokobanSolver(nn.Module):
         action_logits = self.action_head(x_pool)  # [B, 4]
         value = self.value_head(x_pool).squeeze(-1)  # [B]
         
+        # Q-values for ACT halt/continue (same pattern as HybridPoHHRMSolver)
+        q_logits = self.q_head(x_pool)  # [B, 2]
+        q_halt = q_logits[:, 0]  # [B]
+        q_continue = q_logits[:, 1]  # [B]
+        
         aux = {}
         if return_aux:
             aux['alphas'] = alphas
             aux['entropies'] = entropies if entropies else None
             aux['num_steps'] = self.R
         
-        return action_logits, value, aux
+        return action_logits, value, q_halt, q_continue, aux
     
     def predict_action(
         self,
@@ -286,7 +296,7 @@ class PoTSokobanSolver(nn.Module):
         Returns:
             [B] predicted actions
         """
-        action_logits, _, _ = self.forward(board, return_aux=False)
+        action_logits, _, _, _, _ = self.forward(board, return_aux=False)
         
         # Apply legal mask if provided
         if legal_mask is not None:
@@ -317,7 +327,7 @@ class PoTSokobanSolver(nn.Module):
         Returns:
             [B, 4] action probabilities
         """
-        action_logits, _, _ = self.forward(board, return_aux=False)
+        action_logits, _, _, _, _ = self.forward(board, return_aux=False)
         
         if legal_mask is not None:
             action_logits = action_logits.masked_fill(~legal_mask.bool(), float('-inf'))
@@ -458,6 +468,7 @@ class SokobanActorCritic(nn.Module):
     Wraps either PoT or Baseline solver to provide:
     - Actor: action distribution
     - Critic: value estimate
+    - Q-halt/Q-continue: ACT halting predictions
     
     Args:
         model: PoTSokobanSolver or BaselineSokobanSolver
@@ -471,9 +482,9 @@ class SokobanActorCritic(nn.Module):
         self,
         board: torch.Tensor,
         legal_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Get action distribution and value.
+        Get action distribution, value, and Q-values.
         
         Args:
             board: [B, H, W, 7] one-hot encoded board
@@ -483,19 +494,33 @@ class SokobanActorCritic(nn.Module):
             action_probs: [B, 4] action probabilities
             action_logits: [B, 4] raw logits
             value: [B] state value estimate
+            q_halt: [B] Q-value for halting
+            q_continue: [B] Q-value for continuing
         """
-        action_logits, value, _ = self.model(board, return_aux=False)
+        # Handle both PoT (5 returns) and Baseline (3 returns) models
+        outputs = self.model(board, return_aux=False)
+        if len(outputs) == 5:
+            action_logits, value, q_halt, q_continue, _ = outputs
+        else:
+            # Baseline model doesn't have q_halt/q_continue
+            action_logits, value, _ = outputs
+            q_halt = torch.zeros(board.size(0), device=board.device)
+            q_continue = torch.zeros(board.size(0), device=board.device)
         
         if legal_mask is not None:
             action_logits = action_logits.masked_fill(~legal_mask.bool(), float('-inf'))
         
         action_probs = F.softmax(action_logits, dim=-1)
         
-        return action_probs, action_logits, value
+        return action_probs, action_logits, value, q_halt, q_continue
     
     def get_value(self, board: torch.Tensor) -> torch.Tensor:
         """Get value estimate only."""
-        _, value, _ = self.model(board, return_aux=False)
+        outputs = self.model(board, return_aux=False)
+        if len(outputs) == 5:
+            _, value, _, _, _ = outputs
+        else:
+            _, value, _ = outputs
         return value
     
     def evaluate_actions(
@@ -503,7 +528,7 @@ class SokobanActorCritic(nn.Module):
         board: torch.Tensor,
         actions: torch.Tensor,
         legal_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Evaluate actions for PPO update.
         
@@ -516,13 +541,15 @@ class SokobanActorCritic(nn.Module):
             log_probs: [B] log probabilities of actions
             entropy: [B] entropy of action distribution
             value: [B] state value estimate
+            q_halt: [B] Q-value for halting
+            q_continue: [B] Q-value for continuing
         """
-        action_probs, action_logits, value = self.forward(board, legal_mask)
+        action_probs, action_logits, value, q_halt, q_continue = self.forward(board, legal_mask)
         
         # Compute log probs for taken actions
         dist = torch.distributions.Categorical(probs=action_probs)
         log_probs = dist.log_prob(actions)
         entropy = dist.entropy()
         
-        return log_probs, entropy, value
+        return log_probs, entropy, value, q_halt, q_continue
 

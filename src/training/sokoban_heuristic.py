@@ -138,6 +138,8 @@ def train_epoch(
     model.train()
     
     total_loss = 0.0
+    total_action_loss = 0.0
+    total_q_halt_loss = 0.0
     total_correct = 0
     total_samples = 0
     
@@ -146,14 +148,31 @@ def train_epoch(
         action = batch['action'].to(device)
         legal_mask = batch['legal_mask'].to(device)
         
-        # Forward
-        action_logits, _, _ = model(board, return_aux=False)
+        # Forward - now returns 5 values: action_logits, value, q_halt, q_continue, aux
+        outputs = model(board, return_aux=False)
+        if len(outputs) == 5:
+            action_logits, _, q_halt, _, _ = outputs
+        else:
+            # Baseline model without q_halt
+            action_logits, _, _ = outputs
+            q_halt = None
         
         # Mask illegal actions
         action_logits = action_logits.masked_fill(~legal_mask.bool(), float('-inf'))
         
-        # Cross-entropy loss
-        loss = F.cross_entropy(action_logits, action)
+        # Action cross-entropy loss
+        action_loss = F.cross_entropy(action_logits, action)
+        
+        # Q-halt loss: predict if action is correct (same pattern as Sudoku)
+        if q_halt is not None:
+            with torch.no_grad():
+                pred = action_logits.argmax(dim=-1)
+                is_correct = (pred == action).float()
+            q_halt_loss = F.binary_cross_entropy_with_logits(q_halt, is_correct)
+            loss = action_loss + 0.5 * q_halt_loss
+            total_q_halt_loss += q_halt_loss.item() * board.size(0)
+        else:
+            loss = action_loss
         
         # Backward
         optimizer.zero_grad()
@@ -166,14 +185,20 @@ def train_epoch(
         
         # Stats
         total_loss += loss.item() * board.size(0)
+        total_action_loss += action_loss.item() * board.size(0)
         pred = action_logits.argmax(dim=-1)
         total_correct += (pred == action).sum().item()
         total_samples += board.size(0)
     
-    return {
+    result = {
         'loss': total_loss / total_samples,
+        'action_loss': total_action_loss / total_samples,
         'accuracy': total_correct / total_samples,
     }
+    if total_q_halt_loss > 0:
+        result['q_halt_loss'] = total_q_halt_loss / total_samples
+    
+    return result
 
 
 @torch.no_grad()
@@ -186,8 +211,9 @@ def evaluate(
     model.eval()
     
     total_loss = 0.0
+    total_action_loss = 0.0
+    total_q_halt_loss = 0.0
     total_correct = 0
-    total_legal_correct = 0  # Correct within legal actions
     total_samples = 0
     
     for batch in tqdm(dataloader, desc="Evaluating", leave=False):
@@ -195,25 +221,47 @@ def evaluate(
         action = batch['action'].to(device)
         legal_mask = batch['legal_mask'].to(device)
         
-        # Forward
-        action_logits, _, _ = model(board, return_aux=False)
+        # Forward - now returns 5 values for PoT models
+        outputs = model(board, return_aux=False)
+        if len(outputs) == 5:
+            action_logits, _, q_halt, _, _ = outputs
+        else:
+            # Baseline model without q_halt
+            action_logits, _, _ = outputs
+            q_halt = None
         
         # Masked logits
         masked_logits = action_logits.masked_fill(~legal_mask.bool(), float('-inf'))
         
-        # Loss
-        loss = F.cross_entropy(masked_logits, action)
+        # Action loss
+        action_loss = F.cross_entropy(masked_logits, action)
+        
+        # Q-halt loss
+        if q_halt is not None:
+            pred = masked_logits.argmax(dim=-1)
+            is_correct = (pred == action).float()
+            q_halt_loss = F.binary_cross_entropy_with_logits(q_halt, is_correct)
+            loss = action_loss + 0.5 * q_halt_loss
+            total_q_halt_loss += q_halt_loss.item() * board.size(0)
+        else:
+            loss = action_loss
         
         # Stats
         total_loss += loss.item() * board.size(0)
+        total_action_loss += action_loss.item() * board.size(0)
         pred = masked_logits.argmax(dim=-1)
         total_correct += (pred == action).sum().item()
         total_samples += board.size(0)
     
-    return {
+    result = {
         'loss': total_loss / total_samples,
+        'action_loss': total_action_loss / total_samples,
         'accuracy': total_correct / total_samples,
     }
+    if total_q_halt_loss > 0:
+        result['q_halt_loss'] = total_q_halt_loss / total_samples
+    
+    return result
 
 
 # =============================================================================
@@ -274,7 +322,11 @@ def evaluate_solve_rate(
             board_onehot = board_to_onehot(board)
             board_tensor = torch.tensor(board_onehot, dtype=torch.float32).unsqueeze(0).to(device)
             
-            action_logits, _, _ = model(board_tensor, return_aux=False)
+            outputs = model(board_tensor, return_aux=False)
+            if len(outputs) == 5:
+                action_logits, _, _, _, _ = outputs
+            else:
+                action_logits, _, _ = outputs
             action_logits = action_logits.squeeze(0)
             
             # Mask illegal

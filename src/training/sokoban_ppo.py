@@ -264,6 +264,8 @@ class RolloutBuffer:
         self.values = np.zeros((buffer_size, n_envs), dtype=np.float32)
         self.log_probs = np.zeros((buffer_size, n_envs), dtype=np.float32)
         self.legal_masks = np.zeros((buffer_size, n_envs, 4), dtype=np.float32)
+        # Track if episode ended with solving (for q_halt target)
+        self.solved = np.zeros((buffer_size, n_envs), dtype=np.float32)
         
         self.pos = 0
         self.full = False
@@ -281,6 +283,7 @@ class RolloutBuffer:
         value: np.ndarray,
         log_prob: np.ndarray,
         legal_mask: np.ndarray,
+        solved: np.ndarray = None,
     ):
         """Add a transition to the buffer."""
         self.observations[self.pos] = obs
@@ -290,6 +293,8 @@ class RolloutBuffer:
         self.values[self.pos] = value
         self.log_probs[self.pos] = log_prob
         self.legal_masks[self.pos] = legal_mask
+        if solved is not None:
+            self.solved[self.pos] = solved
         
         self.pos += 1
         if self.pos == self.buffer_size:
@@ -350,6 +355,9 @@ class RolloutBuffer:
                 ),
                 'legal_masks': torch.tensor(
                     self.legal_masks[timesteps, env_ids], device=self.device
+                ),
+                'solved': torch.tensor(
+                    self.solved[timesteps, env_ids], device=self.device
                 ),
             }
     
@@ -418,7 +426,7 @@ class SokobanPPOTrainer:
                 obs_tensor = torch.tensor(obs, dtype=torch.float32, device=self.device)
                 legal_mask_tensor = torch.tensor(legal_masks, dtype=torch.float32, device=self.device)
                 
-                action_probs, action_logits, values = self.model(obs_tensor, legal_mask_tensor)
+                action_probs, action_logits, values, _, _ = self.model(obs_tensor, legal_mask_tensor)
                 
                 # Sample action
                 dist = torch.distributions.Categorical(probs=action_probs)
@@ -446,6 +454,8 @@ class SokobanPPOTrainer:
             # Update buffer with actual rewards and dones
             buffer.rewards[buffer.pos - 1] = rewards
             buffer.dones[buffer.pos - 1] = np.logical_or(terminated, truncated).astype(np.float32)
+            # Track if episode ended with solving (positive reward = solved)
+            buffer.solved[buffer.pos - 1] = (rewards > 0).astype(np.float32)
             
             # Track episode stats
             current_rewards += rewards
@@ -463,7 +473,7 @@ class SokobanPPOTrainer:
         # Compute last values for GAE
         with torch.no_grad():
             obs_tensor = torch.tensor(obs, dtype=torch.float32, device=self.device)
-            _, _, last_values = self.model(obs_tensor)
+            _, _, last_values, _, _ = self.model(obs_tensor)
             last_values_np = last_values.cpu().numpy()
         
         buffer.compute_returns_and_advantages(
@@ -497,6 +507,8 @@ class SokobanPPOTrainer:
         total_entropy = 0.0
         n_updates = 0
         
+        total_q_halt_loss = 0.0
+        
         for _ in range(self.config.ppo_epochs):
             for batch in buffer.get_samples(self.config.batch_size):
                 obs = batch['observations']
@@ -505,9 +517,10 @@ class SokobanPPOTrainer:
                 advantages = batch['advantages']
                 returns = batch['returns']
                 legal_masks = batch['legal_masks']
+                solved = batch['solved']  # Target for q_halt
                 
-                # Forward pass
-                log_probs, entropy, values = self.model.evaluate_actions(
+                # Forward pass - now returns 5 values
+                log_probs, entropy, values, q_halt, q_continue = self.model.evaluate_actions(
                     obs, actions, legal_masks
                 )
                 
@@ -523,11 +536,15 @@ class SokobanPPOTrainer:
                 # Entropy loss
                 entropy_loss = -entropy.mean()
                 
-                # Total loss
+                # Q-halt loss: predict if episode leads to solving (same as Sudoku)
+                q_halt_loss = F.binary_cross_entropy_with_logits(q_halt, solved)
+                
+                # Total loss (same 0.5 weight for q_halt as Sudoku)
                 loss = (
                     policy_loss
                     + self.config.value_loss_coef * value_loss
                     + self.config.entropy_coef * entropy_loss
+                    + 0.5 * q_halt_loss
                 )
                 
                 # Optimize
@@ -541,6 +558,7 @@ class SokobanPPOTrainer:
                 total_policy_loss += policy_loss.item()
                 total_value_loss += value_loss.item()
                 total_entropy += entropy.mean().item()
+                total_q_halt_loss += q_halt_loss.item()
                 n_updates += 1
         
         buffer.reset()
@@ -549,6 +567,7 @@ class SokobanPPOTrainer:
             'policy_loss': total_policy_loss / n_updates,
             'value_loss': total_value_loss / n_updates,
             'entropy': total_entropy / n_updates,
+            'q_halt_loss': total_q_halt_loss / n_updates,
         }
 
 
