@@ -91,14 +91,25 @@ def parse_args():
                        help='Target KL for early stopping')
     
     # Model arguments
+    parser.add_argument('--model-type', type=str, default='simple',
+                       choices=['simple', 'hybrid'],
+                       help='Model type: simple (SimplePoT) or hybrid (HybridPoT with H/L cycles)')
     parser.add_argument('--R', type=int, default=4,
-                       help='Number of refinement iterations')
+                       help='Number of refinement iterations (for simple model)')
+    parser.add_argument('--H-cycles', type=int, default=2,
+                       help='H_level (slow) cycles per ACT step (for hybrid model)')
+    parser.add_argument('--L-cycles', type=int, default=8,
+                       help='L_level (fast) cycles per H_cycle (for hybrid model)')
+    parser.add_argument('--T', type=int, default=4,
+                       help='HRM period for pointer controller (for hybrid model)')
+    parser.add_argument('--halt-max-steps', type=int, default=1,
+                       help='Max halting steps for ACT (for hybrid model)')
     parser.add_argument('--d-model', type=int, default=128,
                        help='Model hidden dimension')
     parser.add_argument('--n-heads', type=int, default=4,
                        help='Number of attention heads')
     parser.add_argument('--n-layers', type=int, default=2,
-                       help='Number of transformer layers')
+                       help='Number of transformer layers (H_layers and L_layers for hybrid)')
     parser.add_argument('--d-ff', type=int, default=512,
                        help='Feedforward dimension')
     parser.add_argument('--dropout', type=float, default=0.1,
@@ -304,6 +315,11 @@ def create_actor_critic_model(args, device):
         R=args.R,
         controller_type=args.controller_type,
         share_embeddings=args.share_embeddings,
+        model_type=args.model_type,
+        H_cycles=args.H_cycles,
+        L_cycles=args.L_cycles,
+        T=args.T,
+        halt_max_steps=args.halt_max_steps,
     )
     
     # Count parameters
@@ -311,35 +327,61 @@ def create_actor_critic_model(args, device):
     actor_params = sum(p.numel() for p in model.actor.parameters())
     critic_params = sum(p.numel() for p in model.critic.parameters())
     
-    print(f"\nModel: Actor-Critic for PPO")
+    print(f"\nModel: Actor-Critic for PPO ({args.model_type})")
     print(f"  Actor params: {actor_params:,} ({actor_params/1e6:.2f}M)")
     print(f"  Critic params: {critic_params:,} ({critic_params/1e6:.2f}M)")
     print(f"  Total params: {total_params:,} ({total_params/1e6:.2f}M)")
-    print(f"  R={args.R}, d_model={args.d_model}")
+    if args.model_type == 'hybrid':
+        print(f"  H_cycles={args.H_cycles}, L_cycles={args.L_cycles}, T={args.T}")
+    else:
+        print(f"  R={args.R}, d_model={args.d_model}")
     
     return model.to(device)
 
 
 def create_supervised_model(args, device):
     """Create model for supervised training."""
-    from src.pot.models.blocksworld_solver import SimplePoTBlocksworldSolver
-    
-    model = SimplePoTBlocksworldSolver(
-        num_blocks=args.max_blocks,
-        d_model=args.d_model,
-        n_heads=args.n_heads,
-        n_layers=args.n_layers,
-        d_ff=args.d_ff,
-        dropout=args.dropout,
-        R=args.R,
-        controller_type=args.controller_type,
-        goal_conditioned=True,
-    )
+    if args.model_type == 'hybrid':
+        from src.pot.models.blocksworld_solver import HybridPoTBlocksworldSolver
+        
+        model = HybridPoTBlocksworldSolver(
+            num_blocks=args.max_blocks,
+            d_model=args.d_model,
+            n_heads=args.n_heads,
+            H_layers=args.n_layers,
+            L_layers=args.n_layers,
+            d_ff=args.d_ff,
+            dropout=args.dropout,
+            H_cycles=args.H_cycles,
+            L_cycles=args.L_cycles,
+            T=args.T,
+            halt_max_steps=args.halt_max_steps,
+            controller_type=args.controller_type,
+            goal_conditioned=True,
+        )
+        model_name = "HybridPoTBlocksworldSolver"
+        config_str = f"H_cycles={args.H_cycles}, L_cycles={args.L_cycles}, T={args.T}"
+    else:
+        from src.pot.models.blocksworld_solver import SimplePoTBlocksworldSolver
+        
+        model = SimplePoTBlocksworldSolver(
+            num_blocks=args.max_blocks,
+            d_model=args.d_model,
+            n_heads=args.n_heads,
+            n_layers=args.n_layers,
+            d_ff=args.d_ff,
+            dropout=args.dropout,
+            R=args.R,
+            controller_type=args.controller_type,
+            goal_conditioned=True,
+        )
+        model_name = "SimplePoTBlocksworldSolver"
+        config_str = f"R={args.R}, d_model={args.d_model}"
     
     total_params = sum(p.numel() for p in model.parameters())
-    print(f"\nModel: SimplePoTBlocksworldSolver")
+    print(f"\nModel: {model_name}")
     print(f"  Total params: {total_params:,} ({total_params/1e6:.2f}M)")
-    print(f"  R={args.R}, d_model={args.d_model}")
+    print(f"  {config_str}")
     
     return model.to(device)
 

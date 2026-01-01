@@ -290,6 +290,11 @@ def create_actor_critic(
     R: int = 4,
     controller_type: str = 'transformer',
     share_embeddings: bool = False,
+    model_type: str = 'simple',
+    H_cycles: int = 2,
+    L_cycles: int = 8,
+    T: int = 4,
+    halt_max_steps: int = 1,
 ) -> BlocksworldActorCritic:
     """
     Factory function to create Actor-Critic for Blocksworld.
@@ -301,27 +306,52 @@ def create_actor_critic(
         n_layers: Number of transformer layers (for actor)
         d_ff: Feedforward dimension
         dropout: Dropout rate
-        R: Number of refinement iterations for actor
+        R: Number of refinement iterations for actor (simple model)
         controller_type: Controller type for actor
         share_embeddings: Whether to share embeddings
+        model_type: 'simple' (SimplePoTBlocksworldSolver) or 'hybrid' (HybridPoTBlocksworldSolver)
+        H_cycles: H_level cycles per ACT step (hybrid model)
+        L_cycles: L_level cycles per H_cycle (hybrid model)
+        T: HRM period for pointer controller (hybrid model)
+        halt_max_steps: Max halting steps for ACT (hybrid model)
     
     Returns:
         BlocksworldActorCritic instance
     """
-    from src.pot.models.blocksworld_solver import SimplePoTBlocksworldSolver
-    
-    # Create actor
-    actor = SimplePoTBlocksworldSolver(
-        num_blocks=num_blocks,
-        d_model=d_model,
-        n_heads=n_heads,
-        n_layers=n_layers,
-        d_ff=d_ff,
-        dropout=dropout,
-        R=R,
-        controller_type=controller_type,
-        goal_conditioned=True,
-    )
+    if model_type == 'hybrid':
+        from src.pot.models.blocksworld_solver import HybridPoTBlocksworldSolver
+        
+        # Create hybrid actor with H/L cycles
+        actor = HybridPoTBlocksworldSolver(
+            num_blocks=num_blocks,
+            d_model=d_model,
+            n_heads=n_heads,
+            H_layers=n_layers,
+            L_layers=n_layers,
+            d_ff=d_ff,
+            dropout=dropout,
+            H_cycles=H_cycles,
+            L_cycles=L_cycles,
+            T=T,
+            halt_max_steps=halt_max_steps,
+            controller_type=controller_type,
+            goal_conditioned=True,
+        )
+    else:
+        from src.pot.models.blocksworld_solver import SimplePoTBlocksworldSolver
+        
+        # Create simple actor with R refinement iterations
+        actor = SimplePoTBlocksworldSolver(
+            num_blocks=num_blocks,
+            d_model=d_model,
+            n_heads=n_heads,
+            n_layers=n_layers,
+            d_ff=d_ff,
+            dropout=dropout,
+            R=R,
+            controller_type=controller_type,
+            goal_conditioned=True,
+        )
     
     # Create critic (simpler architecture)
     critic = BlocksworldCritic(
