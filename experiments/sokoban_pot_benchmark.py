@@ -494,16 +494,30 @@ def run_benchmark(config: BenchmarkConfig) -> Dict[str, Any]:
     # Load levels
     print("Loading levels...")
     train_levels = load_boxoban_levels(config.data_dir, config.difficulty, 'train')
-    val_levels = load_boxoban_levels(config.data_dir, config.difficulty, 'valid')
+    all_val_levels = load_boxoban_levels(config.data_dir, config.difficulty, 'valid')
     
-    # Try to load test split, fall back to using part of valid
+    # Try to load test split, fall back to splitting valid into val + test
     try:
         test_levels = load_boxoban_levels(config.data_dir, config.difficulty, 'test')
+        val_levels = all_val_levels
     except FileNotFoundError:
-        print("No test split found, using validation levels for testing")
-        test_levels = val_levels
+        # Split validation into 90% val, 10% held-out test (45K val, 5K test)
+        n_test = len(all_val_levels) // 10  # 5K for test
+        val_levels = all_val_levels[:-n_test]  # 45K for validation
+        test_levels = all_val_levels[-n_test:]  # 5K for held-out test
+        print(f"Split validation into {len(val_levels)} val + {len(test_levels)} held-out test")
     
     print(f"Train: {len(train_levels)}, Val: {len(val_levels)}, Test: {len(test_levels)}")
+    
+    # Initialize W&B if enabled
+    if config.wandb:
+        import wandb
+        wandb.init(
+            project=config.project,
+            name=config.run_name or f"sokoban-{config.model_type}-ppo",
+            config=asdict(config),
+        )
+        print(f"W&B logging enabled: {config.project}/{wandb.run.name}")
     
     # Create model
     model = create_model(config, device)
@@ -541,6 +555,7 @@ def run_benchmark(config: BenchmarkConfig) -> Dict[str, Any]:
         ppo_config,
         device,
         save_dir=str(output_dir / 'ppo'),
+        wandb_log=config.wandb,
     )
     
     results['ppo'] = {
@@ -578,6 +593,19 @@ def run_benchmark(config: BenchmarkConfig) -> Dict[str, Any]:
     print(f"Deadlock Rate:   {eval_results['deadlock_rate@200']:.2%}")
     print(f"Median Steps:    {eval_results['median_steps']:.1f}")
     print(f"Total Time:      {total_time / 60:.1f} min")
+    
+    # Log final results to W&B
+    if config.wandb:
+        import wandb
+        wandb.log({
+            'test/solve_rate@50': eval_results['solve_rate@50'],
+            'test/solve_rate@100': eval_results['solve_rate@100'],
+            'test/solve_rate@200': eval_results['solve_rate@200'],
+            'test/deadlock_rate': eval_results['deadlock_rate@200'],
+            'test/median_steps': eval_results['median_steps'],
+            'total_time_min': total_time / 60,
+        })
+        wandb.finish()
     
     # Save results
     with open(output_dir / 'results.json', 'w') as f:

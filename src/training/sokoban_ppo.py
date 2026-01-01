@@ -660,6 +660,7 @@ def train_ppo(
     device: torch.device,
     save_dir: str = "experiments/results/sokoban_ppo",
     verbose: bool = True,
+    wandb_log: bool = False,
 ) -> Dict[str, Any]:
     """
     Train Sokoban solver with PPO.
@@ -672,6 +673,7 @@ def train_ppo(
         device: Torch device
         save_dir: Directory to save results
         verbose: If True, print progress
+        wandb_log: If True, log to Weights & Biases
     
     Returns:
         Dictionary with training results
@@ -732,6 +734,19 @@ def train_ppo(
                   f"Policy Loss: {train_stats['policy_loss']:.4f}, "
                   f"Value Loss: {train_stats['value_loss']:.4f}")
         
+        # Log to W&B
+        if wandb_log:
+            import wandb
+            wandb.log({
+                'train/mean_reward': rollout_stats['mean_reward'],
+                'train/mean_length': rollout_stats['mean_length'],
+                'train/policy_loss': train_stats['policy_loss'],
+                'train/value_loss': train_stats['value_loss'],
+                'train/entropy': train_stats['entropy'],
+                'train/q_halt_loss': train_stats.get('q_halt_loss', 0),
+                'timestep': timestep,
+            })
+        
         # Evaluate
         if timestep >= config.eval_interval and timestep % config.eval_interval < config.n_steps * config.n_envs:
             eval_stats = evaluate_solve_rate(
@@ -742,6 +757,16 @@ def train_ppo(
             if verbose:
                 print(f"  [Eval] Solve rate: {eval_stats['solve_rate']:.2%}, "
                       f"Deadlock rate: {eval_stats['deadlock_rate']:.2%}")
+            
+            # Log eval to W&B
+            if wandb_log:
+                import wandb
+                wandb.log({
+                    'eval/solve_rate': eval_stats['solve_rate'],
+                    'eval/deadlock_rate': eval_stats['deadlock_rate'],
+                    'eval/avg_steps': eval_stats['avg_steps'],
+                    'timestep': timestep,
+                })
             
             # Save best
             if rollout_stats['mean_reward'] > best_reward:
