@@ -889,4 +889,242 @@ def _save_trajectories(split_dir: Path, trajectories: List[Dict], max_blocks: in
     )
 
 
+# =============================================================================
+# PPO Dataset: Good (Augmented) + Bad (No Augmentation) Trajectories
+# =============================================================================
+
+class BlocksworldPPODataset(Dataset):
+    """
+    Dataset for PPO training with good and bad trajectories.
+    
+    Good trajectories:
+    - Loaded from FastDownward solutions
+    - Augmented with C(n+1, 2) sub-trajectory extraction
+    - Labeled with is_valid=True, reward=+1
+    
+    Bad trajectories:
+    - Generated using combined methods (physics/teleport/corruption)
+    - NO augmentation (full trajectories only)
+    - Each guaranteed to have at least one invalid transition
+    - Labeled with is_valid=False, reward=-1
+    
+    Args:
+        data_dir: Directory containing blocksworld data
+        split: 'train', 'val', or 'test'
+        max_blocks: Maximum number of blocks
+        good_bad_ratio: Ratio of bad to good samples (1.0 = equal)
+        max_plan_length: Maximum plan length to include
+        seed: Random seed for bad trajectory generation
+    """
+    
+    def __init__(
+        self,
+        data_dir: str,
+        split: str = 'train',
+        max_blocks: int = 8,
+        good_bad_ratio: float = 1.0,
+        max_plan_length: Optional[int] = None,
+        seed: int = 42,
+    ):
+        self.data_dir = Path(data_dir)
+        self.split = split
+        self.max_blocks = max_blocks
+        self.good_bad_ratio = good_bad_ratio
+        self.max_plan_length = max_plan_length
+        self.seed = seed
+        
+        # Load and prepare samples
+        self._samples = []
+        self._load_samples()
+        
+        # Shuffle indices for iteration
+        self._epoch_indices = np.arange(len(self._samples))
+        np.random.shuffle(self._epoch_indices)
+        
+    def _load_samples(self):
+        """Load good and bad trajectory samples."""
+        split_dir = self.data_dir / self.split
+        
+        # Check for trajectory file
+        traj_file = split_dir / 'trajectories.npz'
+        if not traj_file.exists():
+            raise FileNotFoundError(
+                f"No trajectories found at {traj_file}. "
+                "Run with --generate-trajectories first."
+            )
+        
+        # Load good trajectories
+        good_samples = self._load_good_trajectories(split_dir)
+        print(f"[{self.split}] Loaded {len(good_samples)} good samples (with augmentation)")
+        
+        # Generate bad trajectories (only for training)
+        if self.split == 'train' and self.good_bad_ratio > 0:
+            bad_samples = self._generate_bad_trajectories(split_dir)
+            print(f"[{self.split}] Generated {len(bad_samples)} bad samples (no augmentation)")
+        else:
+            bad_samples = []
+            print(f"[{self.split}] No bad trajectories (eval mode)")
+        
+        # Combine samples
+        self._samples = good_samples + bad_samples
+        
+        # Shuffle combined samples
+        np.random.shuffle(self._samples)
+        
+        print(f"[{self.split}] Total: {len(self._samples)} PPO samples")
+    
+    def _load_good_trajectories(self, split_dir: Path) -> List[Dict]:
+        """Load good trajectories with sub-trajectory augmentation."""
+        traj_file = split_dir / 'trajectories.npz'
+        data = np.load(traj_file)
+        
+        trajectories = data['trajectories']  # [num_traj, max_len, max_blocks]
+        plan_lengths = data['plan_lengths']
+        num_blocks_arr = data['num_blocks']
+        
+        samples = []
+        
+        for traj_idx in range(len(trajectories)):
+            traj = trajectories[traj_idx]
+            traj_len = plan_lengths[traj_idx] + 1  # +1 for final state
+            num_blocks = num_blocks_arr[traj_idx]
+            
+            if traj_len < 2:
+                continue
+            
+            # C(n+1, 2) sub-trajectory augmentation
+            for i in range(traj_len):
+                for j in range(i + 1, traj_len):
+                    plan_length = j - i
+                    
+                    if self.max_plan_length and plan_length > self.max_plan_length:
+                        continue
+                    
+                    samples.append({
+                        'init_state': traj[i, :self.max_blocks].copy(),
+                        'goal_state': traj[j, :self.max_blocks].copy(),
+                        'plan_length': plan_length,
+                        'num_blocks': num_blocks,
+                        'is_valid': True,
+                        'reward': 1.0,
+                    })
+        
+        return samples
+    
+    def _generate_bad_trajectories(self, split_dir: Path) -> List[Dict]:
+        """Generate bad trajectories from good ones."""
+        from src.data.blocksworld_bad_trajectories import (
+            BadTrajectoryGenerator,
+            convert_bad_trajectory_to_dict,
+        )
+        
+        traj_file = split_dir / 'trajectories.npz'
+        data = np.load(traj_file)
+        
+        trajectories = data['trajectories']
+        plan_lengths = data['plan_lengths']
+        num_blocks_arr = data['num_blocks']
+        
+        # Initialize bad trajectory generator
+        generator = BadTrajectoryGenerator(
+            num_blocks=self.max_blocks,
+            seed=self.seed,
+        )
+        
+        # Prepare good trajectories for reference
+        good_trajs = []
+        for traj_idx in range(len(trajectories)):
+            traj = trajectories[traj_idx]
+            traj_len = plan_lengths[traj_idx] + 1
+            num_blocks = num_blocks_arr[traj_idx]
+            
+            if traj_len < 2:
+                continue
+            
+            # Extract actual trajectory (remove padding)
+            actual_traj = [traj[t, :num_blocks].copy() for t in range(traj_len)]
+            good_trajs.append((actual_traj[0], actual_traj))
+        
+        # Calculate how many bad samples we need
+        # (matching the number of AUGMENTED good samples, not original trajectories)
+        num_augmented_good = len(self._samples) if hasattr(self, '_samples') else 0
+        if num_augmented_good == 0:
+            # Count what we'd get from augmentation
+            for traj_idx in range(len(trajectories)):
+                traj_len = plan_lengths[traj_idx] + 1
+                if traj_len >= 2:
+                    # C(n, 2) = n*(n-1)/2 sub-trajectories
+                    num_augmented_good += (traj_len * (traj_len - 1)) // 2
+        
+        num_bad_needed = int(num_augmented_good * self.good_bad_ratio)
+        
+        # Generate bad trajectories (full trajectories, no augmentation)
+        bad_samples = []
+        attempts = 0
+        max_attempts = num_bad_needed * 3
+        
+        while len(bad_samples) < num_bad_needed and attempts < max_attempts:
+            attempts += 1
+            
+            # Pick a random good trajectory to base bad one on
+            idx = np.random.randint(len(good_trajs))
+            init_state, good_traj = good_trajs[idx]
+            
+            # Generate bad trajectory
+            bad_info = generator.generate(init_state, good_traj)
+            
+            if bad_info.invalid_transitions:
+                # Convert to sample dict (full trajectory, no sub-sampling)
+                sample = {
+                    'init_state': np.zeros(self.max_blocks, dtype=np.int64),
+                    'goal_state': np.zeros(self.max_blocks, dtype=np.int64),
+                    'plan_length': len(bad_info.trajectory) - 1,
+                    'num_blocks': bad_info.num_blocks,
+                    'is_valid': False,
+                    'reward': -1.0,
+                }
+                
+                # Copy states with proper padding
+                nb = min(len(bad_info.init_state), self.max_blocks)
+                sample['init_state'][:nb] = bad_info.init_state[:nb]
+                sample['goal_state'][:nb] = bad_info.goal_state[:nb]
+                
+                bad_samples.append(sample)
+        
+        return bad_samples
+    
+    def __len__(self) -> int:
+        return len(self._samples)
+    
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        """Get a sample."""
+        actual_idx = self._epoch_indices[idx]
+        sample = self._samples[actual_idx]
+        
+        return {
+            'init_state': torch.tensor(sample['init_state'], dtype=torch.long),
+            'goal_state': torch.tensor(sample['goal_state'], dtype=torch.long),
+            'plan_length': torch.tensor(sample['plan_length'], dtype=torch.long),
+            'num_blocks': torch.tensor(sample['num_blocks'], dtype=torch.long),
+            'is_valid': torch.tensor(sample['is_valid'], dtype=torch.bool),
+            'reward': torch.tensor(sample['reward'], dtype=torch.float32),
+        }
+    
+    def on_epoch_end(self):
+        """Shuffle samples for next epoch."""
+        np.random.shuffle(self._epoch_indices)
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get dataset statistics."""
+        num_good = sum(1 for s in self._samples if s['is_valid'])
+        num_bad = sum(1 for s in self._samples if not s['is_valid'])
+        
+        return {
+            'total': len(self._samples),
+            'good': num_good,
+            'bad': num_bad,
+            'good_ratio': num_good / len(self._samples) if self._samples else 0,
+            'bad_ratio': num_bad / len(self._samples) if self._samples else 0,
+        }
+
 

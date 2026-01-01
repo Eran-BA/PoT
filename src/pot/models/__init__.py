@@ -22,6 +22,11 @@ from .blocksworld_solver import (
     BaselineBlocksworldSolver,
     SimplePoTBlocksworldSolver,
 )
+from .blocksworld_critic import (
+    BlocksworldCritic,
+    BlocksworldActorCritic,
+    create_actor_critic,
+)
 
 __all__ = [
     "PoHGPT",
@@ -46,5 +51,9 @@ __all__ = [
     "HybridPoTBlocksworldSolver",
     "BaselineBlocksworldSolver",
     "SimplePoTBlocksworldSolver",
+    # Blocksworld critic (PPO)
+    "BlocksworldCritic",
+    "BlocksworldActorCritic",
+    "create_actor_critic",
 ]
 

@@ -15,6 +15,11 @@ from .sudoku_trainer import (
     debug_predictions,
     run_debug,
 )
+from .ppo_blocksworld import (
+    BlocksworldPPOTrainer,
+    PPOConfig,
+    RolloutBuffer,
+)
 
 __all__ = [
     "train_epoch",
@@ -25,5 +30,9 @@ __all__ = [
     "debug_activations",
     "debug_predictions",
     "run_debug",
+    # PPO Blocksworld
+    "BlocksworldPPOTrainer",
+    "PPOConfig",
+    "RolloutBuffer",
 ]
 

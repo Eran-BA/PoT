@@ -10,7 +10,14 @@ from .arc import ARCDataset, download_arc_dataset, ARC_VOCAB_SIZE, ARC_SEQ_LEN
 from .blocksworld import (
     BlocksworldDataset,
     BlocksworldTrajectoryDataset,
+    BlocksworldPPODataset,
     download_blocksworld_dataset,
+)
+from .blocksworld_bad_trajectories import (
+    BadTrajectoryGenerator,
+    BadTrajectoryInfo,
+    is_valid_single_move,
+    validate_bad_trajectory,
 )
 from .blocksworld_planner import (
     FastDownwardPlanner,
@@ -33,7 +40,13 @@ __all__ = [
     # Blocksworld
     "BlocksworldDataset",
     "BlocksworldTrajectoryDataset",
+    "BlocksworldPPODataset",
     "download_blocksworld_dataset",
+    # Blocksworld Bad Trajectories
+    "BadTrajectoryGenerator",
+    "BadTrajectoryInfo",
+    "is_valid_single_move",
+    "validate_bad_trajectory",
     # Blocksworld Planner
     "FastDownwardPlanner",
     "TrajectoryGenerator",
