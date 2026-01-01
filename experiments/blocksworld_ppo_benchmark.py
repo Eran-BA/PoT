@@ -77,6 +77,8 @@ def parse_args():
     # PPO arguments
     parser.add_argument('--good-bad-ratio', type=float, default=1.0,
                        help='Ratio of bad to good trajectories')
+    parser.add_argument('--no-augmentation', action='store_true',
+                       help='Disable C(n+1,2) sub-trajectory augmentation for good trajectories')
     parser.add_argument('--clip-epsilon', type=float, default=0.2,
                        help='PPO clip epsilon')
     parser.add_argument('--entropy-coef', type=float, default=0.01,
@@ -163,6 +165,8 @@ def create_ppo_dataloaders(args, device):
     """Create dataloaders for PPO training."""
     from src.data.blocksworld import BlocksworldPPODataset
     
+    augment_good = not args.no_augmentation
+    
     train_dataset = BlocksworldPPODataset(
         args.data_dir,
         split='train',
@@ -170,6 +174,7 @@ def create_ppo_dataloaders(args, device):
         good_bad_ratio=args.good_bad_ratio,
         max_plan_length=args.max_plan_length,
         seed=args.seed,
+        augment_good=augment_good,
     )
     
     val_dataset = BlocksworldPPODataset(
@@ -179,6 +184,7 @@ def create_ppo_dataloaders(args, device):
         good_bad_ratio=0.0,  # No bad trajectories in validation
         max_plan_length=args.max_plan_length,
         seed=args.seed,
+        augment_good=augment_good,
     )
     
     test_dataset = BlocksworldPPODataset(
@@ -188,13 +194,15 @@ def create_ppo_dataloaders(args, device):
         good_bad_ratio=0.0,  # No bad trajectories in test
         max_plan_length=args.max_plan_length,
         seed=args.seed,
+        augment_good=augment_good,
     )
     
     # Print stats
     print("\nDataset Statistics:")
+    aug_str = "NO augmentation" if args.no_augmentation else "with C(n+1,2) augmentation"
     train_stats = train_dataset.get_stats()
     print(f"  Train: {train_stats['total']} samples "
-          f"(good: {train_stats['good']}, bad: {train_stats['bad']})")
+          f"(good: {train_stats['good']}, bad: {train_stats['bad']}) [{aug_str}]")
     print(f"  Val: {len(val_dataset)} samples")
     print(f"  Test: {len(test_dataset)} samples")
     

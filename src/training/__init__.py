@@ -17,8 +17,20 @@ from .sudoku_trainer import (
 )
 from .ppo_blocksworld import (
     BlocksworldPPOTrainer,
-    PPOConfig,
-    RolloutBuffer,
+    PPOConfig as BlocksworldPPOConfig,
+    RolloutBuffer as BlocksworldRolloutBuffer,
+)
+from .sokoban_heuristic import (
+    HeuristicTrainingConfig,
+    train as train_sokoban_heuristic,
+    evaluate_solve_rate,
+)
+from .sokoban_ppo import (
+    PPOConfig as SokobanPPOConfig,
+    SokobanPPOTrainer,
+    SokobanEnv,
+    VectorizedSokobanEnv,
+    train_ppo as train_sokoban_ppo,
 )
 
 __all__ = [
@@ -32,7 +44,17 @@ __all__ = [
     "run_debug",
     # PPO Blocksworld
     "BlocksworldPPOTrainer",
-    "PPOConfig",
-    "RolloutBuffer",
+    "BlocksworldPPOConfig",
+    "BlocksworldRolloutBuffer",
+    # Sokoban Heuristic
+    "HeuristicTrainingConfig",
+    "train_sokoban_heuristic",
+    "evaluate_solve_rate",
+    # Sokoban PPO
+    "SokobanPPOConfig",
+    "SokobanPPOTrainer",
+    "SokobanEnv",
+    "VectorizedSokobanEnv",
+    "train_sokoban_ppo",
 ]
 

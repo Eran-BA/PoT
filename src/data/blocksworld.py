@@ -915,6 +915,7 @@ class BlocksworldPPODataset(Dataset):
         good_bad_ratio: Ratio of bad to good samples (1.0 = equal)
         max_plan_length: Maximum plan length to include
         seed: Random seed for bad trajectory generation
+        augment_good: Whether to use C(n+1,2) augmentation for good trajectories
     """
     
     def __init__(
@@ -925,6 +926,7 @@ class BlocksworldPPODataset(Dataset):
         good_bad_ratio: float = 1.0,
         max_plan_length: Optional[int] = None,
         seed: int = 42,
+        augment_good: bool = True,
     ):
         self.data_dir = Path(data_dir)
         self.split = split
@@ -932,6 +934,7 @@ class BlocksworldPPODataset(Dataset):
         self.good_bad_ratio = good_bad_ratio
         self.max_plan_length = max_plan_length
         self.seed = seed
+        self.augment_good = augment_good
         
         # Load and prepare samples
         self._samples = []
@@ -955,7 +958,8 @@ class BlocksworldPPODataset(Dataset):
         
         # Load good trajectories
         good_samples = self._load_good_trajectories(split_dir)
-        print(f"[{self.split}] Loaded {len(good_samples)} good samples (with augmentation)")
+        aug_str = "with C(n+1,2) augmentation" if self.augment_good else "NO augmentation"
+        print(f"[{self.split}] Loaded {len(good_samples)} good samples ({aug_str})")
         
         # Generate bad trajectories (only for training)
         if self.split == 'train' and self.good_bad_ratio > 0:
@@ -974,7 +978,7 @@ class BlocksworldPPODataset(Dataset):
         print(f"[{self.split}] Total: {len(self._samples)} PPO samples")
     
     def _load_good_trajectories(self, split_dir: Path) -> List[Dict]:
-        """Load good trajectories with sub-trajectory augmentation."""
+        """Load good trajectories with optional sub-trajectory augmentation."""
         traj_file = split_dir / 'trajectories.npz'
         data = np.load(traj_file)
         
@@ -992,22 +996,37 @@ class BlocksworldPPODataset(Dataset):
             if traj_len < 2:
                 continue
             
-            # C(n+1, 2) sub-trajectory augmentation
-            for i in range(traj_len):
-                for j in range(i + 1, traj_len):
-                    plan_length = j - i
-                    
-                    if self.max_plan_length and plan_length > self.max_plan_length:
-                        continue
-                    
-                    samples.append({
-                        'init_state': traj[i, :self.max_blocks].copy(),
-                        'goal_state': traj[j, :self.max_blocks].copy(),
-                        'plan_length': plan_length,
-                        'num_blocks': num_blocks,
-                        'is_valid': True,
-                        'reward': 1.0,
-                    })
+            if self.augment_good:
+                # C(n+1, 2) sub-trajectory augmentation
+                for i in range(traj_len):
+                    for j in range(i + 1, traj_len):
+                        plan_length = j - i
+                        
+                        if self.max_plan_length and plan_length > self.max_plan_length:
+                            continue
+                        
+                        samples.append({
+                            'init_state': traj[i, :self.max_blocks].copy(),
+                            'goal_state': traj[j, :self.max_blocks].copy(),
+                            'plan_length': plan_length,
+                            'num_blocks': num_blocks,
+                            'is_valid': True,
+                            'reward': 1.0,
+                        })
+            else:
+                # No augmentation: just (init, goal) pairs from full trajectory
+                plan_length = traj_len - 1
+                if self.max_plan_length and plan_length > self.max_plan_length:
+                    continue
+                
+                samples.append({
+                    'init_state': traj[0, :self.max_blocks].copy(),
+                    'goal_state': traj[traj_len - 1, :self.max_blocks].copy(),
+                    'plan_length': plan_length,
+                    'num_blocks': num_blocks,
+                    'is_valid': True,
+                    'reward': 1.0,
+                })
         
         return samples
     
@@ -1046,17 +1065,20 @@ class BlocksworldPPODataset(Dataset):
             good_trajs.append((actual_traj[0], actual_traj))
         
         # Calculate how many bad samples we need
-        # (matching the number of AUGMENTED good samples, not original trajectories)
-        num_augmented_good = len(self._samples) if hasattr(self, '_samples') else 0
-        if num_augmented_good == 0:
-            # Count what we'd get from augmentation
+        # Based on good samples count (with or without augmentation)
+        if self.augment_good:
+            # Count what we get from C(n+1, 2) augmentation
+            num_good = 0
             for traj_idx in range(len(trajectories)):
                 traj_len = plan_lengths[traj_idx] + 1
                 if traj_len >= 2:
                     # C(n, 2) = n*(n-1)/2 sub-trajectories
-                    num_augmented_good += (traj_len * (traj_len - 1)) // 2
+                    num_good += (traj_len * (traj_len - 1)) // 2
+        else:
+            # Without augmentation: one sample per trajectory
+            num_good = len(good_trajs)
         
-        num_bad_needed = int(num_augmented_good * self.good_bad_ratio)
+        num_bad_needed = int(num_good * self.good_bad_ratio)
         
         # Generate bad trajectories (full trajectories, no augmentation)
         bad_samples = []

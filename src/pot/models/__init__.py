@@ -27,6 +27,12 @@ from .blocksworld_critic import (
     BlocksworldActorCritic,
     create_actor_critic,
 )
+from .sokoban_solver import (
+    PoTSokobanSolver,
+    BaselineSokobanSolver,
+    SokobanActorCritic,
+    SokobanConvEncoder,
+)
 
 __all__ = [
     "PoHGPT",
@@ -55,5 +61,10 @@ __all__ = [
     "BlocksworldCritic",
     "BlocksworldActorCritic",
     "create_actor_critic",
+    # Sokoban solvers
+    "PoTSokobanSolver",
+    "BaselineSokobanSolver",
+    "SokobanActorCritic",
+    "SokobanConvEncoder",
 ]
 
