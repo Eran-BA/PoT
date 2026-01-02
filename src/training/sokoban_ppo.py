@@ -78,7 +78,7 @@ class PPOConfig:
     # Rewards
     reward_solve: float = 1.0
     reward_step: float = -0.01
-    reward_deadlock: float = -0.2
+    reward_deadlock: float = -1.0  # Deadlock = loss, symmetric with solve
     reward_push: float = 0.0  # Optional: bonus for pushing onto target
     
     # Curriculum learning
