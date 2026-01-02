@@ -51,6 +51,7 @@ from .sokoban_rules import (
 )
 from .sokoban_hf import (
     SokobanHFDataset,
+    SokobanCombinedDataset,
     download_sokoban_hf_dataset,
     parse_hf_board,
     augment_board_and_action,
@@ -118,6 +119,7 @@ __all__ = [
     "random_walk",
     # Sokoban HuggingFace (Supervised)
     "SokobanHFDataset",
+    "SokobanCombinedDataset",
     "download_sokoban_hf_dataset",
     "parse_hf_board",
     "augment_board_and_action",

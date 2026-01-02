@@ -319,6 +319,116 @@ def download_sokoban_hf_dataset(cache_dir: Optional[str] = None) -> None:
 
 
 # =============================================================================
+# Combined Dataset: HuggingFace + Generated
+# =============================================================================
+
+class SokobanCombinedDataset(Dataset):
+    """
+    Combined dataset: HuggingFace data + dynamically generated puzzles.
+    
+    This allows scaling up training data beyond the ~3k HuggingFace examples.
+    Generated puzzles use gym-sokoban + BFS solver for optimal actions.
+    
+    Args:
+        hf_split: HuggingFace split ('train' or 'test')
+        n_generated: Number of additional puzzles to generate
+        difficulty: Difficulty for generated puzzles ('simple', 'larger', 'two_boxes', 'complex')
+        augment: Whether to apply on-the-fly augmentation
+        seed: Random seed for generation
+        cache_dir: Cache directory for HuggingFace
+    """
+    
+    def __init__(
+        self,
+        hf_split: str = 'train',
+        n_generated: int = 0,
+        difficulty: str = 'simple',
+        augment: Optional[bool] = None,
+        seed: int = 42,
+        cache_dir: Optional[str] = None,
+    ):
+        self.augment = augment if augment is not None else (hf_split == 'train')
+        
+        # Load HuggingFace dataset
+        print(f"Loading HuggingFace Sokoban dataset ({hf_split})...")
+        self.hf_dataset = SokobanHFDataset(
+            split=hf_split,
+            augment=False,  # We'll apply augmentation ourselves
+            cache_dir=cache_dir,
+        )
+        
+        # Generate additional puzzles if requested
+        self.generated_examples = []
+        if n_generated > 0:
+            print(f"Generating {n_generated} additional {difficulty} puzzles...")
+            from .sokoban_generator import SokobanGenerator
+            
+            generator = SokobanGenerator(difficulty=difficulty, seed=seed)
+            generated = generator.generate_dataset(n_generated, verbose=True)
+            
+            for sample in generated:
+                self.generated_examples.append({
+                    'board': sample['board'],
+                    'action': sample['action'],
+                })
+            
+            print(f"  Generated {len(self.generated_examples)} puzzles")
+        
+        # Combined stats
+        self.n_hf = len(self.hf_dataset)
+        self.n_gen = len(self.generated_examples)
+        
+        print(f"\n[Combined Dataset]")
+        print(f"  HuggingFace: {self.n_hf}")
+        print(f"  Generated:   {self.n_gen}")
+        print(f"  Total:       {len(self)}")
+        print(f"  Augmentation: {'ON-THE-FLY (8x)' if self.augment else 'OFF'}")
+    
+    def __len__(self) -> int:
+        return self.n_hf + self.n_gen
+    
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        # Determine source
+        if idx < self.n_hf:
+            # From HuggingFace
+            example = self.hf_dataset.examples[idx]
+            board = example['board'].copy()
+            action = example['action']
+        else:
+            # From generated
+            gen_idx = idx - self.n_hf
+            example = self.generated_examples[gen_idx]
+            board = example['board'].copy()
+            action = example['action']
+        
+        # Apply on-the-fly augmentation
+        if self.augment:
+            augmentations = augment_board_and_action(board, action)
+            aug_idx = np.random.randint(len(augmentations))
+            board, action = augmentations[aug_idx]
+            board = board.copy()  # Fix negative stride issue
+        
+        # Convert to one-hot
+        board_onehot = board_to_onehot(board)
+        
+        return {
+            'input': torch.tensor(board_onehot, dtype=torch.float32),
+            'label': torch.tensor(action, dtype=torch.long),
+            'board_indices': torch.tensor(board, dtype=torch.long),
+        }
+    
+    @property
+    def board_shape(self) -> Tuple[int, int]:
+        """Get board dimensions (from HuggingFace)."""
+        return self.hf_dataset.board_shape
+    
+    @property
+    def num_actions(self) -> int:
+        """Number of possible actions."""
+        return NUM_ACTIONS
+
+
+# =============================================================================
 # Testing
 # =============================================================================
 
