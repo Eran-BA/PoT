@@ -61,6 +61,7 @@ from src.pot.models.sokoban_solver import (
 from src.training.sokoban_ppo import (
     PPOConfig,
     train_ppo,
+    evaluate_solve_rate,
 )
 
 
