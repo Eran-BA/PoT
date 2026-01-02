@@ -102,6 +102,15 @@ def train_epoch(
             
             q_halt_loss = F.binary_cross_entropy_with_logits(q_halt, is_correct)
             loss = ce_loss + 0.5 * q_halt_loss
+            
+            # =========================================
+            # LOSS 3: Q-continue loss (ACT Q-learning, like Sudoku)
+            # =========================================
+            if q_continue is not None:
+                # Target Q-continue: 1 if correct (should continue), 0 otherwise
+                target_q_continue = is_correct
+                q_continue_loss = F.mse_loss(torch.sigmoid(q_continue), target_q_continue)
+                loss = loss + 0.5 * q_continue_loss
         else:
             loss = ce_loss
         
