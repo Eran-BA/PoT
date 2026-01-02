@@ -463,8 +463,6 @@ def full_evaluation(
             test_levels[:config.eval_episodes],
             device,
             max_steps=max_steps,
-            temperature=0.0,
-            verbose=True,
         )
         
         results[f'solve_rate@{max_steps}'] = eval_stats['solve_rate']
