@@ -364,6 +364,7 @@ class SokobanCombinedDataset(Dataset):
         augment: Whether to apply on-the-fly augmentation
         seed: Random seed for generation
         cache_dir: Cache directory for HuggingFace
+        pad_to_size: If set, pad all boards to this size (e.g., 10 for 10x10)
     """
     
     def __init__(
@@ -374,8 +375,10 @@ class SokobanCombinedDataset(Dataset):
         augment: Optional[bool] = None,
         seed: int = 42,
         cache_dir: Optional[str] = None,
+        pad_to_size: Optional[int] = None,
     ):
         self.augment = augment if augment is not None else (hf_split == 'train')
+        self.pad_to_size = pad_to_size
         
         # Load HuggingFace dataset
         print(f"Loading HuggingFace Sokoban dataset ({hf_split})...")
@@ -436,6 +439,10 @@ class SokobanCombinedDataset(Dataset):
             board, action = augmentations[aug_idx]
             board = board.copy()  # Fix negative stride issue
         
+        # Pad board if pad_to_size is set
+        if self.pad_to_size is not None:
+            board = self._pad_board(board, self.pad_to_size)
+        
         # Convert to one-hot
         board_onehot = board_to_onehot(board)
         
@@ -445,9 +452,27 @@ class SokobanCombinedDataset(Dataset):
             'board_indices': torch.tensor(board, dtype=torch.long),
         }
     
+    def _pad_board(self, board: np.ndarray, target_size: int) -> np.ndarray:
+        """Pad board with walls to target size."""
+        h, w = board.shape
+        if h >= target_size and w >= target_size:
+            return board
+        
+        # Create new board filled with walls (index 0)
+        padded = np.zeros((target_size, target_size), dtype=board.dtype)
+        
+        # Center the original board
+        pad_h = (target_size - h) // 2
+        pad_w = (target_size - w) // 2
+        padded[pad_h:pad_h+h, pad_w:pad_w+w] = board
+        
+        return padded
+    
     @property
     def board_shape(self) -> Tuple[int, int]:
-        """Get board dimensions (from HuggingFace)."""
+        """Get board dimensions (after padding if applicable)."""
+        if self.pad_to_size is not None:
+            return (self.pad_to_size, self.pad_to_size)
         return self.hf_dataset.board_shape
     
     @property
