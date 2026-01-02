@@ -33,6 +33,8 @@ from .sokoban_supervised import (
     evaluate as evaluate_sokoban,
     train_supervised as train_sokoban_supervised,
     InfiniteDataLoader as SokobanInfiniteDataLoader,
+    compute_solve_rate as compute_sokoban_solve_rate,
+    rollout_episode as rollout_sokoban_episode,
 )
 
 __all__ = [
@@ -60,5 +62,7 @@ __all__ = [
     "evaluate_sokoban",
     "train_sokoban_supervised",
     "SokobanInfiniteDataLoader",
+    "compute_sokoban_solve_rate",
+    "rollout_sokoban_episode",
 ]
 

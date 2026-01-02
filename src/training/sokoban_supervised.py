@@ -6,6 +6,10 @@ IDENTICAL to Sudoku training:
 - Q-halt loss for PoT models
 - Same training loop structure
 
+Metrics (identical structure to Sudoku):
+- action_acc: % of single actions correctly predicted (like cell_acc)
+- solve_rate: % of puzzles fully solved by following policy (like grid_acc)
+
 This is NOT RL - pure supervised learning like Sudoku.
 
 Author: Eran Ben Artzy
@@ -20,6 +24,122 @@ from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from typing import Dict, Any, Optional, List, Tuple
 from tqdm import tqdm
+import numpy as np
+
+from src.data.sokoban_rules import step as sokoban_step, is_solved, is_deadlock, NUM_CELL_TYPES
+
+
+# =============================================================================
+# Rollout for solve_rate (like grid_acc in Sudoku)
+# =============================================================================
+
+def board_to_onehot(board: np.ndarray) -> torch.Tensor:
+    """Convert integer board to one-hot encoding."""
+    H, W = board.shape
+    onehot = np.zeros((H, W, NUM_CELL_TYPES), dtype=np.float32)
+    for i in range(H):
+        for j in range(W):
+            onehot[i, j, board[i, j]] = 1.0
+    return torch.from_numpy(onehot)
+
+
+def rollout_episode(
+    model: nn.Module,
+    board: np.ndarray,
+    device: torch.device,
+    max_steps: int = 100,
+) -> bool:
+    """
+    Run model on a puzzle until solved or max steps.
+    
+    This is the Sokoban equivalent of checking if all 81 cells are correct in Sudoku.
+    
+    Args:
+        model: Trained model
+        board: Initial board state (H, W) integer array
+        device: Device to run on
+        max_steps: Maximum steps before giving up
+        
+    Returns:
+        True if puzzle was solved, False otherwise
+    """
+    model.eval()
+    current_board = board.copy()
+    
+    for _ in range(max_steps):
+        # Check if already solved
+        if is_solved(current_board):
+            return True
+        
+        # Check if deadlock
+        if is_deadlock(current_board):
+            return False
+        
+        # Convert to tensor
+        board_tensor = board_to_onehot(current_board).unsqueeze(0).to(device)  # [1, H, W, 7]
+        
+        # Get model prediction
+        with torch.no_grad():
+            model_out = model(board_tensor, return_aux=False)
+            logits = model_out[0]  # [1, 4]
+            action = logits.argmax(dim=-1).item()  # 0-indexed action
+        
+        # Apply action (actions are 0-indexed: 0=up, 1=down, 2=left, 3=right)
+        # sokoban_step expects 1-indexed, so add 1
+        next_board, moved = sokoban_step(current_board, action + 1)
+        
+        if not moved:
+            # Invalid move, puzzle failed
+            return False
+        
+        current_board = next_board
+    
+    # Max steps exceeded
+    return False
+
+
+def compute_solve_rate(
+    model: nn.Module,
+    dataset,
+    device: torch.device,
+    n_samples: int = 100,
+    max_steps: int = 100,
+) -> float:
+    """
+    Compute solve rate (like grid_acc in Sudoku).
+    
+    Args:
+        model: Trained model
+        dataset: Dataset with board_indices
+        device: Device
+        n_samples: Number of puzzles to test
+        max_steps: Max steps per puzzle
+        
+    Returns:
+        Fraction of puzzles successfully solved
+    """
+    model.eval()
+    
+    n_solved = 0
+    n_tested = min(n_samples, len(dataset))
+    
+    # Sample random puzzles
+    indices = np.random.choice(len(dataset), n_tested, replace=False)
+    
+    for idx in tqdm(indices, desc="Computing solve_rate"):
+        sample = dataset[idx]
+        
+        # Get integer board
+        if 'board_indices' in sample:
+            board = sample['board_indices'].numpy()
+        else:
+            # Fallback: convert one-hot back to indices
+            board = sample['input'].argmax(dim=-1).numpy()
+        
+        if rollout_episode(model, board, device, max_steps):
+            n_solved += 1
+    
+    return n_solved / n_tested
 
 
 # =============================================================================
@@ -238,7 +358,7 @@ def train_epoch_async(
         
         pbar.set_postfix({
             'loss': f'{loss.item():.4f}',
-            'acc': f'{correct_actions / max(1, total_actions):.2%}',
+            'act_acc': f'{correct_actions / max(1, total_actions):.2%}',
         })
         
         carry = new_carry
@@ -247,14 +367,14 @@ def train_epoch_async(
     
     result = {
         'loss': total_loss / max(1, forward_calls),
-        'accuracy': correct_actions / max(1, total_actions),
+        'action_acc': correct_actions / max(1, total_actions),  # Like cell_acc in Sudoku
         'forward_calls': forward_calls,
     }
     
     if track_halt_histogram and halt_histogram:
         result['halt_histogram'] = halt_histogram
         print("\n📊 Train Halt Step Histogram:")
-        print(f"{'Step':<6} {'Halted':<10} {'Solved':<10} {'Solve Rate':<12}")
+        print(f"{'Step':<6} {'Halted':<10} {'Correct':<10} {'Action Acc':<12}")
         for step in sorted(halt_histogram.keys()):
             data = halt_histogram[step]
             rate = 100 * data['solved'] / data['halted'] if data['halted'] > 0 else 0
@@ -376,12 +496,12 @@ def train_epoch(
         # Update progress bar
         pbar.set_postfix({
             'loss': f'{loss.item():.4f}',
-            'acc': f'{correct_actions / total_actions:.2%}',
+            'act_acc': f'{correct_actions / total_actions:.2%}',
         })
     
     return {
         'loss': total_loss / total_steps,
-        'accuracy': correct_actions / total_actions,
+        'action_acc': correct_actions / total_actions,  # Like cell_acc in Sudoku
         'correct': correct_actions,
         'total': total_actions,
     }
@@ -391,14 +511,24 @@ def evaluate(
     model: nn.Module,
     dataloader: DataLoader,
     device: torch.device,
+    compute_solve: bool = False,
+    solve_samples: int = 100,
+    solve_max_steps: int = 100,
 ) -> Dict[str, float]:
     """
     Evaluate model - IDENTICAL structure to Sudoku's evaluate.
+    
+    Metrics (like Sudoku):
+    - action_acc: % of single actions correct (like cell_acc)
+    - solve_rate: % of puzzles fully solved (like grid_acc) - optional
     
     Args:
         model: Trained model
         dataloader: Validation/test data loader
         device: Device to use
+        compute_solve: If True, compute solve_rate (slower)
+        solve_samples: Number of puzzles to test for solve_rate
+        solve_max_steps: Max steps per puzzle for solve_rate
     
     Returns:
         Dictionary with evaluation metrics
@@ -429,18 +559,30 @@ def evaluate(
             ce_loss = F.cross_entropy(logits, label)
             total_loss += ce_loss.item()
             
-            # Accuracy
+            # Action accuracy (like cell_acc)
             preds = logits.argmax(dim=-1)
             correct_actions += (preds == label).sum().item()
             total_actions += label.numel()
             total_steps += 1
     
-    return {
+    result = {
         'loss': total_loss / total_steps,
-        'accuracy': correct_actions / total_actions,
+        'action_acc': correct_actions / total_actions,  # Like cell_acc in Sudoku
         'correct': correct_actions,
         'total': total_actions,
     }
+    
+    # Compute solve_rate (like grid_acc) if requested
+    if compute_solve:
+        dataset = dataloader.dataset
+        solve_rate = compute_solve_rate(
+            model, dataset, device, 
+            n_samples=solve_samples, 
+            max_steps=solve_max_steps
+        )
+        result['solve_rate'] = solve_rate  # Like grid_acc in Sudoku
+    
+    return result
 
 
 # =============================================================================
@@ -515,12 +657,13 @@ def train_supervised(
     
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     
-    # Training history
+    # Training history (like Sudoku: cell_acc → action_acc, grid_acc → solve_rate)
     history = {
         'train_loss': [],
-        'train_acc': [],
+        'train_action_acc': [],  # Like train_cell_acc in Sudoku
         'val_loss': [],
-        'val_acc': [],
+        'val_action_acc': [],    # Like val_cell_acc in Sudoku
+        'val_solve_rate': [],    # Like val_grid_acc in Sudoku
     }
     
     best_val_acc = 0.0
@@ -536,40 +679,52 @@ def train_supervised(
             use_pot=use_pot, scheduler=scheduler, grad_clip=grad_clip,
         )
         
-        # Evaluate
-        val_metrics = evaluate(model, val_loader, device)
+        # Evaluate with solve_rate every 10 epochs (expensive)
+        compute_solve = (epoch % 10 == 0) or (epoch == epochs)
+        val_metrics = evaluate(
+            model, val_loader, device,
+            compute_solve=compute_solve,
+            solve_samples=100,
+        )
         
         # Log
         history['train_loss'].append(train_metrics['loss'])
-        history['train_acc'].append(train_metrics['accuracy'])
+        history['train_action_acc'].append(train_metrics['action_acc'])
         history['val_loss'].append(val_metrics['loss'])
-        history['val_acc'].append(val_metrics['accuracy'])
+        history['val_action_acc'].append(val_metrics['action_acc'])
+        if 'solve_rate' in val_metrics:
+            history['val_solve_rate'].append(val_metrics['solve_rate'])
         
-        print(f"Train Loss: {train_metrics['loss']:.4f}, Acc: {train_metrics['accuracy']:.2%}")
-        print(f"Val Loss: {val_metrics['loss']:.4f}, Acc: {val_metrics['accuracy']:.2%}")
+        # Print (like Sudoku: cell_acc + grid_acc)
+        solve_str = f", Solve: {val_metrics['solve_rate']:.2%}" if 'solve_rate' in val_metrics else ""
+        print(f"Train Loss: {train_metrics['loss']:.4f}, Action Acc: {train_metrics['action_acc']:.2%}")
+        print(f"Val Loss: {val_metrics['loss']:.4f}, Action Acc: {val_metrics['action_acc']:.2%}{solve_str}")
         
         # W&B logging
         if wandb_log:
             import wandb
-            wandb.log({
+            log_dict = {
                 'train/loss': train_metrics['loss'],
-                'train/accuracy': train_metrics['accuracy'],
+                'train/action_acc': train_metrics['action_acc'],  # Like cell_acc
                 'val/loss': val_metrics['loss'],
-                'val/accuracy': val_metrics['accuracy'],
+                'val/action_acc': val_metrics['action_acc'],      # Like cell_acc
                 'epoch': epoch,
-            })
+            }
+            if 'solve_rate' in val_metrics:
+                log_dict['val/solve_rate'] = val_metrics['solve_rate']  # Like grid_acc
+            wandb.log(log_dict)
         
-        # Save best model
-        if val_metrics['accuracy'] > best_val_acc:
-            best_val_acc = val_metrics['accuracy']
+        # Save best model (based on action_acc like Sudoku's cell_acc)
+        if val_metrics['action_acc'] > best_val_acc:
+            best_val_acc = val_metrics['action_acc']
             if save_dir:
                 torch.save({
                     'epoch': epoch,
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
-                    'val_accuracy': best_val_acc,
+                    'val_action_acc': best_val_acc,
                 }, save_path / 'best_model.pt')
-                print(f"  → Saved best model (acc: {best_val_acc:.2%})")
+                print(f"  → Saved best model (action_acc: {best_val_acc:.2%})")
     
     # Save final model
     if save_dir:
@@ -580,9 +735,14 @@ def train_supervised(
             'history': history,
         }, save_path / 'final_model.pt')
     
+    # Get final solve_rate if computed
+    final_solve_rate = history['val_solve_rate'][-1] if history['val_solve_rate'] else None
+    
     return {
         'history': history,
-        'best_val_acc': best_val_acc,
+        'best_val_acc': best_val_acc,           # Action accuracy (like cell_acc)
+        'best_val_action_acc': best_val_acc,    # Explicit name
+        'final_solve_rate': final_solve_rate,   # Like grid_acc
         'model': model,
     }
 
