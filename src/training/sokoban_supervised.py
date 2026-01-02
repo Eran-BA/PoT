@@ -104,16 +104,13 @@ def train_epoch(
             loss = ce_loss + 0.5 * q_halt_loss
             
             # =========================================
-            # LOSS 3: Q-continue loss (ACT Q-learning, like Sudoku)
+            # LOSS 3: Q-continue loss (ACT Q-learning, IDENTICAL to Sudoku)
+            # Only added when target_q_continue is available (ACT enabled)
             # =========================================
-            if q_continue is not None:
-                # Use model's target_q_continue if available (ACT look-ahead)
-                # Otherwise fall back to is_correct (simpler supervised target)
-                target_q_continue = None
-                if aux is not None:
-                    target_q_continue = aux.get('target_q_continue')
-                if target_q_continue is None:
-                    target_q_continue = is_correct
+            target_q_continue = None
+            if aux is not None:
+                target_q_continue = aux.get('target_q_continue')
+            if target_q_continue is not None:
                 q_continue_loss = F.mse_loss(torch.sigmoid(q_continue), target_q_continue)
                 loss = loss + 0.5 * q_continue_loss
         else:
