@@ -55,6 +55,11 @@ from .sokoban_hf import (
     parse_hf_board,
     augment_board_and_action,
 )
+from .sokoban_generator import (
+    SokobanGenerator,
+    SokobanGeneratedDataset,
+    bfs_solve,
+)
 
 __all__ = [
     # Sudoku
@@ -116,5 +121,9 @@ __all__ = [
     "download_sokoban_hf_dataset",
     "parse_hf_board",
     "augment_board_and_action",
+    # Sokoban Generator (for hard tasks)
+    "SokobanGenerator",
+    "SokobanGeneratedDataset",
+    "bfs_solve",
 ]
 

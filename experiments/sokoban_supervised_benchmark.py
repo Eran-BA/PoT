@@ -32,6 +32,7 @@ from torch.utils.data import DataLoader
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.data.sokoban_hf import SokobanHFDataset, download_sokoban_hf_dataset
+from src.data.sokoban_generator import SokobanGeneratedDataset
 from src.training.sokoban_supervised import train_supervised, evaluate
 
 
@@ -93,6 +94,10 @@ class BenchmarkConfig:
     
     # Device
     device: str = "auto"
+    
+    # Multi-difficulty evaluation
+    eval_difficulties: str = "simple,complex"  # comma-separated
+    eval_samples_per_difficulty: int = 200
 
 
 def parse_args() -> BenchmarkConfig:
@@ -139,6 +144,12 @@ def parse_args() -> BenchmarkConfig:
     # Data
     parser.add_argument('--no-augment', action='store_true')
     
+    # Multi-difficulty evaluation
+    parser.add_argument('--eval-difficulties', type=str, default='simple,complex',
+                        help='Comma-separated difficulties: simple,larger,two_boxes,complex')
+    parser.add_argument('--eval-samples', type=int, default=200,
+                        help='Samples per difficulty for evaluation')
+    
     # Logging
     parser.add_argument('--wandb', action='store_true')
     parser.add_argument('--project', type=str, default='sokoban-supervised')
@@ -175,6 +186,8 @@ def parse_args() -> BenchmarkConfig:
         grad_clip=args.grad_clip,
         warmup_steps=args.warmup_steps,
         augment=not args.no_augment,
+        eval_difficulties=args.eval_difficulties,
+        eval_samples_per_difficulty=args.eval_samples,
         wandb=args.wandb,
         project=args.project,
         run_name=args.run_name,
@@ -349,12 +362,70 @@ def run_benchmark(config: BenchmarkConfig) -> Dict[str, Any]:
     
     train_time = time.time() - start_time
     
-    # Final test evaluation
+    # Final test evaluation on HuggingFace test set
     print("\n" + "=" * 60)
-    print("TEST EVALUATION")
+    print("TEST EVALUATION (HuggingFace test set)")
     print("=" * 60)
     
     test_metrics = evaluate(model, test_loader, device)
+    print(f"HF Test Accuracy: {test_metrics['accuracy']:.2%}")
+    
+    # Multi-difficulty evaluation
+    print("\n" + "=" * 60)
+    print("MULTI-DIFFICULTY EVALUATION")
+    print("=" * 60)
+    
+    difficulty_results = {}
+    difficulties = [d.strip() for d in config.eval_difficulties.split(',')]
+    
+    for difficulty in difficulties:
+        print(f"\nEvaluating {difficulty}...")
+        try:
+            eval_ds = SokobanGeneratedDataset(
+                difficulty=difficulty,
+                n_samples=config.eval_samples_per_difficulty,
+                seed=config.seed + 1000,  # Different seed for eval
+                augment=False,
+            )
+            
+            eval_loader = DataLoader(
+                eval_ds,
+                batch_size=config.batch_size,
+                shuffle=False,
+                num_workers=0,
+            )
+            
+            # Need to adjust model for different board sizes
+            board_h, board_w = eval_ds.board_shape
+            orig_seq_len = model.seq_len if hasattr(model, 'seq_len') else 36
+            orig_pos_embed = model.pos_embed.data.clone() if hasattr(model, 'pos_embed') else None
+            
+            new_seq_len = board_h * board_w
+            if new_seq_len != orig_seq_len and hasattr(model, 'pos_embed'):
+                # Interpolate position embeddings for different board size
+                model.seq_len = new_seq_len
+                model.pos_embed = torch.nn.Parameter(
+                    torch.randn(1, new_seq_len, model.d_model, device=device) * 0.02
+                )
+            
+            eval_metrics = evaluate(model, eval_loader, device)
+            
+            # Restore original
+            if orig_pos_embed is not None and new_seq_len != orig_seq_len:
+                model.seq_len = orig_seq_len
+                model.pos_embed = torch.nn.Parameter(orig_pos_embed)
+            
+            difficulty_results[difficulty] = {
+                'accuracy': eval_metrics['accuracy'],
+                'loss': eval_metrics['loss'],
+                'board_shape': eval_ds.board_shape,
+            }
+            
+            print(f"  {difficulty}: {eval_metrics['accuracy']:.2%} accuracy")
+            
+        except Exception as e:
+            print(f"  {difficulty}: FAILED - {e}")
+            difficulty_results[difficulty] = {'error': str(e)}
     
     # Summary
     print("\n" + "=" * 60)
@@ -362,18 +433,28 @@ def run_benchmark(config: BenchmarkConfig) -> Dict[str, Any]:
     print("=" * 60)
     print(f"Model: {config.model_type}, R={config.R}")
     print(f"Best Val Accuracy: {results['best_val_acc']:.2%}")
-    print(f"Test Accuracy: {test_metrics['accuracy']:.2%}")
-    print(f"Training Time: {train_time / 60:.1f} min")
+    print(f"HF Test Accuracy: {test_metrics['accuracy']:.2%}")
+    print(f"\nMulti-difficulty results:")
+    for diff, metrics in difficulty_results.items():
+        if 'accuracy' in metrics:
+            print(f"  {diff}: {metrics['accuracy']:.2%}")
+        else:
+            print(f"  {diff}: ERROR")
+    print(f"\nTraining Time: {train_time / 60:.1f} min")
     
     # Log to W&B
     if config.wandb:
         import wandb
-        wandb.log({
+        log_dict = {
             'test/accuracy': test_metrics['accuracy'],
             'test/loss': test_metrics['loss'],
             'best_val_accuracy': results['best_val_acc'],
             'training_time_min': train_time / 60,
-        })
+        }
+        for diff, metrics in difficulty_results.items():
+            if 'accuracy' in metrics:
+                log_dict[f'eval/{diff}_accuracy'] = metrics['accuracy']
+        wandb.log(log_dict)
         wandb.finish()
     
     # Save results
@@ -382,6 +463,7 @@ def run_benchmark(config: BenchmarkConfig) -> Dict[str, Any]:
         'best_val_acc': results['best_val_acc'],
         'test_accuracy': test_metrics['accuracy'],
         'test_loss': test_metrics['loss'],
+        'difficulty_results': difficulty_results,
         'training_time_seconds': train_time,
         'history': results['history'],
     }
