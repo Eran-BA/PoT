@@ -615,3 +615,108 @@ def random_walk(
     
     return states, actions_taken
 
+
+# =============================================================================
+# Difficulty Estimation (for Curriculum Learning)
+# =============================================================================
+
+def estimate_difficulty(board: np.ndarray) -> float:
+    """
+    Estimate puzzle difficulty using heuristics.
+    
+    Uses sum of manhattan distances from boxes to nearest targets.
+    Higher score = harder puzzle (boxes far from targets).
+    
+    Args:
+        board: np.ndarray of shape [H, W]
+    
+    Returns:
+        Difficulty score (float, higher = harder)
+    """
+    from .sokoban import TILE_BOX, TILE_BOX_ON_TARGET, TILE_TARGET, TILE_PLAYER_ON_TARGET
+    
+    # Find box positions (not on target)
+    box_positions = []
+    for r in range(board.shape[0]):
+        for c in range(board.shape[1]):
+            if board[r, c] == TILE_BOX:
+                box_positions.append((r, c))
+    
+    # Find target positions (not occupied)
+    target_positions = []
+    for r in range(board.shape[0]):
+        for c in range(board.shape[1]):
+            if board[r, c] == TILE_TARGET or board[r, c] == TILE_PLAYER_ON_TARGET:
+                target_positions.append((r, c))
+    
+    if not box_positions or not target_positions:
+        return 0.0
+    
+    # Sum of minimum manhattan distances from each box to any target
+    total_distance = 0.0
+    for br, bc in box_positions:
+        min_dist = float('inf')
+        for tr, tc in target_positions:
+            dist = abs(br - tr) + abs(bc - tc)
+            min_dist = min(min_dist, dist)
+        total_distance += min_dist
+    
+    return total_distance
+
+
+def sort_levels_by_difficulty(levels: List[np.ndarray], ascending: bool = True) -> List[np.ndarray]:
+    """
+    Sort levels by estimated difficulty.
+    
+    Args:
+        levels: List of board arrays
+        ascending: If True, easiest first. If False, hardest first.
+    
+    Returns:
+        Sorted list of levels
+    """
+    # Calculate difficulty for each level
+    difficulties = [(i, estimate_difficulty(level)) for i, level in enumerate(levels)]
+    
+    # Sort by difficulty
+    difficulties.sort(key=lambda x: x[1], reverse=not ascending)
+    
+    # Return sorted levels
+    return [levels[i] for i, _ in difficulties]
+
+
+def get_curriculum_subset(
+    levels: List[np.ndarray],
+    progress: float,
+    n_stages: int = 4,
+    sorted_levels: Optional[List[np.ndarray]] = None,
+) -> List[np.ndarray]:
+    """
+    Get subset of levels for curriculum learning.
+    
+    As training progresses, expose more (and harder) levels.
+    
+    Args:
+        levels: Original list of levels (unsorted)
+        progress: Training progress in [0, 1]
+        n_stages: Number of curriculum stages
+        sorted_levels: Pre-sorted levels (optional, for efficiency)
+    
+    Returns:
+        Subset of levels for current stage
+    """
+    if sorted_levels is None:
+        sorted_levels = sort_levels_by_difficulty(levels, ascending=True)
+    
+    # Determine which stage we're in
+    stage = min(int(progress * n_stages), n_stages - 1)
+    
+    # Calculate fraction of levels to use
+    # Stage 0: 1/n_stages, Stage 1: 2/n_stages, ..., Stage n-1: all levels
+    fraction = (stage + 1) / n_stages
+    
+    # Get subset of easiest levels
+    n_levels = max(1, int(len(sorted_levels) * fraction))
+    
+    return sorted_levels[:n_levels]
+

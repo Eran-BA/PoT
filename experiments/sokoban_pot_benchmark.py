@@ -122,6 +122,10 @@ class BenchmarkConfig:
     ppo_n_envs: int = 8
     ppo_n_steps: int = 128
     
+    # Curriculum learning
+    curriculum: bool = False
+    curriculum_stages: int = 4
+    
     # Common
     batch_size: int = 64
     learning_rate: float = 1e-4
@@ -238,6 +242,12 @@ def parse_args() -> BenchmarkConfig:
     parser.add_argument('--ppo-n-envs', type=int, default=8)
     parser.add_argument('--ppo-n-steps', type=int, default=128)
     
+    # Curriculum learning
+    parser.add_argument('--curriculum', action='store_true',
+                        help='Enable curriculum learning (start with easier puzzles)')
+    parser.add_argument('--curriculum-stages', type=int, default=4,
+                        help='Number of curriculum stages (default: 4)')
+    
     # Common training
     parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--learning-rate', type=float, default=1e-4)
@@ -311,6 +321,8 @@ def parse_args() -> BenchmarkConfig:
         ppo_timesteps=args.ppo_timesteps,
         ppo_n_envs=args.ppo_n_envs,
         ppo_n_steps=args.ppo_n_steps,
+        curriculum=args.curriculum,
+        curriculum_stages=args.curriculum_stages,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         warmup_steps=args.warmup_steps,
@@ -555,6 +567,8 @@ def run_benchmark(config: BenchmarkConfig) -> Dict[str, Any]:
         total_timesteps=config.ppo_timesteps,
         eval_interval=config.ppo_timesteps // 10,
         eval_episodes=config.eval_episodes,
+        curriculum=config.curriculum,
+        curriculum_stages=config.curriculum_stages,
     )
     
     ppo_results = train_ppo(

@@ -35,6 +35,8 @@ from src.data.sokoban_rules import (
     is_solved,
     is_deadlock,
     get_legal_action_list,
+    sort_levels_by_difficulty,
+    get_curriculum_subset,
 )
 from src.pot.models.sokoban_solver import (
     PoTSokobanSolver,
@@ -78,6 +80,10 @@ class PPOConfig:
     reward_step: float = -0.01
     reward_deadlock: float = -0.2
     reward_push: float = 0.0  # Optional: bonus for pushing onto target
+    
+    # Curriculum learning
+    curriculum: bool = False  # Enable curriculum learning
+    curriculum_stages: int = 4  # Number of difficulty stages
 
 
 # =============================================================================
@@ -186,11 +192,20 @@ class VectorizedSokobanEnv:
         config: PPOConfig,
         seed: int = 42,
     ):
+        self.levels = levels
+        self.config = config
+        self.seed = seed
         self.envs = [
             SokobanEnv(levels, config, seed=seed + i)
             for i in range(n_envs)
         ]
         self.n_envs = n_envs
+    
+    def update_levels(self, new_levels: List[np.ndarray]):
+        """Update levels for curriculum learning."""
+        self.levels = new_levels
+        for env in self.envs:
+            env.levels = new_levels
         
     def reset(self) -> Tuple[np.ndarray, List[Dict]]:
         """Reset all environments."""
@@ -763,7 +778,34 @@ def train_ppo(
     
     # best_reward already initialized above (considering resume)
     
+    # Curriculum learning setup
+    sorted_train_levels = None
+    current_curriculum_stage = -1
+    if config.curriculum:
+        if verbose:
+            print(f"Curriculum learning enabled with {config.curriculum_stages} stages")
+            print("Sorting levels by difficulty...")
+        sorted_train_levels = sort_levels_by_difficulty(train_levels, ascending=True)
+        if verbose:
+            print(f"  Sorted {len(sorted_train_levels)} levels (easiest first)")
+    
     for update in tqdm(range(start_update, n_updates), desc="PPO Training", disable=not verbose):
+        # Curriculum learning: update levels based on training progress
+        if config.curriculum and sorted_train_levels is not None:
+            progress = update / n_updates
+            new_stage = min(int(progress * config.curriculum_stages), config.curriculum_stages - 1)
+            
+            if new_stage != current_curriculum_stage:
+                current_curriculum_stage = new_stage
+                curriculum_levels = get_curriculum_subset(
+                    train_levels, progress, config.curriculum_stages, sorted_train_levels
+                )
+                train_env.update_levels(curriculum_levels)
+                if verbose:
+                    print(f"\n[Curriculum] Stage {new_stage + 1}/{config.curriculum_stages}: "
+                          f"Using {len(curriculum_levels)}/{len(train_levels)} levels "
+                          f"({len(curriculum_levels)/len(train_levels)*100:.0f}%)")
+        
         # Collect rollouts
         rollout_stats = trainer.collect_rollouts(train_env, buffer, config.n_steps)
         
@@ -789,7 +831,7 @@ def train_ppo(
         # Log to W&B
         if wandb_log:
             import wandb
-            wandb.log({
+            log_dict = {
                 'train/mean_reward': rollout_stats['mean_reward'],
                 'train/mean_length': rollout_stats['mean_length'],
                 'train/policy_loss': train_stats['policy_loss'],
@@ -797,7 +839,12 @@ def train_ppo(
                 'train/entropy': train_stats['entropy'],
                 'train/q_halt_loss': train_stats.get('q_halt_loss', 0),
                 'timestep': timestep,
-            })
+            }
+            # Add curriculum info
+            if config.curriculum:
+                log_dict['curriculum/stage'] = current_curriculum_stage + 1
+                log_dict['curriculum/n_levels'] = len(train_env.levels)
+            wandb.log(log_dict)
         
         # Evaluate
         if timestep >= config.eval_interval and timestep % config.eval_interval < config.n_steps * config.n_envs:
