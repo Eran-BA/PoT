@@ -29,8 +29,10 @@ from .sokoban_ppo import (
 )
 from .sokoban_supervised import (
     train_epoch as train_sokoban_epoch,
+    train_epoch_async as train_sokoban_epoch_async,
     evaluate as evaluate_sokoban,
     train_supervised as train_sokoban_supervised,
+    InfiniteDataLoader as SokobanInfiniteDataLoader,
 )
 
 __all__ = [
@@ -54,7 +56,9 @@ __all__ = [
     "train_sokoban_ppo",
     # Sokoban Supervised
     "train_sokoban_epoch",
+    "train_sokoban_epoch_async",
     "evaluate_sokoban",
     "train_sokoban_supervised",
+    "SokobanInfiniteDataLoader",
 ]
 
