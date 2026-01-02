@@ -215,6 +215,7 @@ class SokobanHFDataset(Dataset):
         split: 'train' or 'test'
         augment: Whether to apply on-the-fly augmentation (default: True for train)
         cache_dir: Optional cache directory for HuggingFace datasets
+        pad_to_size: If set, pad all boards to this size (e.g., 10 for 10x10)
     """
     
     def __init__(
@@ -222,9 +223,11 @@ class SokobanHFDataset(Dataset):
         split: str = 'train',
         augment: Optional[bool] = None,
         cache_dir: Optional[str] = None,
+        pad_to_size: Optional[int] = None,
     ):
         self.split = split
         self.augment = augment if augment is not None else (split == 'train')
+        self.pad_to_size = pad_to_size
         
         # Load from HuggingFace
         print(f"Loading Xiaofeng77/sokoban dataset ({split})...")
@@ -258,7 +261,10 @@ class SokobanHFDataset(Dataset):
             })
         
         print(f"[{split}] Loaded {len(self.examples)} examples ({failed} failed to parse)")
-        print(f"  Board size: {self.examples[0]['board'].shape if self.examples else 'N/A'}")
+        raw_shape = self.examples[0]['board'].shape if self.examples else 'N/A'
+        print(f"  Raw board size: {raw_shape}")
+        if self.pad_to_size:
+            print(f"  Padded to: {self.pad_to_size}x{self.pad_to_size}")
         print(f"  Augmentation: {'ON-THE-FLY' if self.augment else 'OFF'}")
     
     def __len__(self) -> int:
@@ -275,6 +281,10 @@ class SokobanHFDataset(Dataset):
             aug_idx = np.random.randint(len(augmentations))
             board, action = augmentations[aug_idx]
         
+        # Pad board if pad_to_size is set
+        if self.pad_to_size is not None:
+            board = self._pad_board(board, self.pad_to_size)
+        
         # Convert to one-hot
         board_onehot = board_to_onehot(board)
         
@@ -284,9 +294,27 @@ class SokobanHFDataset(Dataset):
             'board_indices': torch.tensor(board, dtype=torch.long),  # [H, W]
         }
     
+    def _pad_board(self, board: np.ndarray, target_size: int) -> np.ndarray:
+        """Pad board with walls to target size."""
+        h, w = board.shape
+        if h >= target_size and w >= target_size:
+            return board
+        
+        # Create new board filled with walls (index 0)
+        padded = np.zeros((target_size, target_size), dtype=board.dtype)
+        
+        # Center the original board
+        pad_h = (target_size - h) // 2
+        pad_w = (target_size - w) // 2
+        padded[pad_h:pad_h+h, pad_w:pad_w+w] = board
+        
+        return padded
+    
     @property
     def board_shape(self) -> Tuple[int, int]:
-        """Get board dimensions."""
+        """Get board dimensions (after padding if applicable)."""
+        if self.pad_to_size is not None:
+            return (self.pad_to_size, self.pad_to_size)
         if self.examples:
             return self.examples[0]['board'].shape
         return (6, 6)  # Default for HF dataset
