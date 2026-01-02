@@ -217,6 +217,8 @@ def train_supervised(
     weight_decay: float = 0.01,
     grad_clip: float = 1.0,
     warmup_steps: int = 100,
+    lr_min_ratio: float = 0.1,
+    betas: Tuple[float, float] = (0.9, 0.95),
     use_pot: bool = True,
     save_dir: Optional[str] = None,
     wandb_log: bool = False,
@@ -236,6 +238,8 @@ def train_supervised(
         weight_decay: Weight decay
         grad_clip: Gradient clipping
         warmup_steps: LR warmup steps
+        lr_min_ratio: Minimum LR as fraction of peak (for cosine decay)
+        betas: AdamW betas (same as Sudoku: 0.9, 0.95)
         use_pot: If True, use PoT-specific losses
         save_dir: Directory to save checkpoints
         wandb_log: If True, log to W&B
@@ -249,20 +253,25 @@ def train_supervised(
         save_path = Path(save_dir)
         save_path.mkdir(parents=True, exist_ok=True)
     
-    # Optimizer (same as Sudoku)
+    # Optimizer (same as Sudoku: AdamW with betas=(0.9, 0.95))
+    import math
     optimizer = AdamW(
         model.parameters(),
         lr=learning_rate,
         weight_decay=weight_decay,
+        betas=betas,
     )
     
-    # Scheduler with warmup (same as Sudoku)
+    # Scheduler: cosine decay with warmup (IDENTICAL to Sudoku)
     total_steps = epochs * len(train_loader)
     
     def lr_lambda(step):
+        # Linear warmup
         if step < warmup_steps:
             return step / warmup_steps
-        return 1.0
+        # Cosine decay to lr_min_ratio
+        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+        return lr_min_ratio + (1 - lr_min_ratio) * 0.5 * (1 + math.cos(math.pi * progress))
     
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     
