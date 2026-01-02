@@ -27,6 +27,11 @@ from .sokoban_ppo import (
     VectorizedSokobanEnv,
     train_ppo as train_sokoban_ppo,
 )
+from .sokoban_supervised import (
+    train_epoch as train_sokoban_epoch,
+    evaluate as evaluate_sokoban,
+    train_supervised as train_sokoban_supervised,
+)
 
 __all__ = [
     "train_epoch",
@@ -47,5 +52,9 @@ __all__ = [
     "SokobanEnv",
     "VectorizedSokobanEnv",
     "train_sokoban_ppo",
+    # Sokoban Supervised
+    "train_sokoban_epoch",
+    "evaluate_sokoban",
+    "train_sokoban_supervised",
 ]
 

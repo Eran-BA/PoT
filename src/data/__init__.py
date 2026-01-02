@@ -49,6 +49,12 @@ from .sokoban_rules import (
     get_player_pos,
     random_walk,
 )
+from .sokoban_hf import (
+    SokobanHFDataset,
+    download_sokoban_hf_dataset,
+    parse_hf_board,
+    augment_board_and_action,
+)
 
 __all__ = [
     # Sudoku
@@ -105,5 +111,10 @@ __all__ = [
     "is_action_legal",
     "get_player_pos",
     "random_walk",
+    # Sokoban HuggingFace (Supervised)
+    "SokobanHFDataset",
+    "download_sokoban_hf_dataset",
+    "parse_hf_board",
+    "augment_board_and_action",
 ]
 
