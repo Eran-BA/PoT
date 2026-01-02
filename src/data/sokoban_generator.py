@@ -321,6 +321,13 @@ class SokobanGenerator:
 class SokobanGeneratedDataset(Dataset):
     """
     Dataset of generated Sokoban boards at specific difficulty.
+    
+    Args:
+        difficulty: 'simple', 'larger', 'two_boxes', 'complex'
+        n_samples: Number of samples to generate
+        seed: Random seed
+        augment: Whether to apply on-the-fly augmentation
+        pad_to_size: If set, pad all boards to this size (e.g., 10 for 10x10)
     """
     
     def __init__(
@@ -329,9 +336,11 @@ class SokobanGeneratedDataset(Dataset):
         n_samples: int = 1000,
         seed: int = 42,
         augment: bool = False,
+        pad_to_size: Optional[int] = None,
     ):
         self.difficulty = difficulty
         self.augment = augment
+        self.pad_to_size = pad_to_size
         
         print(f"Generating {n_samples} {difficulty} Sokoban boards...")
         generator = SokobanGenerator(difficulty=difficulty, seed=seed)
@@ -358,6 +367,10 @@ class SokobanGeneratedDataset(Dataset):
             aug_idx = np.random.randint(len(augmentations))
             board, action = augmentations[aug_idx]
         
+        # Pad board if pad_to_size is set
+        if self.pad_to_size is not None:
+            board = self._pad_board(board, self.pad_to_size)
+        
         board_onehot = board_to_onehot(board)
         
         return {
@@ -366,8 +379,26 @@ class SokobanGeneratedDataset(Dataset):
             'board_indices': torch.tensor(board, dtype=torch.long),
         }
     
+    def _pad_board(self, board: np.ndarray, target_size: int) -> np.ndarray:
+        """Pad board with walls to target size."""
+        h, w = board.shape
+        if h >= target_size and w >= target_size:
+            return board
+        
+        # Create new board filled with walls (index 0)
+        padded = np.zeros((target_size, target_size), dtype=board.dtype)
+        
+        # Center the original board
+        pad_h = (target_size - h) // 2
+        pad_w = (target_size - w) // 2
+        padded[pad_h:pad_h+h, pad_w:pad_w+w] = board
+        
+        return padded
+    
     @property
     def board_shape(self) -> Tuple[int, int]:
+        if self.pad_to_size is not None:
+            return (self.pad_to_size, self.pad_to_size)
         if self.samples:
             return self.samples[0]['board'].shape
         return self.difficulty_to_shape(self.difficulty)
