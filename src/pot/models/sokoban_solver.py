@@ -675,16 +675,88 @@ class HybridPoTSokobanSolver(HybridHRMBase):
         """
         Create initial async carry for HRM-style async batching.
         
-        All samples start as 'halted' so they will receive data on first forward call.
+        Sokoban-specific: uses [B, H, W, 7] for current_input and [B] for labels.
         
-        Args:
-            batch_size: Number of samples in batch
-            device: Device to create tensors on
-            
-        Returns:
-            Initial PoTAsyncCarry with all samples marked as halted
+        All samples start as 'halted' so they will receive data on first forward call.
         """
-        return self.initial_async_carry(batch_size, device)
+        from src.pot.models.hybrid_hrm import PoTAsyncCarry
+        
+        return PoTAsyncCarry(
+            z_H=self.H_init.view(1, 1, -1).expand(batch_size, self.seq_len, -1).clone(),
+            z_L=self.L_init.view(1, 1, -1).expand(batch_size, self.seq_len, -1).clone(),
+            L_ptr_state=self.L_level.pointer_controller.init_state(batch_size, device),
+            H_ptr_state=self.H_level.pointer_controller.init_state(batch_size, device),
+            steps=torch.zeros(batch_size, dtype=torch.int32, device=device),
+            halted=torch.ones(batch_size, dtype=torch.bool, device=device),
+            # Sokoban: [B, H, W, 7] for board input
+            current_input=torch.zeros(batch_size, self.board_height, self.board_width, NUM_TILE_TYPES, device=device),
+            # Sokoban: [B] for action labels (not [B, seq_len])
+            current_labels=torch.zeros(batch_size, dtype=torch.long, device=device),
+            current_puzzle_ids=torch.zeros(batch_size, dtype=torch.long, device=device),
+        )
+    
+    def reset_async_carry_sokoban(
+        self,
+        carry,  # PoTAsyncCarry
+        halted_mask: torch.Tensor,
+        new_input: torch.Tensor,  # [N, H, W, 7]
+        new_labels: torch.Tensor,  # [N]
+        device: torch.device,
+    ):
+        """
+        Reset hidden states for halted samples and replace their data.
+        Sokoban-specific: handles [B, H, W, 7] input shape.
+        """
+        from src.pot.models.hybrid_hrm import PoTAsyncCarry
+        
+        B = carry.z_H.size(0)
+        replace_mask = halted_mask
+        num_to_replace = min(replace_mask.sum().item(), new_input.size(0))
+        
+        # Get indices of samples to replace
+        halted_indices = torch.where(replace_mask)[0]
+        
+        # Samples that won't get data remain halted
+        still_halted_mask = replace_mask.clone()
+        if num_to_replace > 0:
+            still_halted_mask[halted_indices[:num_to_replace]] = False
+        
+        # Reset hidden states for replaced samples
+        mask_expanded = replace_mask.view(B, 1, 1).expand_as(carry.z_H)
+        fresh_z_H = self.H_init.view(1, 1, -1).expand(B, self.seq_len, -1)
+        fresh_z_L = self.L_init.view(1, 1, -1).expand(B, self.seq_len, -1)
+        
+        new_z_H = torch.where(mask_expanded, fresh_z_H, carry.z_H)
+        new_z_L = torch.where(mask_expanded, fresh_z_L, carry.z_L)
+        
+        # Reset steps
+        new_steps = torch.where(replace_mask, torch.zeros_like(carry.steps), carry.steps)
+        
+        # Replace input/labels
+        new_current_input = carry.current_input.clone()
+        new_current_labels = carry.current_labels.clone()
+        if num_to_replace > 0:
+            replace_indices = halted_indices[:num_to_replace]
+            new_current_input[replace_indices] = new_input[:num_to_replace]
+            new_current_labels[replace_indices] = new_labels[:num_to_replace]
+        
+        # Reset pointer states
+        fresh_L_ptr = self.L_level.pointer_controller.init_state(B, device)
+        fresh_H_ptr = self.H_level.pointer_controller.init_state(B, device)
+        new_L_ptr = self._reset_ptr_state(carry.L_ptr_state, fresh_L_ptr, replace_mask)
+        new_H_ptr = self._reset_ptr_state(carry.H_ptr_state, fresh_H_ptr, replace_mask)
+        
+        return PoTAsyncCarry(
+            z_H=new_z_H,
+            z_L=new_z_L,
+            L_ptr_state=new_L_ptr,
+            H_ptr_state=new_H_ptr,
+            steps=new_steps,
+            halted=still_halted_mask,
+            current_input=new_current_input,
+            current_labels=new_current_labels,
+            current_puzzle_ids=carry.current_puzzle_ids,  # Keep unchanged
+        )
     
     def async_forward(
         self,
@@ -714,16 +786,13 @@ class HybridPoTSokobanSolver(HybridHRMBase):
         # Get new data from batch
         new_input = new_batch['input'].to(device)
         new_labels = new_batch['label'].to(device)
-        # Sokoban doesn't use puzzle_ids, use zeros
-        new_puzzle_ids = torch.zeros(new_input.size(0), dtype=torch.long, device=device)
         
-        # Reset carry for halted samples, replacing their data
-        carry = self.reset_async_carry(
+        # Reset carry for halted samples (Sokoban-specific reset)
+        carry = self.reset_async_carry_sokoban(
             carry, 
             carry.halted,
             new_input,
             new_labels,
-            new_puzzle_ids,
             device,
         )
         
