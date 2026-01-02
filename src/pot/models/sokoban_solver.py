@@ -634,15 +634,17 @@ class HybridPoTSokobanSolver(HybridHRMBase):
         input_emb = self._compute_input_embedding(board)
         
         if self.halt_max_steps > 1:
-            # Use ACT wrapper
+            # Use ACT wrapper (like Sudoku HybridPoHHRMSolver)
             act_out = self.act_forward(input_emb)
             hidden = act_out['hidden']
             q_halt = act_out['q_halt']
             q_continue = act_out['q_continue']
             steps = act_out['steps']
+            target_q_continue = act_out.get('target_q_continue')  # ACT Q-learning target
         else:
             # Simple reasoning loop
             hidden, q_halt, q_continue, steps = self.reasoning_loop(input_emb)
+            target_q_continue = None
         
         # Pool over sequence
         pooled = hidden.mean(dim=1)  # [B, d_model]
@@ -651,7 +653,7 @@ class HybridPoTSokobanSolver(HybridHRMBase):
         action_logits = self.action_head(pooled)  # [B, 4]
         value = self.value_head(pooled).squeeze(-1)  # [B]
         
-        aux = {'steps': steps} if return_aux else None
+        aux = {'steps': steps, 'target_q_continue': target_q_continue} if return_aux else None
         return action_logits, value, q_halt, q_continue, aux
     
     def get_action_probs(
