@@ -86,8 +86,8 @@ def rollout_episode(
             action = logits.argmax(dim=-1).item()  # 0-indexed action
         
         # Apply action (actions are 0-indexed: 0=up, 1=down, 2=left, 3=right)
-        # sokoban_step expects 1-indexed, so add 1
-        next_board, moved = sokoban_step(current_board, action + 1)
+        # sokoban_step also expects 0-indexed
+        next_board, moved = sokoban_step(current_board, action)
         
         if not moved:
             # Invalid move, puzzle failed

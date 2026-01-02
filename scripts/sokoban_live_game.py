@@ -194,7 +194,7 @@ def play_game(
             time.sleep(delay)
         
         # Execute action (actions are 0-indexed, sokoban_step expects 1-indexed)
-        next_board, moved = sokoban_step(current_board, action + 1)
+        next_board, moved = sokoban_step(current_board, action)
         action_history.append(action)
         
         if not moved:
@@ -260,7 +260,7 @@ def interactive_mode(
             continue
         elif key in key_to_action:
             action = key_to_action[key]
-            next_board, moved = sokoban_step(current_board, action + 1)
+            next_board, moved = sokoban_step(current_board, action)
             if moved:
                 current_board = next_board
                 step += 1
