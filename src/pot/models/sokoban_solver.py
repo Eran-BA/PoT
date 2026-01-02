@@ -148,13 +148,18 @@ class PoTSokobanSolver(nn.Module):
         controller_type: str = "transformer",
         controller_kwargs: Optional[Dict] = None,
         max_depth: int = None,
+        # Dynamic board size (default to constants for backward compat)
+        board_height: int = None,
+        board_width: int = None,
     ):
         super().__init__()
         
         self.d_model = d_model
         self.R = R
         self.n_heads = n_heads
-        self.seq_len = BOARD_HEIGHT * BOARD_WIDTH  # 100 tokens
+        self.board_height = board_height or BOARD_HEIGHT
+        self.board_width = board_width or BOARD_WIDTH
+        self.seq_len = self.board_height * self.board_width
         
         # Conv encoder
         self.conv_encoder = SokobanConvEncoder(
@@ -525,9 +530,14 @@ class HybridPoTSokobanSolver(HybridHRMBase):
         allow_early_halt_eval: bool = False,
         injection_mode: str = "none",
         injection_kwargs: dict = None,
+        # Dynamic board size (default to constants for backward compat)
+        board_height: int = None,
+        board_width: int = None,
     ):
-        # Sequence length = 10x10 grid flattened
-        seq_len = BOARD_HEIGHT * BOARD_WIDTH
+        # Sequence length from board size (dynamic or default)
+        self.board_height = board_height or BOARD_HEIGHT
+        self.board_width = board_width or BOARD_WIDTH
+        seq_len = self.board_height * self.board_width
         
         # Initialize base class with ALL parameters (aligned with Sudoku)
         super().__init__(
