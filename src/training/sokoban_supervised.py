@@ -26,7 +26,8 @@ from typing import Dict, Any, Optional, List, Tuple
 from tqdm import tqdm
 import numpy as np
 
-from src.data.sokoban_rules import step as sokoban_step, is_solved, is_deadlock, NUM_CELL_TYPES
+from src.data.sokoban_rules import step as sokoban_step, is_solved, is_deadlock
+from src.data.sokoban import NUM_TILE_TYPES
 
 
 # =============================================================================
@@ -36,7 +37,7 @@ from src.data.sokoban_rules import step as sokoban_step, is_solved, is_deadlock,
 def board_to_onehot(board: np.ndarray) -> torch.Tensor:
     """Convert integer board to one-hot encoding."""
     H, W = board.shape
-    onehot = np.zeros((H, W, NUM_CELL_TYPES), dtype=np.float32)
+    onehot = np.zeros((H, W, NUM_TILE_TYPES), dtype=np.float32)
     for i in range(H):
         for j in range(W):
             onehot[i, j, board[i, j]] = 1.0
