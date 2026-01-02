@@ -410,6 +410,9 @@ class SokobanPPOTrainer:
             model.parameters(),
             lr=config.learning_rate,
         )
+        
+        # Scheduler (optional, for resume support)
+        self.scheduler = None
     
     def collect_rollouts(
         self,
