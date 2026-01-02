@@ -394,6 +394,9 @@ def train_epoch(
     use_pot: bool = True,
     scheduler: Optional[Any] = None,
     grad_clip: float = 1.0,
+    compute_solve: bool = False,
+    solve_samples: int = 50,
+    solve_max_steps: int = 100,
 ) -> Dict[str, float]:
     """
     Train for one epoch - IDENTICAL to Sudoku's train_epoch.
@@ -412,9 +415,12 @@ def train_epoch(
         use_pot: If True, use PoT-specific losses (q_halt, etc.)
         scheduler: Optional LR scheduler
         grad_clip: Gradient clipping max norm
+        compute_solve: If True, compute solve_rate at end of epoch
+        solve_samples: Number of samples for solve_rate computation
+        solve_max_steps: Max steps for rollout
     
     Returns:
-        Dictionary with training metrics
+        Dictionary with training metrics (including solve_rate if computed)
     """
     model.train()
     
@@ -500,12 +506,27 @@ def train_epoch(
             'act_acc': f'{correct_actions / total_actions:.2%}',
         })
     
-    return {
+    # Compute solve_rate (grid_acc) at end of epoch if requested
+    solve_rate = None
+    if compute_solve:
+        dataset = dataloader.dataset
+        solve_rate = compute_solve_rate(
+            model, dataset, device,
+            n_samples=solve_samples,
+            max_steps=solve_max_steps,
+        )
+    
+    result = {
         'loss': total_loss / total_steps,
         'action_acc': correct_actions / total_actions,  # Like cell_acc in Sudoku
         'correct': correct_actions,
         'total': total_actions,
     }
+    
+    if solve_rate is not None:
+        result['solve_rate'] = solve_rate  # Like grid_acc in Sudoku
+    
+    return result
 
 
 def evaluate(
@@ -661,10 +682,11 @@ def train_supervised(
     # Training history (like Sudoku: cell_acc → action_acc, grid_acc → solve_rate)
     history = {
         'train_loss': [],
-        'train_action_acc': [],  # Like train_cell_acc in Sudoku
+        'train_action_acc': [],   # Like train_cell_acc in Sudoku
+        'train_solve_rate': [],   # Like train_grid_acc in Sudoku (NEW!)
         'val_loss': [],
-        'val_action_acc': [],    # Like val_cell_acc in Sudoku
-        'val_solve_rate': [],    # Like val_grid_acc in Sudoku
+        'val_action_acc': [],     # Like val_cell_acc in Sudoku
+        'val_solve_rate': [],     # Like val_grid_acc in Sudoku
     }
     
     best_val_acc = 0.0
@@ -674,14 +696,15 @@ def train_supervised(
         print(f"Epoch {epoch}/{epochs}")
         print(f"{'=' * 60}")
         
-        # Train
+        # Compute solve_rate every 10 epochs (expensive, so not every epoch)
+        compute_solve = (epoch % 10 == 0) or (epoch == epochs)
+        
+        # Train (with optional solve_rate computation)
         train_metrics = train_epoch(
             model, train_loader, optimizer, device, epoch,
             use_pot=use_pot, scheduler=scheduler, grad_clip=grad_clip,
+            compute_solve=compute_solve, solve_samples=50,
         )
-        
-        # Evaluate with solve_rate every 10 epochs (expensive)
-        compute_solve = (epoch % 10 == 0) or (epoch == epochs)
         val_metrics = evaluate(
             model, val_loader, device,
             compute_solve=compute_solve,
@@ -691,15 +714,18 @@ def train_supervised(
         # Log
         history['train_loss'].append(train_metrics['loss'])
         history['train_action_acc'].append(train_metrics['action_acc'])
+        if 'solve_rate' in train_metrics:
+            history['train_solve_rate'].append(train_metrics['solve_rate'])
         history['val_loss'].append(val_metrics['loss'])
         history['val_action_acc'].append(val_metrics['action_acc'])
         if 'solve_rate' in val_metrics:
             history['val_solve_rate'].append(val_metrics['solve_rate'])
         
         # Print (like Sudoku: cell_acc + grid_acc)
-        solve_str = f", Solve: {val_metrics['solve_rate']:.2%}" if 'solve_rate' in val_metrics else ""
-        print(f"Train Loss: {train_metrics['loss']:.4f}, Action Acc: {train_metrics['action_acc']:.2%}")
-        print(f"Val Loss: {val_metrics['loss']:.4f}, Action Acc: {val_metrics['action_acc']:.2%}{solve_str}")
+        train_solve_str = f", Solve: {train_metrics['solve_rate']:.2%}" if 'solve_rate' in train_metrics else ""
+        val_solve_str = f", Solve: {val_metrics['solve_rate']:.2%}" if 'solve_rate' in val_metrics else ""
+        print(f"Train Loss: {train_metrics['loss']:.4f}, Action Acc: {train_metrics['action_acc']:.2%}{train_solve_str}")
+        print(f"Val Loss: {val_metrics['loss']:.4f}, Action Acc: {val_metrics['action_acc']:.2%}{val_solve_str}")
         
         # W&B logging
         if wandb_log:
@@ -711,6 +737,8 @@ def train_supervised(
                 'val/action_acc': val_metrics['action_acc'],      # Like cell_acc
                 'epoch': epoch,
             }
+            if 'solve_rate' in train_metrics:
+                log_dict['train/solve_rate'] = train_metrics['solve_rate']  # Like grid_acc (NEW!)
             if 'solve_rate' in val_metrics:
                 log_dict['val/solve_rate'] = val_metrics['solve_rate']  # Like grid_acc
             wandb.log(log_dict)
