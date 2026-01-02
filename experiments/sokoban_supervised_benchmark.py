@@ -486,7 +486,7 @@ def run_benchmark(config: BenchmarkConfig) -> Dict[str, Any]:
     | GPT-4 + LangGraph*        | ~varies        | ~varies           | Zero-shot with workflow  |
     | RL (PPO, sparse reward)   | ~20%           | <5%               | Very hard to train       |
     | Random                    | 25%            | 25%               | 4 actions = 25% chance   |
-    | PoT (this benchmark)      | {:.1%}         | {:.1%}            | Pondering over Thoughts  |
+    | PoT (this benchmark)      | {:.1%}         | {:.1%}            | Pointer-over-Heads       |
 
     *See: https://blog.gopenai.com/using-llms-and-langgraph-to-tackle-sokoban-puzzles-5f50b43b9515
     """.format(
