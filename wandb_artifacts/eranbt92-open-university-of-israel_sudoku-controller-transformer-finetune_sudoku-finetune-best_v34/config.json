@@ -1,0 +1,42 @@
+{
+  "model_type": "HybridPoHHRMSolver",
+  "architecture": "Pointer-over-Heads Transformer with Depth Controller",
+  "task": "sudoku",
+  "dataset": "sudoku-extreme-10k",
+  "metrics": {
+    "grid_accuracy": 0.789,
+    "cell_accuracy": 0.978
+  },
+  "model_config": {
+    "d_model": 512,
+    "n_heads": 8,
+    "H_layers": 2,
+    "L_layers": 2,
+    "d_ff": 2048,
+    "H_cycles": 2,
+    "L_cycles": 6,
+    "dropout": 0.039,
+    "hrm_grad_style": true,
+    "halt_max_steps": 2,
+    "controller_type": "transformer",
+    "controller_kwargs": {
+      "n_ctrl_layers": 2,
+      "n_ctrl_heads": 4,
+      "d_ctrl": 256,
+      "max_depth": 32,
+      "token_conditioned": true
+    },
+    "injection_mode": "none",
+    "vocab_size": 10,
+    "num_puzzles": 1,
+    "puzzle_emb_dim": 512
+  },
+  "training_config": {
+    "epochs": 2001,
+    "batch_size": 768,
+    "lr": 0.00037,
+    "async_batch": true,
+    "augment": true
+  },
+  "total_parameters": 20799516
+}
