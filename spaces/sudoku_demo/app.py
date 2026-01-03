@@ -781,6 +781,15 @@ with gr.Blocks(
                 clear_btn = gr.Button("🗑️ Clear", size="sm")
                 compare_btn = gr.Button("🆚 Compare with ChatGPT", variant="secondary")
             
+            # Copy prompt button
+            copy_prompt_btn = gr.Button("📋 Copy Prompt for LLMs", size="sm")
+            prompt_output = gr.Textbox(
+                label="📋 Copy this prompt to ChatGPT, Claude, Gemini, etc.",
+                lines=12,
+                show_copy_button=True,
+                visible=False,
+            )
+            
             # Thinking settings
             with gr.Accordion("🧠 Thinking Settings", open=False):
                 halt_slider = gr.Slider(2, 8, value=2, step=1, label="Reasoning Depth")
@@ -851,6 +860,20 @@ with gr.Blocks(
         fn=fetch_gpt_only,
         inputs=[puzzle_grid_visible],
         outputs=[gpt_solution_display],
+    )
+    
+    # Copy prompt handler
+    def generate_prompt(puzzle_df):
+        puzzle = dataframe_to_puzzle_array(puzzle_df)
+        if np.sum(puzzle > 0) == 0:
+            return gr.update(value="Please load a puzzle first!", visible=True)
+        prompt = format_puzzle_for_prompt(puzzle)
+        return gr.update(value=prompt, visible=True)
+    
+    copy_prompt_btn.click(
+        fn=generate_prompt,
+        inputs=[puzzle_grid_visible],
+        outputs=[prompt_output],
     )
 
 if __name__ == "__main__":
