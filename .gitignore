@@ -72,3 +72,4 @@ plots/
 # But keep experiment scripts
 !experiments/*.py
 
+vendor/TinyRecursiveModels/
