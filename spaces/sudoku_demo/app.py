@@ -536,11 +536,13 @@ def format_puzzle_for_gpt(puzzle: np.ndarray) -> str:
 
 
 def solve_with_gpt(puzzle: np.ndarray) -> tuple[str, str, float]:
-    """Send puzzle to GPT-4 and get response (raw, no parsing)."""
-    api_key = os.environ.get("OPENAI_API_KEY")
+    """Send puzzle to GPT-4o-mini via GitHub Models (FREE!) and get response."""
+    # Try GitHub Models first (free), then fall back to OpenAI
+    github_token = os.environ.get("GITHUB_TOKEN")
+    openai_key = os.environ.get("OPENAI_API_KEY")
     
-    if not api_key:
-        return None, "❌ OpenAI API key not configured. Add OPENAI_API_KEY in Space secrets.", 0
+    if not github_token and not openai_key:
+        return None, "❌ No API key configured. Add GITHUB_TOKEN (free) or OPENAI_API_KEY in Space secrets.", 0
     
     if not OPENAI_AVAILABLE:
         return None, "❌ OpenAI library not installed", 0
@@ -550,7 +552,18 @@ def solve_with_gpt(puzzle: np.ndarray) -> tuple[str, str, float]:
         return None, "❌ Invalid puzzle format", 0
     
     try:
-        client = OpenAI(api_key=api_key)
+        # Use GitHub Models (free) if available, otherwise OpenAI
+        if github_token:
+            client = OpenAI(
+                base_url="https://models.inference.ai.azure.com",
+                api_key=github_token
+            )
+            model_name = "gpt-4o-mini"
+            source = "GitHub Models (free)"
+        else:
+            client = OpenAI(api_key=openai_key)
+            model_name = "gpt-4o-mini"
+            source = "OpenAI"
         
         prompt = format_puzzle_for_gpt(puzzle)
         
@@ -558,14 +571,13 @@ def solve_with_gpt(puzzle: np.ndarray) -> tuple[str, str, float]:
         start_time = time.time()
         
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=model_name,
             messages=[
-                {"role": "system", "content": "You are a Sudoku solver. Show your solution as a formatted grid."},
+                {"role": "system", "content": "You are a Sudoku solver. Show your solution as a formatted 9x9 grid."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0,
             max_tokens=500,
-            timeout=30  # 30 second timeout
         )
         
         elapsed = time.time() - start_time
@@ -576,63 +588,46 @@ def solve_with_gpt(puzzle: np.ndarray) -> tuple[str, str, float]:
         if answer and len(answer) > 2000:
             answer = answer[:2000] + "\n...(truncated)"
         
-        return answer, "✅ GPT responded", elapsed
+        return answer, f"✅ via {source}", elapsed
         
     except Exception as e:
         # Don't expose internal error details
-        error_msg = str(e)
-        if "api_key" in error_msg.lower():
-            return None, "❌ Invalid API key", 0
-        elif "timeout" in error_msg.lower():
+        error_msg = str(e).lower()
+        if "api_key" in error_msg or "unauthorized" in error_msg or "401" in error_msg:
+            return None, "❌ Invalid API key/token", 0
+        elif "timeout" in error_msg:
             return None, "❌ GPT request timed out", 0
+        elif "rate" in error_msg:
+            return None, "❌ Rate limited. Try again in a minute.", 0
         else:
-            return None, "❌ GPT request failed. Please try again.", 0
+            return None, f"❌ GPT request failed. Please try again.", 0
 
 
-def compare_with_gpt(puzzle_df, halt_max_steps, h_cycles, l_cycles):
-    """Solve with both PoT and GPT, show comparison."""
+def fetch_gpt_only(puzzle_df):
+    """Only fetch GPT response (user should click Solve first for PoT)."""
     import time
+    import html as html_module
     
     try:
         puzzle = dataframe_to_puzzle_array(puzzle_df)
     except Exception as e:
-        return f"❌ Error: {e}", "", "", ""
+        return f"<p style='color:red;'>❌ Error: {e}</p>"
     
     if np.sum(puzzle > 0) == 0:
-        return "❌ Please load a puzzle first!", "", "", ""
+        return "<p style='color:red;'>❌ Please load a puzzle first!</p>"
     
-    puzzle_html = format_grid_html(puzzle)
-    
-    # Solve with PoT
-    pot_start = time.time()
-    pot_status, _, pot_solution_html = _solve_puzzle(puzzle, halt_max_steps, h_cycles, l_cycles)
-    pot_time = time.time() - pot_start
-    
-    # Solve with GPT (raw response, no parsing)
+    # Fetch GPT response
     gpt_response, gpt_msg, gpt_time = solve_with_gpt(puzzle)
     
     if gpt_response is not None:
-        # Sanitize GPT response to prevent XSS (escape HTML)
-        import html
-        safe_response = html.escape(gpt_response)
-        gpt_solution_html = f"""<div style="font-family: monospace; font-size: 14px; background: #f8f8f8; padding: 12px; border-radius: 8px; white-space: pre-wrap;">{safe_response}</div>"""
-        gpt_status = f"⏱️ {gpt_time:.1f}s"
+        safe_response = html_module.escape(gpt_response)
+        return f"""<div style="font-family: monospace; font-size: 14px; background: #f8f8f8; padding: 12px; border-radius: 8px; white-space: pre-wrap;">
+<strong>🤖 GPT-4o-mini (~1.7T params) • ⏱️ {gpt_time:.1f}s</strong>
+
+{safe_response}
+</div>"""
     else:
-        gpt_solution_html = f"<p style='text-align:center; color:#888;'>{gpt_msg}</p>"
-        gpt_status = gpt_msg
-    
-    # Build comparison status
-    comparison = f"""### 🧠 PoT Model (20.8M params)
-{pot_status}
-⏱️ {pot_time:.1f}s
-
----
-
-### 🤖 GPT-4o-mini
-{gpt_status}
-"""
-    
-    return comparison, puzzle_html, pot_solution_html, gpt_solution_html
+        return f"<p style='text-align:center; color:#888;'>{gpt_msg}</p>"
 
 def format_puzzle_for_display(puzzle_str: str) -> str:
     """Convert 81-char string to readable 9x9 grid format."""
@@ -731,297 +726,106 @@ deductions and progressively tackles harder cells through iterative self-correct
 
 with gr.Blocks(
     title="PoT Sudoku Solver",
-    theme=gr.themes.Default(primary_hue="green"),
+    theme=gr.themes.Soft(primary_hue="emerald"),
     css="""
-    /* General styling */
-    .gradio-container { 
-        max-width: 1200px !important; 
-    }
-    
-    /* Bigger buttons for mobile */
-    button {
-        min-height: 44px !important;
-        font-size: 16px !important;
-    }
-    
-    /* Style the dataframe as a Sudoku grid */
-    .sudoku-grid table { 
-        font-size: 18px !important; 
-        font-family: monospace !important;
-    }
-    .sudoku-grid td, .sudoku-grid th { 
-        text-align: center !important; 
-        width: 36px !important;
-        height: 36px !important;
-        padding: 6px !important;
-    }
-    .sudoku-grid input {
-        text-align: center !important;
-        font-size: 16px !important;
-        font-weight: bold !important;
-    }
-    
-    /* Mobile responsive styles */
-    @media (max-width: 768px) {
-        /* Stack columns vertically on mobile */
-        .gr-row {
-            flex-direction: column !important;
-        }
-        
-        /* Bigger touch targets */
-        button {
-            min-height: 52px !important;
-            font-size: 18px !important;
-            padding: 12px 16px !important;
-        }
-        
-        /* Center the puzzle grid */
-        table {
-            margin: 0 auto !important;
-        }
-        
-        /* Larger grid cells on mobile */
-        .sudoku-grid td, .sudoku-grid th {
-            width: 32px !important;
-            height: 32px !important;
-            font-size: 16px !important;
-        }
-        
-        /* Better spacing */
-        .gr-box {
-            padding: 8px !important;
-        }
-        
-        /* Full width buttons */
-        .gr-button {
-            width: 100% !important;
-        }
-    }
-    
-    /* Tablet styles */
-    @media (max-width: 1024px) and (min-width: 769px) {
-        button {
-            min-height: 48px !important;
-        }
-    }
+    .gradio-container { max-width: 900px !important; margin: auto; }
     """
 ) as demo:
     
     gr.Markdown(DESCRIPTION)
     
+    # Hidden component for internal use
+    puzzle_display = gr.HTML(visible=False)
+    
     with gr.Row():
-        with gr.Column(scale=1):
-            gr.Markdown("### 📝 Your Puzzle")
+        # LEFT: Puzzle input
+        with gr.Column():
+            gr.Markdown("### 📝 Puzzle")
+            gr.Markdown("*Type numbers 1-9 in cells, leave empty for blanks:*")
             
-            # Visual display of the puzzle
-            puzzle_preview = gr.HTML(
-                value=format_grid_html(dataframe_to_puzzle_array(puzzle_string_to_dataframe(EXAMPLE_PUZZLES[0][1]))),
-                label=""
+            # Editable grid for manual input (no header row!)
+            puzzle_grid_visible = gr.Dataframe(
+                value=puzzle_string_to_dataframe(EXAMPLE_PUZZLES[0][1]),
+                label="",
+                interactive=True,
+                row_count=(9, "fixed"),
+                col_count=(9, "fixed"),
+                headers=["" for _ in range(9)],  # Empty headers to hide them
+                datatype="str",
+                show_label=False,
             )
-            
-            gr.Markdown("*Click an example below or edit the grid:*")
-            
-            # Hidden dataframe for editing (will show if user wants to manually edit)
-            with gr.Accordion("✏️ Manual Edit (click to expand)", open=False):
-                gr.Markdown("*Type numbers 1-9 in cells. Leave empty for blanks.*")
-                puzzle_grid = gr.Dataframe(
-                    value=puzzle_string_to_dataframe(EXAMPLE_PUZZLES[0][1]),
-                    label="",
-                    interactive=True,
-                    row_count=(9, "fixed"),
-                    col_count=(9, "fixed"),
-                    headers=None,  # No header row
-                    datatype="str",
-                    elem_classes=["sudoku-grid"],
-                )
-            
-            with gr.Accordion("🧠 Thinking Time (adjust for harder puzzles)", open=False):
-                gr.Markdown("""
-                *Increase these to give the AI more time to think. Higher = slower but better for hard puzzles.*
-                
-                ⚡ **Note**: High settings (e.g. 4×16×8 = 512 iterations) may take 1-2 min on free CPU. 
-                For faster inference, upgrade to GPU in Space settings.
-                """)
-                
-                halt_steps = gr.Slider(
-                    minimum=2,
-                    maximum=8,
-                    value=2,
-                    step=1,
-                    label="🔄 Reasoning Depth",
-                    info="How many times to reconsider (2-8). Higher = slower but better."
-                )
-                
-                with gr.Row():
-                    h_cycles = gr.Slider(
-                        minimum=2,
-                        maximum=4,
-                        value=2,
-                        step=1,
-                        label="🌳 Big Picture Passes",
-                        info="High-level thinking (2-4)"
-                    )
-                    l_cycles = gr.Slider(
-                        minimum=6,
-                        maximum=16,
-                        value=6,
-                        step=1,
-                        label="🔍 Detail Refinements",
-                        info="Fine-grained reasoning (6-16)"
-                    )
-                
-                depth_display = gr.Markdown(
-                    value="💭 **24 thinking steps** *(default)*",
-                    elem_classes=["thinking-indicator"]
-                )
-            
-            def update_depth(h, l, halt):
-                total = int(h) * int(l) * int(halt)
-                if total <= 24:
-                    emoji, note = "💭", "*(default)*"
-                elif total <= 48:
-                    emoji, note = "🧠", "*(moderate)*"
-                elif total <= 96:
-                    emoji, note = "🤔", "*(deep thinking)*"
-                else:
-                    emoji, note = "🧙", "*(maximum reasoning)*"
-                return f"{emoji} **{total} thinking steps** {note}"
-            
-            for slider in [halt_steps, h_cycles, l_cycles]:
-                slider.change(
-                    update_depth,
-                    inputs=[h_cycles, l_cycles, halt_steps],
-                    outputs=depth_display,
-                )
-            
-            # Main solve button
-            solve_btn = gr.Button("🎯 Solve with PoT AI", variant="primary", size="lg")
             
             with gr.Row():
-                auto_btn = gr.Button("🧙 Try Harder", size="lg")
-                copy_prompt_btn = gr.Button("📋 Copy Prompt", size="lg")
+                random_btn = gr.Button("🎲 Random")
+                solve_btn = gr.Button("🎯 Solve", variant="primary")
+            with gr.Row():
+                easy_btn = gr.Button("Easy", size="sm")
+                medium_btn = gr.Button("Medium", size="sm") 
+                hard_btn = gr.Button("Hard", size="sm")
+                extreme_btn = gr.Button("Extreme", size="sm")
+            with gr.Row():
+                clear_btn = gr.Button("🗑️ Clear", size="sm")
+                compare_btn = gr.Button("🆚 Compare with ChatGPT", variant="secondary")
             
-            compare_btn = gr.Button("🆚 Compare PoT vs GPT", variant="secondary", size="sm")
-            
-            # Textbox to show the copyable prompt
-            prompt_output = gr.Textbox(
-                label="📋 Prompt (copy this to ChatGPT, Claude, Gemini...)",
-                lines=12,
-                show_copy_button=True,
-                visible=False,
-            )
-            
-            # Main action button - big and prominent
-            random_btn = gr.Button("🎲 New Random Puzzle", size="lg", variant="primary")
-            
-            with gr.Accordion("📋 Choose Difficulty", open=False):
-                with gr.Row():
-                    easy_btn = gr.Button("🟢 Easy", size="lg")
-                    medium_btn = gr.Button("🟡 Medium", size="lg")
-                with gr.Row():
-                    hard_btn = gr.Button("🟠 Hard", size="lg")
-                    extreme_btn = gr.Button("🔴 Extreme", size="lg")
+            # Thinking settings
+            with gr.Accordion("🧠 Thinking Settings", open=False):
+                halt_slider = gr.Slider(2, 8, value=2, step=1, label="Reasoning Depth")
+                h_slider = gr.Slider(2, 4, value=2, step=1, label="High-level Passes")
+                l_slider = gr.Slider(6, 16, value=6, step=1, label="Detail Refinements")
+                thinking_info = gr.Markdown("💭 24 thinking steps")
                 
-                clear_btn = gr.Button("🗑️ Clear Board", size="sm", variant="secondary")
-            
-            # Helper functions to update both preview and grid
-            def load_puzzle(puzzle_str):
-                df = puzzle_string_to_dataframe(puzzle_str)
-                puzzle_arr = dataframe_to_puzzle_array(df)
-                html = format_grid_html(puzzle_arr)
-                return html, df
-            
-            def clear_puzzle():
-                df = create_empty_board()
-                puzzle_arr = np.zeros((9, 9), dtype=int)
-                html = format_grid_html(puzzle_arr)
-                return html, df
-            
-            def update_preview_from_grid(df):
-                puzzle_arr = dataframe_to_puzzle_array(df)
-                return format_grid_html(puzzle_arr)
-            
-            # Connect buttons to update BOTH preview AND grid
-            random_btn.click(
-                fn=get_random_puzzle,
-                outputs=[puzzle_preview, puzzle_grid]
-            )
-            easy_btn.click(
-                fn=lambda: load_puzzle(EXAMPLE_PUZZLES[0][1]),
-                outputs=[puzzle_preview, puzzle_grid]
-            )
-            medium_btn.click(
-                fn=lambda: load_puzzle(EXAMPLE_PUZZLES[1][1]),
-                outputs=[puzzle_preview, puzzle_grid]
-            )
-            hard_btn.click(
-                fn=lambda: load_puzzle(EXAMPLE_PUZZLES[2][1]),
-                outputs=[puzzle_preview, puzzle_grid]
-            )
-            extreme_btn.click(
-                fn=lambda: load_puzzle(EXAMPLE_PUZZLES[3][1]),
-                outputs=[puzzle_preview, puzzle_grid]
-            )
-            clear_btn.click(
-                fn=clear_puzzle,
-                outputs=[puzzle_preview, puzzle_grid]
-            )
-            
-            # Update preview when grid is edited
-            puzzle_grid.change(
-                fn=update_preview_from_grid,
-                inputs=[puzzle_grid],
-                outputs=[puzzle_preview]
-            )
+                def update_thinking(h, l, halt):
+                    return f"💭 {int(h) * int(l) * int(halt)} thinking steps"
+                
+                for s in [halt_slider, h_slider, l_slider]:
+                    s.change(update_thinking, [h_slider, l_slider, halt_slider], thinking_info)
         
-        with gr.Column(scale=2):
-            status_output = gr.Markdown(value="*Click 🎯 Solve to see the AI solution*")
-            
-            with gr.Row():
-                with gr.Column():
-                    gr.Markdown("### 📥 Input")
-                    puzzle_display = gr.HTML()
-                
-                with gr.Column():
-                    gr.Markdown("### 🧠 PoT Solution")
-                    solution_display = gr.HTML()
-            
-            with gr.Row(visible=True):
-                with gr.Column():
-                    gr.Markdown("### 🤖 GPT Response")
-                    gpt_solution_display = gr.HTML(value="<p style='color:#888; text-align:center;'>Click 'Compare with GPT' to see GPT's attempt</p>")
-            
-            gr.Markdown("*Green = solved by AI*")
+        # RIGHT: PoT Solution (main)
+        with gr.Column():
+            gr.Markdown("### 🧠 PoT Solution (20.8M params)")
+            status_output = gr.Markdown("*Click Solve*")
+            solution_display = gr.HTML(
+                value="<div style='padding:30px;text-align:center;color:#888;'>—</div>"
+            )
+    
+    # BOTTOM: GPT comparison (below both columns)
+    with gr.Accordion("🤖 GPT-4o-mini Response (~1.7 TRILLION params)", open=False):
+        gr.Markdown("*That's 80,000x more parameters than PoT! Click 'Compare with ChatGPT' above to see who wins.*")
+        gpt_solution_display = gr.HTML(
+            value="<div style='padding:20px;text-align:center;color:#888;'>No GPT response yet</div>"
+        )
+    
+    
+    # Button handlers - update visible grid
+    def load_puzzle_to_grid(puzzle_str):
+        return puzzle_string_to_dataframe(puzzle_str)
+    
+    def get_random_puzzle_grid():
+        import random
+        _, puzzle_str = random.choice(EXAMPLE_PUZZLES)
+        return puzzle_string_to_dataframe(puzzle_str)
+    
+    random_btn.click(get_random_puzzle_grid, outputs=[puzzle_grid_visible])
+    easy_btn.click(lambda: load_puzzle_to_grid(EXAMPLE_PUZZLES[0][1]), outputs=[puzzle_grid_visible])
+    medium_btn.click(lambda: load_puzzle_to_grid(EXAMPLE_PUZZLES[1][1]), outputs=[puzzle_grid_visible])
+    hard_btn.click(lambda: load_puzzle_to_grid(EXAMPLE_PUZZLES[2][1]), outputs=[puzzle_grid_visible])
+    extreme_btn.click(lambda: load_puzzle_to_grid(EXAMPLE_PUZZLES[3][1]), outputs=[puzzle_grid_visible])
+    clear_btn.click(lambda: create_empty_board(), outputs=[puzzle_grid_visible])
     
     gr.Markdown(FOOTER)
     
-    # Event handlers
+    # Solve button handler
     solve_btn.click(
         fn=solve_sudoku_from_df,
-        inputs=[puzzle_grid, halt_steps, h_cycles, l_cycles],
+        inputs=[puzzle_grid_visible, halt_slider, h_slider, l_slider],
         outputs=[status_output, puzzle_display, solution_display],
     )
     
-    auto_btn.click(
-        fn=auto_tune_solve_from_df,
-        inputs=[puzzle_grid],
-        outputs=[status_output, puzzle_display, solution_display],
-    )
-    
+    # Compare with GPT handler (only fetches GPT, doesn't re-run PoT)
     compare_btn.click(
-        fn=compare_with_gpt,
-        inputs=[puzzle_grid, halt_steps, h_cycles, l_cycles],
-        outputs=[status_output, puzzle_display, solution_display, gpt_solution_display],
-    )
-    
-    def show_prompt(puzzle_df):
-        prompt = get_copyable_prompt(puzzle_df)
-        return gr.update(value=prompt, visible=True)
-    
-    copy_prompt_btn.click(
-        fn=show_prompt,
-        inputs=[puzzle_grid],
-        outputs=[prompt_output],
+        fn=fetch_gpt_only,
+        inputs=[puzzle_grid_visible],
+        outputs=[gpt_solution_display],
     )
 
 if __name__ == "__main__":
