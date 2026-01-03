@@ -6,6 +6,15 @@
 
 ## 🗞 News
 
+- 🎮 **NEW: Interactive Demo** — Try the Sudoku solver in your browser!
+  
+  [![Open in Spaces](https://img.shields.io/badge/🤗%20Hugging%20Face-Spaces-blue)](https://huggingface.co/spaces/Eran92/pot-sudoku-solver)
+  
+  - 🧩 Interactive 9×9 grid — just click and type
+  - ⚡ Adjustable "thinking time" (reasoning depth, H/L cycles)
+  - 🤖 Compare with GPT-4o-mini side-by-side
+  - 📱 Mobile-friendly — share with anyone!
+
 - 📄 **Paper**: [BERT/GPT with Inner-Thinking Cycles: Iterative Refinement via Dynamic Head Routing](https://doi.org/10.5281/zenodo.17959628) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17959628.svg)](https://doi.org/10.5281/zenodo.17959628)
 
 - 🆕 **Feature Injection (Next Feature Prediction)**: Controllers can now inject knowledge into token embeddings
@@ -350,7 +359,18 @@ Total reasoning steps: H_cycles × L_cycles = 2 × 8 = 16
 
 ## 🚀 Sudoku Benchmark
 
-Train a master-level Sudoku solver using the HybridPoHHRM architecture:
+### 🎮 Try it Now — No Setup Required!
+
+[![Open in Spaces](https://img.shields.io/badge/🤗%20Hugging%20Face-Try%20the%20Demo-blue?style=for-the-badge)](https://huggingface.co/spaces/Eran92/pot-sudoku-solver)
+
+**Features of the live demo:**
+- 🧩 Interactive 9×9 Sudoku grid
+- ⚡ Adjustable reasoning depth (see how thinking time affects accuracy)
+- 🤖 Compare with GPT-4o-mini side-by-side
+- 📋 Copy puzzle prompts to test on Claude, Gemini, ChatGPT
+- 📱 Works on mobile!
+
+### Train Your Own
 
 ```bash
 # Download dataset and train
@@ -361,13 +381,14 @@ python experiments/sudoku_poh_benchmark.py --download --model hybrid
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Eran-BA/PoT/blob/main/notebooks/Sudoku_PoH_Benchmark.ipynb)
 
-**Features:**
+**Training details:**
 - ✅ 1000 extreme Sudoku puzzles with 1000 augmentations each
 - ✅ HybridPoHHRM two-timescale reasoning (L_level fast + H_level slow)
 - ✅ Constraint loss for Sudoku rule enforcement
-- ✅ ~25.8M parameters, trains in ~10 hours on A100
+- ✅ ~20.8M parameters, trains in ~10 hours on A100
+- ✅ **80%+ grid accuracy** on Sudoku-Extreme (vs. 55% HRM baseline)
 
-**Target:** [HRM paper](https://arxiv.org/abs/2506.21734) achieves 55% grid accuracy on Sudoku-Extreme.
+**Pre-trained model:** Available on [HuggingFace Hub](https://huggingface.co/Eran92/pot-sudoku-78)
 
 **See also:** [experiments/](experiments/) for archived benchmarks (Maze, NLI, Connect Four)
 
