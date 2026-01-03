@@ -2,5 +2,5 @@ torch>=2.0.0
 numpy>=1.20.0
 gradio>=4.0.0
 huggingface_hub>=0.20.0
-git+https://github.com/Eran-BA/PoT.git@main#egg=pot-transformer
+git+https://github.com/Eran-BA/PoT.git@main#egg=pot
 
