@@ -2,7 +2,7 @@
 
 **Dynamic-Routing Transformer with Iterative Refinement**
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17959628.svg)](https://doi.org/10.5281/zenodo.17959628) [![Tests](https://img.shields.io/badge/tests-17%2F17%20passing-brightgreen)]() [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE) [![Results](https://img.shields.io/badge/PoH%20vs%20BERT-+52.58%25-success)]()
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17959628.svg)](https://doi.org/10.5281/zenodo.17959628) [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE) [![Demo](https://img.shields.io/badge/🤗-Try%20Demo-blue)](https://huggingface.co/spaces/Eran92/pot-sudoku-solver)
 
 ## 🗞 News
 
