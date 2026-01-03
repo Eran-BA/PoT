@@ -455,26 +455,6 @@ python experiments/sudoku_poh_benchmark.py --download --model hybrid
 
 ---
 
-## 🧪 Testing
-
-```bash
-# Run all tests
-pytest tests/test_poh_modules.py -v
-
-# Expected: 17 passed in ~1.3s
-```
-
-**Test coverage:**
-- ✅ Parameter parity (≤1% delta)
-- ✅ Routing correctness (soft sums to 1, top-k is sparse)
-- ✅ ACT halting (reduces computation)
-- ✅ Gradient flow (end-to-end)
-- ✅ Positional encoding modes
-- ✅ Outer residual (ReZero initialization)
-- ✅ Drop-in compatibility with PyTorch
-
----
-
 ## 🎛️ Configuration
 
 ### HybridPoHHRM (Sudoku/Reasoning Tasks)
