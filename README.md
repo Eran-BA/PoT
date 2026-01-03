@@ -363,8 +363,59 @@ Total reasoning steps: H_cycles × L_cycles = 2 × 8 = 16
 
 [![Open in Spaces](https://img.shields.io/badge/🤗%20Hugging%20Face-Try%20the%20Demo-blue?style=for-the-badge)](https://huggingface.co/spaces/Eran92/pot-sudoku-solver)
 
+<table>
+<tr>
+<td align="center"><b>🧩 Input Puzzle</b></td>
+<td align="center"><b>🤔</b></td>
+<td align="center"><b>✅ PoT Solution</b></td>
+</tr>
+<tr>
+<td>
+
+```
+ 5 3 ·  · 7 ·  · · ·
+ 6 · ·  1 9 5  · · ·
+ · 9 8  · · ·  · 6 ·
+ ─────┼─────┼─────
+ 8 · ·  · 6 ·  · · 3
+ 4 · ·  8 · 3  · · 1
+ 7 · ·  · 2 ·  · · 6
+ ─────┼─────┼─────
+ · 6 ·  · · ·  2 8 ·
+ · · ·  4 1 9  · · 5
+ · · ·  · 8 ·  · 7 9
+```
+
+</td>
+<td align="center">
+
+**→**<br/>
+*thinking...*<br/>
+**→**
+
+</td>
+<td>
+
+```
+ 5 3 4  6 7 8  9 1 2
+ 6 7 2  1 9 5  3 4 8
+ 1 9 8  3 4 2  5 6 7
+ ─────┼─────┼─────
+ 8 5 9  7 6 1  4 2 3
+ 4 2 6  8 5 3  7 9 1
+ 7 1 3  9 2 4  8 5 6
+ ─────┼─────┼─────
+ 9 6 1  5 3 7  2 8 4
+ 2 8 7  4 1 9  6 3 5
+ 3 4 5  2 8 6  1 7 9
+```
+
+</td>
+</tr>
+</table>
+
 **Features of the live demo:**
-- 🧩 Interactive 9×9 Sudoku grid
+- 🧩 Interactive 9×9 Sudoku grid — click cells to edit
 - ⚡ Adjustable reasoning depth (see how thinking time affects accuracy)
 - 🤖 Compare with GPT-4o-mini side-by-side
 - 📋 Copy puzzle prompts to test on Claude, Gemini, ChatGPT
