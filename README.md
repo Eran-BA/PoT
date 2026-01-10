@@ -6,6 +6,10 @@
 
 ## 🗞 News
 
+- 🏆 **87% Grid Accuracy on Sudoku-Extreme!** — Broadcast injection with transformer controller reaches new SOTA
+  - See training notebook: [`notebooks/broadcast_transformer_last.ipynb`](notebooks/broadcast_transformer_last.ipynb)
+  - Config: `d-model=512`, `broadcast` injection, `H-cycles=4`, `L-cycles=12`, `halt-max-steps=8`
+
 - 🎮 **NEW: Interactive Demo** — Try the Sudoku solver in your browser!
   
   [![Open in Spaces](https://img.shields.io/badge/🤗%20Hugging%20Face-Spaces-blue)](https://huggingface.co/spaces/Eran92/pot-sudoku-solver)
@@ -437,7 +441,7 @@ python experiments/sudoku_poh_benchmark.py --download --model hybrid
 - ✅ HybridPoHHRM two-timescale reasoning (L_level fast + H_level slow)
 - ✅ Constraint loss for Sudoku rule enforcement
 - ✅ ~20.8M parameters, trains in ~10 hours on A100
-- ✅ **80%+ grid accuracy** on Sudoku-Extreme (vs. 55% HRM baseline)
+- ✅ **87% grid accuracy** on Sudoku-Extreme with broadcast injection (vs. 55% HRM baseline)
 
 **Pre-trained model:** Available on [HuggingFace Hub](https://huggingface.co/Eran92/pot-sudoku-78)
 
