@@ -518,6 +518,53 @@ class HybridPoHHRMSolver(HybridHRMBase):
                 'q_continue': q_continue,
             }
     
+    def forward_with_probes(
+        self, input_seq: torch.Tensor, puzzle_ids: torch.Tensor
+    ) -> Dict[str, Any]:
+        """
+        Forward pass that returns everything needed for stability probes.
+        
+        Returns intermediate hiddens, final carry, and input_emb so probes
+        can re-run steps from the final state. Evaluation only.
+        
+        Returns:
+            Dict with:
+                logits: Final output logits [B, 81, vocab_size]
+                intermediate_hiddens: List of hidden states per ACT step
+                final_carry: ACTCarry after last step
+                input_emb: Scaled input embedding (for re-running steps)
+                steps: Number of reasoning steps
+        """
+        input_emb = self._compute_input_embedding(input_seq, puzzle_ids)
+        
+        if self.halt_max_steps > 1:
+            act_out = self.act_forward(
+                input_emb,
+                return_intermediate=True,
+                return_final_carry=True,
+            )
+            hidden = act_out['hidden']
+            logits = self.output_proj(hidden)
+            
+            return {
+                'logits': logits,
+                'intermediate_hiddens': act_out.get('intermediate_hiddens', []),
+                'final_carry': act_out['final_carry'],
+                'input_emb': input_emb.detach(),
+                'steps': act_out['steps'],
+            }
+        else:
+            # No ACT — run reasoning_loop, no carry to return
+            hidden, q_halt, q_continue, steps = self.reasoning_loop(input_emb)
+            logits = self.output_proj(hidden)
+            return {
+                'logits': logits,
+                'intermediate_hiddens': [hidden.detach()],
+                'final_carry': None,
+                'input_emb': input_emb.detach(),
+                'steps': steps,
+            }
+    
     # ========== Async Batching Methods (HRM-style) ==========
     
     def create_async_carry(self, batch_size: int, device: torch.device):

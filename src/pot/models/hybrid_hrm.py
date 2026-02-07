@@ -486,6 +486,7 @@ class HybridHRMBase(nn.Module):
         self,
         input_emb: torch.Tensor,
         return_intermediate: bool = False,
+        return_final_carry: bool = False,
     ) -> Dict[str, Any]:
         """
         ACT wrapper forward pass - like HRM's adaptive outer loop.
@@ -498,6 +499,8 @@ class HybridHRMBase(nn.Module):
             input_emb: Scaled input embedding [B, seq_len, d_model]
             return_intermediate: If True, collect hidden states from each ACT step
                 for per-step metric analysis (evaluation only).
+            return_final_carry: If True, include the final ACTCarry in the result
+                for stability probes (evaluation only).
             
         Returns:
             Dict with:
@@ -507,6 +510,7 @@ class HybridHRMBase(nn.Module):
                 steps: Number of ACT steps taken
                 target_q_continue: Q-learning target (training only)
                 intermediate_hiddens: List of hidden states per step (if return_intermediate)
+                final_carry: ACTCarry after last step (if return_final_carry)
         """
         B = input_emb.size(0)
         device = input_emb.device
@@ -602,6 +606,8 @@ class HybridHRMBase(nn.Module):
         }
         if return_intermediate:
             result['intermediate_hiddens'] = intermediate_hiddens
+        if return_final_carry:
+            result['final_carry'] = carry
         return result
     
     # ========== Async Batching Methods (HRM-style) ==========

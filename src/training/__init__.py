@@ -27,6 +27,9 @@ from .sokoban_ppo import (
     VectorizedSokobanEnv,
     train_ppo as train_sokoban_ppo,
 )
+from .stability_probes import (
+    compute_stability_probes,
+)
 from .sokoban_supervised import (
     train_epoch as train_sokoban_epoch,
     train_epoch_async as train_sokoban_epoch_async,
@@ -50,6 +53,8 @@ __all__ = [
     "BlocksworldPPOTrainer",
     "BlocksworldPPOConfig",
     "BlocksworldRolloutBuffer",
+    # Stability Probes
+    "compute_stability_probes",
     # Sokoban PPO
     "SokobanPPOConfig",
     "SokobanPPOTrainer",

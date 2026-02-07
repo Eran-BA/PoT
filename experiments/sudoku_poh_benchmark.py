@@ -99,6 +99,7 @@ from src.pot.models import (
     BaselineSudokuSolver,
 )
 from src.training import train_epoch, train_epoch_async, evaluate
+from src.training import compute_stability_probes
 
 # Try to import adam_atan2 (HRM's optimizer)
 try:
@@ -246,6 +247,8 @@ def main():
     parser.add_argument('--lr-min-ratio', type=float, default=0.0,
                        help='Min LR ratio for cosine schedule. HRM uses 0.1 or 1.0')
     parser.add_argument('--eval-interval', type=int, default=100)
+    parser.add_argument('--no-probes', action='store_true',
+                       help='Disable stability probes during evaluation')
     parser.add_argument('--grad-clip', type=float, default=1.0,
                        help='Gradient clipping max norm (0 to disable)')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
@@ -692,6 +695,18 @@ def main():
         if epoch % args.eval_interval == 0 or epoch == 1:
             val_metrics = evaluate(model, val_loader, device, use_poh=use_poh)
             
+            # Run stability probes (unless disabled)
+            probe_metrics = {}
+            if not args.no_probes and args.model == 'hybrid':
+                probe_metrics = compute_stability_probes(
+                    model, val_loader, device, max_batches=10
+                )
+                if probe_metrics and is_main_process():
+                    print_rank0(f"  Probes: E_fp_H={probe_metrics.get('probe/E_fp_H', 0):.4f}, "
+                          f"E_fp_L={probe_metrics.get('probe/E_fp_L', 0):.4f}, "
+                          f"E_noise={probe_metrics.get('probe/E_noise', 0):.4f}, "
+                          f"delta_ratio={probe_metrics.get('probe/delta_ratio', 0):.4f}")
+            
             print_rank0(f"\nEpoch {epoch}/{args.epochs}")
             print_rank0(f"  Train: Loss={train_metrics['loss']:.4f}, "
                   f"Cell={train_metrics['cell_acc']:.2f}%, Grid={train_metrics['grid_acc']:.2f}%")
@@ -708,10 +723,10 @@ def main():
                 'test_grid_acc': val_metrics['grid_acc'],
             })
             
-            # Log to W&B
+            # Log to W&B (including probe metrics)
             if args.wandb and is_main_process():
                 import wandb
-                wandb.log({
+                wandb_data = {
                     "epoch": epoch,
                     "train/loss": train_metrics['loss'],
                     "train/cell_acc": train_metrics['cell_acc'],
@@ -720,7 +735,9 @@ def main():
                     "val/cell_acc": val_metrics['cell_acc'],
                     "val/grid_acc": val_metrics['grid_acc'],
                     "lr": scheduler.get_last_lr()[0],
-                })
+                }
+                wandb_data.update(probe_metrics)
+                wandb.log(wandb_data)
             
             # Save best model (only rank 0)
             if val_metrics['grid_acc'] > best_grid_acc:
