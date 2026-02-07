@@ -187,6 +187,8 @@ class HybridHRMBase(nn.Module):
         rope_base: float = 10000.0,
         use_flash_attn: bool = True,
         use_edit_mask: bool = False,
+        randomize_steps: bool = False,
+        min_L_cycles: int = None,
     ):
         super().__init__()
         
@@ -195,6 +197,8 @@ class HybridHRMBase(nn.Module):
         self.seq_len = seq_len
         self.H_cycles = H_cycles
         self.L_cycles = L_cycles
+        self.randomize_steps = randomize_steps
+        self.min_L_cycles = min_L_cycles if min_L_cycles is not None else max(2, L_cycles // 2)
         self.hrm_grad_style = hrm_grad_style
         self.halt_max_steps = halt_max_steps
         self.halt_exploration_prob = halt_exploration_prob
@@ -426,22 +430,30 @@ class HybridHRMBase(nn.Module):
         L_ptr_state, H_ptr_state = carry.L_ptr_state, carry.H_ptr_state
         L_inj_mem, H_inj_mem = carry.L_inj_mem, carry.H_inj_mem  # Preserve injection memory across ACT steps
         
+        # Randomize step budget during training (anti-shortcut)
+        # Forces the model to be "ready" at any depth, preventing last-step-only behavior
+        import random
+        if self.training and self.randomize_steps:
+            L_cycles = random.randint(self.min_L_cycles, self.L_cycles)
+        else:
+            L_cycles = self.L_cycles
+        
         # Get RoPE cos/sin (None if not using RoPE)
         cos_sin = self._get_rope_cos_sin(self.seq_len)
         
         if use_grad:
             # With gradients (only on last step typically)
             for H_step in range(self.H_cycles):
-                for L_step in range(self.L_cycles):
+                for L_step in range(L_cycles):
                     # HRM-style: skip last L in last H (will be done with grad)
-                    is_last = (H_step == self.H_cycles - 1) and (L_step == self.L_cycles - 1)
+                    is_last = (H_step == self.H_cycles - 1) and (L_step == L_cycles - 1)
                     if not is_last:
                         with torch.no_grad():
                             z_L, L_ptr_state, L_inj_mem = self.L_level(z_L, z_H + input_emb, L_ptr_state, injection_memory=L_inj_mem, cos_sin=cos_sin)
                     if self.verbose:
-                        iter_num = H_step * self.L_cycles + L_step + 1
-                        total = self.H_cycles * self.L_cycles
-                        print(f"\r    H={H_step+1}/{self.H_cycles} L={L_step+1}/{self.L_cycles} "
+                        iter_num = H_step * L_cycles + L_step + 1
+                        total = self.H_cycles * L_cycles
+                        print(f"\r    H={H_step+1}/{self.H_cycles} L={L_step+1}/{L_cycles} "
                               f"[{iter_num}/{total}]", end="", flush=True)
                 
                 if H_step < self.H_cycles - 1:
@@ -456,15 +468,15 @@ class HybridHRMBase(nn.Module):
             z_L, L_ptr_state, L_inj_mem = self.L_level(z_L, z_H + input_emb, L_ptr_state, injection_memory=L_inj_mem, cos_sin=cos_sin)
             z_H, H_ptr_state, H_inj_mem = self.H_level(z_H, z_L, H_ptr_state, injection_memory=H_inj_mem, cos_sin=cos_sin)
         else:
-            # Without gradients
+            # Without gradients (eval uses full L_cycles always)
             with torch.no_grad():
                 for H_step in range(self.H_cycles):
-                    for L_step in range(self.L_cycles):
+                    for L_step in range(L_cycles):
                         z_L, L_ptr_state, L_inj_mem = self.L_level(z_L, z_H + input_emb, L_ptr_state, injection_memory=L_inj_mem, cos_sin=cos_sin)
                         if self.verbose:
-                            iter_num = H_step * self.L_cycles + L_step + 1
-                            total = self.H_cycles * self.L_cycles
-                            print(f"\r    H={H_step+1}/{self.H_cycles} L={L_step+1}/{self.L_cycles} "
+                            iter_num = H_step * L_cycles + L_step + 1
+                            total = self.H_cycles * L_cycles
+                            print(f"\r    H={H_step+1}/{self.H_cycles} L={L_step+1}/{L_cycles} "
                                   f"[{iter_num}/{total}]", end="", flush=True)
                     z_H, H_ptr_state, H_inj_mem = self.H_level(z_H, z_L, H_ptr_state, injection_memory=H_inj_mem, cos_sin=cos_sin)
         

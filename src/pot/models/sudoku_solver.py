@@ -381,6 +381,8 @@ class HybridPoHHRMSolver(HybridHRMBase):
         injection_mode: str = "none",  # Feature injection mode
         injection_kwargs: dict = None,  # Feature injection kwargs
         use_edit_mask: bool = False,  # Learned per-token update mask
+        randomize_steps: bool = False,  # Randomize L_cycles during training
+        min_L_cycles: int = None,  # Minimum L_cycles when randomizing
     ):
         # Initialize base class with ACT parameters
         super().__init__(
@@ -403,6 +405,8 @@ class HybridPoHHRMSolver(HybridHRMBase):
             injection_mode=injection_mode,
             injection_kwargs=injection_kwargs,
             use_edit_mask=use_edit_mask,
+            randomize_steps=randomize_steps,
+            min_L_cycles=min_L_cycles,
         )
         
         self.vocab_size = vocab_size

@@ -198,6 +198,10 @@ def main():
                        help='Use HRM-style gradients (only last L+H call). Default: all calls in last H_cycle.')
     parser.add_argument('--edit-mask', action='store_true',
                        help='Enable learned per-token edit mask for localized updates')
+    parser.add_argument('--randomize-steps', action='store_true',
+                       help='Randomize L_cycles per ACT step during training (anti-shortcut)')
+    parser.add_argument('--min-L-cycles', type=int, default=None,
+                       help='Minimum L_cycles when randomizing (default: L_cycles // 2)')
 
     # Feature injection modes
     parser.add_argument('--injection-mode', type=str, default='none',
@@ -407,10 +411,15 @@ def main():
             injection_mode=args.injection_mode,
             injection_kwargs=injection_kwargs,
             use_edit_mask=args.edit_mask,
+            randomize_steps=args.randomize_steps,
+            min_L_cycles=args.min_L_cycles,
         ).to(device)
         print_rank0(f"Hybrid model: H_cycles={args.H_cycles}, L_cycles={args.L_cycles}")
         if args.edit_mask:
             print_rank0(f"Edit mask: ENABLED (per-token localized updates)")
+        if args.randomize_steps:
+            min_lc = args.min_L_cycles if args.min_L_cycles is not None else max(2, args.L_cycles // 2)
+            print_rank0(f"Randomize steps: ENABLED (L_cycles sampled from [{min_lc}, {args.L_cycles}] during training)")
         print_rank0(f"H_layers={args.H_layers}, L_layers={args.L_layers}, dropout={args.dropout}")
         print_rank0(f"Controller: {args.controller}")
         print_rank0(f"Injection mode: {args.injection_mode}")
