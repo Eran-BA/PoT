@@ -289,6 +289,91 @@ class TestGatedBroadcastWithMemoryInjection:
             assert diffs < 1e-5, f"Injection differs across tokens: max diff = {diffs}"
 
 
+class TestTokenConditionedMemoryRead:
+    """Tests for token-conditioned memory read (memory_read='token_conditioned')."""
+    
+    def test_output_shape(self, tokens, controller_features, d_model, d_ctrl):
+        """Output should have same shape as input."""
+        injector = GatedBroadcastWithMemoryInjection(d_model, d_ctrl, memory_size=8, n_heads=2, memory_read="token_conditioned")
+        output, memory = injector(tokens, controller_features, memory=None)
+        assert output.shape == tokens.shape
+    
+    def test_memory_initialization(self, tokens, controller_features, d_model, d_ctrl, batch_size):
+        """Memory should be initialized identically to broadcast mode."""
+        injector = GatedBroadcastWithMemoryInjection(d_model, d_ctrl, memory_size=8, n_heads=2, memory_read="token_conditioned")
+        output, memory = injector(tokens, controller_features, memory=None)
+        assert memory.shape == (batch_size, 1, d_model)
+    
+    def test_memory_accumulation(self, tokens, controller_features, d_model, d_ctrl, batch_size):
+        """Memory should accumulate across steps."""
+        injector = GatedBroadcastWithMemoryInjection(d_model, d_ctrl, memory_size=8, n_heads=2, memory_read="token_conditioned")
+        _, mem1 = injector(tokens, controller_features, memory=None)
+        assert mem1.shape[1] == 1
+        _, mem2 = injector(tokens, controller_features, memory=mem1)
+        assert mem2.shape[1] == 2
+        _, mem3 = injector(tokens, controller_features, memory=mem2)
+        assert mem3.shape[1] == 3
+    
+    def test_memory_capping(self, tokens, controller_features, d_model, d_ctrl):
+        """Memory should be capped at memory_size."""
+        memory_size = 3
+        injector = GatedBroadcastWithMemoryInjection(d_model, d_ctrl, memory_size=memory_size, n_heads=2, memory_read="token_conditioned")
+        memory = None
+        for _ in range(10):
+            _, memory = injector(tokens, controller_features, memory=memory)
+        assert memory.shape[1] == memory_size
+    
+    def test_gradient_flow(self, tokens, controller_features, d_model, d_ctrl):
+        """Gradients should flow through to both tokens and controller features."""
+        injector = GatedBroadcastWithMemoryInjection(d_model, d_ctrl, memory_size=8, n_heads=2, memory_read="token_conditioned")
+        tokens.requires_grad_(True)
+        controller_features.requires_grad_(True)
+        
+        output, memory = injector(tokens, controller_features, memory=None)
+        loss = output.sum()
+        loss.backward()
+        
+        assert tokens.grad is not None
+        assert controller_features.grad is not None
+    
+    def test_per_token_variance(self, controller_features, d_model, d_ctrl, batch_size, seq_len):
+        """Token-conditioned read should produce different injections per token (non-zero variance)."""
+        injector = GatedBroadcastWithMemoryInjection(d_model, d_ctrl, memory_size=8, n_heads=2, memory_read="token_conditioned")
+        
+        # Use non-zero, varied tokens so each cell has a different query
+        torch.manual_seed(42)
+        tokens = torch.randn(batch_size, seq_len, d_model)
+        
+        # Run a few steps to build up memory
+        memory = None
+        for _ in range(4):
+            r = torch.randn(batch_size, d_ctrl)
+            _, memory = injector(tokens, r, memory=memory)
+        
+        output, _ = injector(tokens, controller_features, memory=memory)
+        injection = output - tokens  # isolate what was injected
+        
+        # Variance across tokens should be non-zero (unlike broadcast which is ~0)
+        per_batch_var = injection.var(dim=1).mean()  # variance across S dimension
+        assert per_batch_var > 1e-8, f"Token-conditioned injection has near-zero per-token variance: {per_batch_var}"
+    
+    def test_broadcast_has_zero_per_token_variance(self, controller_features, d_model, d_ctrl, batch_size, seq_len):
+        """Broadcast mode should have zero per-token variance (sanity check contrast)."""
+        injector = GatedBroadcastWithMemoryInjection(d_model, d_ctrl, memory_size=8, n_heads=2, memory_read="broadcast")
+        
+        tokens = torch.zeros(batch_size, seq_len, d_model)
+        output, _ = injector(tokens, controller_features, memory=None)
+        injection = output - tokens
+        
+        per_batch_var = injection.var(dim=1).mean()
+        assert per_batch_var < 1e-8, f"Broadcast injection should be identical across tokens, but var={per_batch_var}"
+    
+    def test_invalid_memory_read_raises(self, d_model, d_ctrl):
+        """Invalid memory_read value should raise ValueError."""
+        with pytest.raises(ValueError, match="Unknown memory_read mode"):
+            GatedBroadcastWithMemoryInjection(d_model, d_ctrl, memory_read="invalid")
+
+
 class TestAlphaGatedInjection:
     """Tests for alpha-modulated injection."""
     
@@ -727,6 +812,62 @@ class TestHybridSolverIntegration:
         
         logits, q_halt, q_continue, steps, target_q = model(inputs, puzzle_ids)
         assert logits.shape == (2, 81, 10)
+    
+    def test_solver_with_broadcast_memory_token_conditioned(self, solver_params):
+        """Solver with broadcast_memory + token_conditioned read should work."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        
+        model = HybridPoHHRMSolver(
+            **solver_params,
+            injection_mode="broadcast_memory",
+            injection_kwargs={"memory_size": 8, "n_heads": 2, "memory_read": "token_conditioned"}
+        )
+        inputs = torch.randint(0, 10, (2, 81))
+        puzzle_ids = torch.zeros(2, dtype=torch.long)
+        
+        logits, q_halt, q_continue, steps = model(inputs, puzzle_ids)
+        assert logits.shape == (2, 81, 10)
+    
+    def test_solver_with_broadcast_memory_token_conditioned_act(self, solver_params):
+        """Token-conditioned broadcast_memory with ACT should work end-to-end."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        
+        params = {**solver_params, "halt_max_steps": 3}
+        model = HybridPoHHRMSolver(
+            **params,
+            injection_mode="broadcast_memory",
+            injection_kwargs={"memory_size": 8, "n_heads": 2, "memory_read": "token_conditioned"}
+        )
+        model.eval()
+        
+        inputs = torch.randint(0, 10, (2, 81))
+        puzzle_ids = torch.zeros(2, dtype=torch.long)
+        
+        logits, q_halt, q_continue, steps, target_q = model(inputs, puzzle_ids)
+        assert logits.shape == (2, 81, 10)
+    
+    def test_solver_training_step_token_conditioned(self, solver_params):
+        """Token-conditioned broadcast_memory should be trainable."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        import torch.nn.functional as F
+        
+        model = HybridPoHHRMSolver(
+            **solver_params,
+            injection_mode="broadcast_memory",
+            injection_kwargs={"memory_size": 8, "n_heads": 2, "memory_read": "token_conditioned"}
+        )
+        model.train()
+        
+        inputs = torch.randint(0, 10, (2, 81))
+        targets = torch.randint(1, 10, (2, 81))
+        puzzle_ids = torch.zeros(2, dtype=torch.long)
+        
+        logits, q_halt, q_continue, steps = model(inputs, puzzle_ids)
+        loss = F.cross_entropy(logits.view(-1, 10), targets.view(-1))
+        loss.backward()
+        
+        grads_found = sum(1 for p in model.parameters() if p.grad is not None)
+        assert grads_found > 0
     
     def test_solver_with_cross_attn_act_memory_preserved(self, solver_params):
         """Cross-attn with ACT should preserve injection memory across ACT steps."""

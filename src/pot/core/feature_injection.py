@@ -81,17 +81,21 @@ class GatedBroadcastWithMemoryInjection(nn.Module):
     
     1. Append current controller state to memory bank
     2. Cap memory at memory_size entries
-    3. Compute a summary of memory via a learned attention query
-    4. Gate and broadcast the summary to all tokens
+    3. Read from memory (broadcast or token-conditioned)
+    4. Gate and inject into tokens
     
-    This combines broadcast's simplicity with cross_attn's ability to
-    accumulate context over multiple reasoning iterations.
+    Memory read modes:
+    - "broadcast": Learned constant query -> one summary -> broadcast to all tokens.
+      Simple but every cell gets the same correction.
+    - "token_conditioned": Q = projection of token states -> per-token attention over
+      memory -> each cell gets its own repair signal based on its current state.
     
     Args:
         d_model: Token embedding dimension
         d_ctrl: Controller state dimension
         memory_size: Maximum number of states to store in memory
         n_heads: Number of attention heads for memory aggregation
+        memory_read: How to read from memory ("broadcast" or "token_conditioned")
         use_layernorm: If True, apply LayerNorm to projected features
         dropout: Attention dropout
     """
@@ -102,19 +106,26 @@ class GatedBroadcastWithMemoryInjection(nn.Module):
         d_ctrl: int,
         memory_size: int = 16,
         n_heads: int = 4,
+        memory_read: str = "broadcast",
         use_layernorm: bool = True,
         dropout: float = 0.0,
     ):
         super().__init__()
         self.memory_size = memory_size
+        self.memory_read = memory_read
         
         # Project controller state to memory space
         self.memory_proj = nn.Linear(d_ctrl, d_model)
         
-        # Learned query for attending over memory bank
-        self.summary_query = nn.Parameter(torch.randn(1, 1, d_model) * 0.02)
+        # Memory read: broadcast uses learned query, token_conditioned uses token projection
+        if memory_read == "broadcast":
+            self.summary_query = nn.Parameter(torch.randn(1, 1, d_model) * 0.02)
+        elif memory_read == "token_conditioned":
+            self.q_proj = nn.Linear(d_model, d_model)
+        else:
+            raise ValueError(f"Unknown memory_read mode: '{memory_read}'. Valid: 'broadcast', 'token_conditioned'")
         
-        # Attention over memory to produce summary
+        # Attention over memory (shared by both read modes)
         self.mem_attn = nn.MultiheadAttention(
             embed_dim=d_model,
             num_heads=n_heads,
@@ -135,44 +146,44 @@ class GatedBroadcastWithMemoryInjection(nn.Module):
         memory: Optional[torch.Tensor] = None,  # [B, T, D]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Accumulate controller state in memory, summarize, and broadcast.
+        Accumulate controller state in memory and inject into tokens.
         
         Returns:
-            x_out: [B, S, D] tokens with injected memory summary
+            x_out: [B, S, D] tokens with injected memory content
             memory: [B, T+1, D] updated memory bank (capped at memory_size)
         """
         B = x.size(0)
         
-        # Project current controller state to memory space
+        # === WRITE: append controller state to memory ===
         r_proj = self.memory_proj(r)  # [B, D]
         r_proj = r_proj.unsqueeze(1)  # [B, 1, D]
         
-        # Initialize or update memory
         if memory is None:
             memory = r_proj
         else:
             memory = torch.cat([memory, r_proj], dim=1)
-            # Keep only last memory_size entries
             if memory.size(1) > self.memory_size:
                 memory = memory[:, -self.memory_size:, :]
         
-        # Attend over memory with learned query to get summary
-        query = self.summary_query.expand(B, -1, -1)  # [B, 1, D]
-        summary, _ = self.mem_attn(
-            query=query,
-            key=memory,
-            value=memory,
-            need_weights=False,
-        )  # [B, 1, D]
-        
-        summary = self.ln(summary)  # [B, 1, D]
-        
-        # Compute gate from summary
-        gate = torch.sigmoid(self.gate(summary))  # [B, 1, 1]
-        
-        # Broadcast gated summary to all tokens
-        injection = gate * summary  # [B, 1, D]
-        x_out = x + injection  # Broadcasts to [B, S, D]
+        # === READ: query memory bank ===
+        if self.memory_read == "broadcast":
+            # Learned constant query -> one summary -> broadcast to all tokens
+            query = self.summary_query.expand(B, -1, -1)  # [B, 1, D]
+            attn_out, _ = self.mem_attn(
+                query=query, key=memory, value=memory, need_weights=False,
+            )  # [B, 1, D]
+            attn_out = self.ln(attn_out)
+            gate = torch.sigmoid(self.gate(attn_out))  # [B, 1, 1]
+            x_out = x + gate * attn_out  # broadcasts to [B, S, D]
+        else:
+            # Token-conditioned: each token queries memory independently
+            query = self.q_proj(x)  # [B, S, D]
+            attn_out, _ = self.mem_attn(
+                query=query, key=memory, value=memory, need_weights=False,
+            )  # [B, S, D]
+            attn_out = self.ln(attn_out)
+            gate = torch.sigmoid(self.gate(attn_out))  # [B, S, 1]
+            x_out = x + gate * attn_out  # per-token injection
         
         return x_out, memory
 
@@ -471,8 +482,9 @@ class FeatureInjector(nn.Module):
         d_model: Token embedding dimension
         d_ctrl: Controller state dimension
         mode: Injection mode (default: "none")
-        memory_size: For cross_attn mode, max memory entries
-        n_heads: For cross_attn mode, number of attention heads
+        memory_size: For cross_attn/broadcast_memory modes, max memory entries
+        n_heads: For cross_attn/broadcast_memory modes, number of attention heads
+        memory_read: For broadcast_memory mode, how to read memory ("broadcast" or "token_conditioned")
         dropout: Dropout probability
         alpha_aggregation: For alpha_gated mode, how to aggregate alpha ("mean", "max", "entropy")
         use_learned_gate: For alpha_gated mode, combine alpha with learned gate
@@ -486,6 +498,7 @@ class FeatureInjector(nn.Module):
         mode: InjectionMode = "none",
         memory_size: int = 16,
         n_heads: int = 4,
+        memory_read: str = "broadcast",
         dropout: float = 0.0,
         alpha_aggregation: str = "mean",
         use_learned_gate: bool = True,
@@ -505,6 +518,7 @@ class FeatureInjector(nn.Module):
                 d_model, d_ctrl,
                 memory_size=memory_size,
                 n_heads=n_heads,
+                memory_read=memory_read,
                 dropout=dropout,
                 use_layernorm=use_layernorm,
             )

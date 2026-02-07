@@ -204,6 +204,10 @@ def main():
                        help='Memory bank size for cross_attn/broadcast_memory injection modes')
     parser.add_argument('--injection-n-heads', type=int, default=4,
                        help='Number of attention heads for cross_attn/broadcast_memory injection modes')
+    parser.add_argument('--memory-read', type=str, default='broadcast',
+                       choices=['broadcast', 'token_conditioned'],
+                       help='Memory read mode for broadcast_memory: broadcast (same summary for all tokens) '
+                            'or token_conditioned (per-token query into memory)')
     parser.add_argument('--alpha-aggregation', type=str, default='mean',
                        choices=['mean', 'max', 'entropy'],
                        help='Alpha aggregation mode for alpha_gated injection')
@@ -371,6 +375,8 @@ def main():
                 'memory_size': args.injection_memory_size,
                 'n_heads': args.injection_n_heads,
             }
+            if args.injection_mode == 'broadcast_memory':
+                injection_kwargs['memory_read'] = args.memory_read
         elif args.injection_mode == 'alpha_gated':
             injection_kwargs = {
                 'alpha_aggregation': args.alpha_aggregation,
