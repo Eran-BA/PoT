@@ -495,7 +495,8 @@ def main():
     
     if use_poh:
         puzzle_params = list(base_model.puzzle_emb.parameters())
-        model_params = [p for p in model.parameters() if p not in set(puzzle_params)]
+        puzzle_param_ids = {id(p) for p in puzzle_params}
+        model_params = [p for p in model.parameters() if id(p) not in puzzle_param_ids]
         
         optimizer = create_optimizer(
             model_params, args.lr, args.weight_decay, args.optimizer
@@ -519,12 +520,8 @@ def main():
         puzzle_optimizer = None
     
     # Learning rate scheduler with warmup (HRM-style cosine with min ratio)
-    # In DDP, we want same total steps as single GPU training
-    if distributed:
-        # Use full dataset size / batch_size, not divided by world_size
-        steps_per_epoch = (len(train_dataset) + args.batch_size - 1) // args.batch_size
-    else:
-        steps_per_epoch = len(train_loader)
+    # Use local steps per rank (len(train_loader) already accounts for DDP sharding)
+    steps_per_epoch = len(train_loader)
     total_steps = args.epochs * steps_per_epoch
     min_ratio = args.lr_min_ratio
     
@@ -650,10 +647,9 @@ def main():
         if args.model != 'hybrid':
             print_rank0("Note: Async batching only supported for hybrid model")
     
-    # For async batching, use FULL dataset size (not divided by world_size)
-    # This ensures each GPU processes the same effective samples as single GPU
+    # For async batching, divide samples across ranks so total work = N per epoch
     if distributed:
-        full_dataset_size = len(train_dataset)
+        full_dataset_size = math.ceil(len(train_dataset) / world_size)
     else:
         full_dataset_size = len(train_loader) * args.batch_size
     

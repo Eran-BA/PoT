@@ -13,6 +13,7 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.distributed as dist
 from typing import Dict, Any, Optional
 from tqdm import tqdm
 
@@ -22,6 +23,26 @@ def _is_main_process() -> bool:
     """Check if this is the main process (rank 0 or non-distributed)."""
     rank = int(os.environ.get('RANK', 0))
     return rank == 0
+
+
+def _is_distributed() -> bool:
+    """Check if running in distributed mode."""
+    return dist.is_available() and dist.is_initialized()
+
+
+def _reduce_metrics(metrics_dict: Dict[str, float], device: torch.device) -> Dict[str, float]:
+    """
+    All-reduce metric values across ranks so every rank has the global sum.
+    
+    Expects raw counts/sums (not averages). Returns reduced sums.
+    """
+    if not _is_distributed():
+        return metrics_dict
+    
+    keys = sorted(metrics_dict.keys())
+    values = torch.tensor([metrics_dict[k] for k in keys], dtype=torch.float64, device=device)
+    dist.all_reduce(values, op=dist.ReduceOp.SUM)
+    return {k: v.item() for k, v in zip(keys, values)}
 
 
 class InfiniteDataLoader:
@@ -247,12 +268,23 @@ def train_epoch_async(
     if debug:
         run_debug(model, dataloader, optimizer, device, epoch)
     
+    # All-reduce metrics across ranks for DDP
+    reduced = _reduce_metrics({
+        'total_loss': total_loss,
+        'correct_cells': float(correct_cells),
+        'total_cells': float(total_cells),
+        'correct_grids': float(correct_grids),
+        'total_grids': float(total_grids),
+        'total_steps': float(total_steps),
+        'forward_calls': float(forward_calls),
+    }, device)
+    
     result = {
-        'loss': total_loss / max(1, forward_calls),
-        'cell_acc': 100 * correct_cells / max(1, total_cells),
-        'grid_acc': 100 * correct_grids / max(1, total_grids),
-        'avg_steps': total_steps / max(1, forward_calls),
-        'forward_calls': forward_calls,
+        'loss': reduced['total_loss'] / max(1, reduced['forward_calls']),
+        'cell_acc': 100 * reduced['correct_cells'] / max(1, reduced['total_cells']),
+        'grid_acc': 100 * reduced['correct_grids'] / max(1, reduced['total_grids']),
+        'avg_steps': reduced['total_steps'] / max(1, reduced['forward_calls']),
+        'forward_calls': int(reduced['forward_calls']),
     }
     
     if track_halt_histogram and halt_histogram:
@@ -388,11 +420,22 @@ def train_epoch(
     if debug:
         run_debug(model, dataloader, optimizer, device, epoch)
     
+    # All-reduce metrics across ranks for DDP
+    reduced = _reduce_metrics({
+        'total_loss': total_loss,
+        'correct_cells': float(correct_cells),
+        'total_cells': float(total_cells),
+        'correct_grids': float(correct_grids),
+        'total_grids': float(total_grids),
+        'total_steps': float(total_steps),
+        'num_batches': float(len(dataloader)),
+    }, device)
+    
     return {
-        'loss': total_loss / len(dataloader),
-        'cell_acc': 100 * correct_cells / total_cells,
-        'grid_acc': 100 * correct_grids / total_grids,
-        'avg_steps': total_steps / len(dataloader),
+        'loss': reduced['total_loss'] / max(1, reduced['num_batches']),
+        'cell_acc': 100 * reduced['correct_cells'] / max(1, reduced['total_cells']),
+        'grid_acc': 100 * reduced['correct_grids'] / max(1, reduced['total_grids']),
+        'avg_steps': reduced['total_steps'] / max(1, reduced['num_batches']),
     }
 
 
@@ -476,10 +519,20 @@ def evaluate(
                     if solved:
                         halt_histogram[step]['solved'] += 1
     
+    # All-reduce metrics across ranks for DDP
+    reduced = _reduce_metrics({
+        'total_loss': total_loss,
+        'correct_cells': float(correct_cells),
+        'total_cells': float(total_cells),
+        'correct_grids': float(correct_grids),
+        'total_grids': float(total_grids),
+        'num_batches': float(len(dataloader)),
+    }, device)
+    
     result = {
-        'loss': total_loss / len(dataloader),
-        'cell_acc': 100 * correct_cells / total_cells,
-        'grid_acc': 100 * correct_grids / total_grids,
+        'loss': reduced['total_loss'] / max(1, reduced['num_batches']),
+        'cell_acc': 100 * reduced['correct_cells'] / max(1, reduced['total_cells']),
+        'grid_acc': 100 * reduced['correct_grids'] / max(1, reduced['total_grids']),
     }
     
     if track_halt_histogram and halt_histogram:
