@@ -972,6 +972,125 @@ class TestHybridSolverIntegration:
 
 
 # =============================================================================
+# Test Edit Mask
+# =============================================================================
+
+class TestEditMask:
+    """Tests for the learned per-token edit mask feature."""
+    
+    @pytest.fixture
+    def solver_params(self):
+        return {
+            "vocab_size": 10,
+            "d_model": 64,
+            "n_heads": 4,
+            "H_layers": 1,
+            "L_layers": 1,
+            "d_ff": 128,
+            "H_cycles": 1,
+            "L_cycles": 2,
+            "T": 2,
+            "halt_max_steps": 1,
+        }
+    
+    def test_edit_mask_forward(self, solver_params):
+        """Solver with edit_mask should produce valid output."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        
+        model = HybridPoHHRMSolver(**solver_params, use_edit_mask=True)
+        inputs = torch.randint(0, 10, (2, 81))
+        puzzle_ids = torch.zeros(2, dtype=torch.long)
+        
+        logits, q_halt, q_continue, steps = model(inputs, puzzle_ids)
+        assert logits.shape == (2, 81, 10)
+    
+    def test_edit_mask_with_injection(self, solver_params):
+        """Edit mask should work alongside injection modes."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        
+        model = HybridPoHHRMSolver(
+            **solver_params,
+            injection_mode="broadcast",
+            use_edit_mask=True,
+        )
+        inputs = torch.randint(0, 10, (2, 81))
+        puzzle_ids = torch.zeros(2, dtype=torch.long)
+        
+        logits, q_halt, q_continue, steps = model(inputs, puzzle_ids)
+        assert logits.shape == (2, 81, 10)
+    
+    def test_edit_mask_with_act(self, solver_params):
+        """Edit mask should work with ACT (multi-step)."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        
+        params = {**solver_params, "halt_max_steps": 3}
+        model = HybridPoHHRMSolver(**params, use_edit_mask=True)
+        model.eval()
+        
+        inputs = torch.randint(0, 10, (2, 81))
+        puzzle_ids = torch.zeros(2, dtype=torch.long)
+        
+        logits, q_halt, q_continue, steps, target_q = model(inputs, puzzle_ids)
+        assert logits.shape == (2, 81, 10)
+    
+    def test_edit_mask_trainable(self, solver_params):
+        """Edit mask should be trainable (gradients flow)."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        import torch.nn.functional as F
+        
+        model = HybridPoHHRMSolver(**solver_params, use_edit_mask=True)
+        model.train()
+        
+        inputs = torch.randint(0, 10, (2, 81))
+        targets = torch.randint(1, 10, (2, 81))
+        puzzle_ids = torch.zeros(2, dtype=torch.long)
+        
+        logits, q_halt, q_continue, steps = model(inputs, puzzle_ids)
+        loss = F.cross_entropy(logits.view(-1, 10), targets.view(-1))
+        loss.backward()
+        
+        # Check edit_mask_head has gradients
+        mask_grads = 0
+        for name, param in model.named_parameters():
+            if 'edit_mask_head' in name and param.grad is not None:
+                mask_grads += 1
+        assert mask_grads > 0, "edit_mask_head should have gradients"
+    
+    def test_edit_mask_adds_params(self, solver_params):
+        """Edit mask should add parameters vs no mask."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        
+        model_no_mask = HybridPoHHRMSolver(**solver_params, use_edit_mask=False)
+        model_with_mask = HybridPoHHRMSolver(**solver_params, use_edit_mask=True)
+        
+        params_no = sum(p.numel() for p in model_no_mask.parameters())
+        params_with = sum(p.numel() for p in model_with_mask.parameters())
+        
+        assert params_with > params_no, "Edit mask should add parameters"
+    
+    def test_edit_mask_default_near_one(self):
+        """Edit mask bias initialized to 2.0, so sigmoid(2.0) ≈ 0.88 (near 1)."""
+        from src.pot.models.reasoning_module import ReasoningModule
+        
+        module = ReasoningModule(
+            d_model=64, n_heads=4, n_layers=1, d_ff=128, T=2,
+            use_edit_mask=True,
+        )
+        # Check the bias of the last linear in edit_mask_head
+        bias = module.edit_mask_head[-1].bias.item()
+        assert bias == 2.0, f"Expected bias=2.0, got {bias}"
+        # sigmoid(2.0) ≈ 0.88 — starts with mostly-update behavior
+    
+    def test_no_edit_mask_by_default(self, solver_params):
+        """Edit mask should be off by default."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        
+        model = HybridPoHHRMSolver(**solver_params)
+        assert not model.L_level.use_edit_mask
+        assert not model.H_level.use_edit_mask
+
+
+# =============================================================================
 # Test Parameter Counts
 # =============================================================================
 

@@ -196,7 +196,9 @@ def main():
                        help='Enable optimized Mamba inference with torch.compile (requires PyTorch 2.0+)')
     parser.add_argument('--hrm-grad-style', action='store_true',
                        help='Use HRM-style gradients (only last L+H call). Default: all calls in last H_cycle.')
-    
+    parser.add_argument('--edit-mask', action='store_true',
+                       help='Enable learned per-token edit mask for localized updates')
+
     # Feature injection modes
     parser.add_argument('--injection-mode', type=str, default='none',
                        choices=['none', 'broadcast', 'broadcast_memory', 'film', 'depth_token', 'cross_attn', 'alpha_gated'],
@@ -404,8 +406,11 @@ def main():
             controller_kwargs=controller_kwargs if controller_kwargs else None,
             injection_mode=args.injection_mode,
             injection_kwargs=injection_kwargs,
+            use_edit_mask=args.edit_mask,
         ).to(device)
         print_rank0(f"Hybrid model: H_cycles={args.H_cycles}, L_cycles={args.L_cycles}")
+        if args.edit_mask:
+            print_rank0(f"Edit mask: ENABLED (per-token localized updates)")
         print_rank0(f"H_layers={args.H_layers}, L_layers={args.L_layers}, dropout={args.dropout}")
         print_rank0(f"Controller: {args.controller}")
         print_rank0(f"Injection mode: {args.injection_mode}")

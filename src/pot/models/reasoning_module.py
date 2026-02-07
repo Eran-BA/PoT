@@ -256,6 +256,8 @@ class ReasoningModule(nn.Module):
         injection_kwargs: Additional kwargs for FeatureInjector
         use_rope: Whether to use Rotary Position Embeddings (default False)
         use_flash_attn: Whether to use Flash Attention when available (default True)
+        use_edit_mask: If True, learn a per-token mask that gates the residual update,
+            enabling localized corrections instead of full-board rewrites (default False)
     """
     
     def __init__(
@@ -272,6 +274,7 @@ class ReasoningModule(nn.Module):
         injection_kwargs: Optional[dict] = None,
         use_rope: bool = False,  # Use Rotary Position Embeddings
         use_flash_attn: bool = True,  # Use Flash Attention when available
+        use_edit_mask: bool = False,  # Learned per-token update mask
     ):
         super().__init__()
         self.d_model = d_model
@@ -281,6 +284,7 @@ class ReasoningModule(nn.Module):
         self.injection_mode = injection_mode
         self.use_rope = use_rope
         self.use_flash_attn = use_flash_attn
+        self.use_edit_mask = use_edit_mask
         
         # PoT Pointer Controller for head routing
         ctrl_kwargs = controller_kwargs or {}
@@ -323,6 +327,18 @@ class ReasoningModule(nn.Module):
         ])
         self.norm1_layers = nn.ModuleList([RMSNorm(d_model) for _ in range(n_layers)])
         self.norm2_layers = nn.ModuleList([RMSNorm(d_model) for _ in range(n_layers)])
+        
+        # Edit mask: learned per-token gate on the residual update
+        # mask = sigmoid(linear(x)) in [0,1] per token
+        # output = hidden + mask * (transformer_output - hidden)
+        if use_edit_mask:
+            self.edit_mask_head = nn.Sequential(
+                nn.Linear(d_model, d_model // 4),
+                nn.GELU(),
+                nn.Linear(d_model // 4, 1),
+            )
+            # Initialize bias positive so mask starts near 1.0 (update everything initially)
+            nn.init.constant_(self.edit_mask_head[-1].bias, 2.0)
     
     def forward(
         self, 
@@ -430,5 +446,11 @@ class ReasoningModule(nn.Module):
         # Remove depth token if it was added
         if self.injection_mode == "depth_token":
             x = self.injector.remove_depth_token(x)
+        
+        # Apply edit mask: gate the residual update per token
+        # output = hidden + mask * (x - hidden) where mask is [B, S, 1]
+        if self.use_edit_mask:
+            edit_mask = torch.sigmoid(self.edit_mask_head(x))  # [B, S, 1]
+            x = hidden + edit_mask * (x - hidden)
         
         return x, ptr_state, injection_memory

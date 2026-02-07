@@ -380,6 +380,7 @@ class HybridPoHHRMSolver(HybridHRMBase):
         controller_kwargs: dict = None,  # NEW: controller kwargs
         injection_mode: str = "none",  # Feature injection mode
         injection_kwargs: dict = None,  # Feature injection kwargs
+        use_edit_mask: bool = False,  # Learned per-token update mask
     ):
         # Initialize base class with ACT parameters
         super().__init__(
@@ -401,6 +402,7 @@ class HybridPoHHRMSolver(HybridHRMBase):
             controller_kwargs=controller_kwargs,
             injection_mode=injection_mode,
             injection_kwargs=injection_kwargs,
+            use_edit_mask=use_edit_mask,
         )
         
         self.vocab_size = vocab_size

@@ -186,6 +186,7 @@ class HybridHRMBase(nn.Module):
         use_rope: bool = False,
         rope_base: float = 10000.0,
         use_flash_attn: bool = True,
+        use_edit_mask: bool = False,
     ):
         super().__init__()
         
@@ -202,6 +203,7 @@ class HybridHRMBase(nn.Module):
         self.injection_mode = injection_mode
         self.use_rope = use_rope
         self.use_flash_attn = use_flash_attn
+        self.use_edit_mask = use_edit_mask
         self.verbose = False  # Set to True to see inner-loop progress
         
         # Embedding scaling factor (CRITICAL: HRM uses this!)
@@ -234,6 +236,7 @@ class HybridHRMBase(nn.Module):
             injection_kwargs=inj_kwargs,
             use_rope=use_rope,
             use_flash_attn=use_flash_attn,
+            use_edit_mask=use_edit_mask,
         )
         self.H_level = ReasoningModule(
             d_model, n_heads, H_layers, d_ff, dropout, T,
@@ -243,6 +246,7 @@ class HybridHRMBase(nn.Module):
             injection_kwargs=inj_kwargs,
             use_rope=use_rope,
             use_flash_attn=use_flash_attn,
+            use_edit_mask=use_edit_mask,
         )
         
         # Output normalization
