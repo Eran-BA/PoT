@@ -198,12 +198,12 @@ def main():
     
     # Feature injection modes
     parser.add_argument('--injection-mode', type=str, default='none',
-                       choices=['none', 'broadcast', 'film', 'depth_token', 'cross_attn', 'alpha_gated'],
+                       choices=['none', 'broadcast', 'broadcast_memory', 'film', 'depth_token', 'cross_attn', 'alpha_gated'],
                        help='Feature injection mode for controller knowledge into tokens')
     parser.add_argument('--injection-memory-size', type=int, default=16,
-                       help='Memory bank size for cross_attn injection mode')
+                       help='Memory bank size for cross_attn/broadcast_memory injection modes')
     parser.add_argument('--injection-n-heads', type=int, default=4,
-                       help='Number of attention heads for cross_attn injection mode')
+                       help='Number of attention heads for cross_attn/broadcast_memory injection modes')
     parser.add_argument('--alpha-aggregation', type=str, default='mean',
                        choices=['mean', 'max', 'entropy'],
                        help='Alpha aggregation mode for alpha_gated injection')
@@ -366,7 +366,7 @@ def main():
         
         # Build injection kwargs
         injection_kwargs = None
-        if args.injection_mode == 'cross_attn':
+        if args.injection_mode in ('cross_attn', 'broadcast_memory'):
             injection_kwargs = {
                 'memory_size': args.injection_memory_size,
                 'n_heads': args.injection_n_heads,

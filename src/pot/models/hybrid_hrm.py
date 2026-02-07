@@ -48,6 +48,8 @@ class ACTCarry:
     z_L: torch.Tensor  # [B, seq_len, d_model]
     L_ptr_state: Any
     H_ptr_state: Any
+    L_inj_mem: Any = None  # Injection memory for L-level (cross_attn / broadcast_memory)
+    H_inj_mem: Any = None  # Injection memory for H-level (cross_attn / broadcast_memory)
 
 
 @dataclass
@@ -68,6 +70,8 @@ class PoTAsyncCarry:
         current_input: Current input embedding per sample [B, seq_len]
         current_labels: Current target labels per sample [B, seq_len]
         current_puzzle_ids: Current puzzle IDs per sample [B]
+        L_inj_mem: Injection memory for L-level (cross_attn / broadcast_memory)
+        H_inj_mem: Injection memory for H-level (cross_attn / broadcast_memory)
     """
     z_H: torch.Tensor           # [B, seq_len, d_model]
     z_L: torch.Tensor           # [B, seq_len, d_model]
@@ -78,6 +82,8 @@ class PoTAsyncCarry:
     current_input: torch.Tensor # [B, seq_len]
     current_labels: torch.Tensor # [B, seq_len]
     current_puzzle_ids: torch.Tensor  # [B]
+    L_inj_mem: Any = None       # Injection memory for L-level
+    H_inj_mem: Any = None       # Injection memory for H-level
 
     def detach(self) -> 'PoTAsyncCarry':
         """Detach all tensors from computation graph to prevent gradient accumulation across steps."""
@@ -114,6 +120,8 @@ class PoTAsyncCarry:
             current_input=self.current_input.detach(),
             current_labels=self.current_labels.detach(),
             current_puzzle_ids=self.current_puzzle_ids.detach(),
+            L_inj_mem=_detach_state(self.L_inj_mem),
+            H_inj_mem=_detach_state(self.H_inj_mem),
         )
 
 
@@ -384,7 +392,11 @@ class HybridHRMBase(nn.Module):
         z_L = self.L_init.view(1, 1, -1).expand(B, self.seq_len, -1).clone()
         L_ptr_state = self._init_controller_state(self.L_level.pointer_controller, B, device)
         H_ptr_state = self._init_controller_state(self.H_level.pointer_controller, B, device)
-        return ACTCarry(z_H=z_H, z_L=z_L, L_ptr_state=L_ptr_state, H_ptr_state=H_ptr_state)
+        return ACTCarry(
+            z_H=z_H, z_L=z_L,
+            L_ptr_state=L_ptr_state, H_ptr_state=H_ptr_state,
+            L_inj_mem=None, H_inj_mem=None,
+        )
     
     def _single_act_step(
         self, 
@@ -408,7 +420,7 @@ class HybridHRMBase(nn.Module):
         """
         z_H, z_L = carry.z_H, carry.z_L
         L_ptr_state, H_ptr_state = carry.L_ptr_state, carry.H_ptr_state
-        L_inj_mem, H_inj_mem = None, None  # Initialize injection memory
+        L_inj_mem, H_inj_mem = carry.L_inj_mem, carry.H_inj_mem  # Preserve injection memory across ACT steps
         
         # Get RoPE cos/sin (None if not using RoPE)
         cos_sin = self._get_rope_cos_sin(self.seq_len)
@@ -464,6 +476,8 @@ class HybridHRMBase(nn.Module):
             z_L=z_L.detach(),
             L_ptr_state=L_ptr_state,
             H_ptr_state=H_ptr_state,
+            L_inj_mem=L_inj_mem,
+            H_inj_mem=H_inj_mem,
         )
         
         return new_carry, hidden, q_halt, q_continue
@@ -471,6 +485,7 @@ class HybridHRMBase(nn.Module):
     def act_forward(
         self,
         input_emb: torch.Tensor,
+        return_intermediate: bool = False,
     ) -> Dict[str, Any]:
         """
         ACT wrapper forward pass - like HRM's adaptive outer loop.
@@ -481,6 +496,8 @@ class HybridHRMBase(nn.Module):
         
         Args:
             input_emb: Scaled input embedding [B, seq_len, d_model]
+            return_intermediate: If True, collect hidden states from each ACT step
+                for per-step metric analysis (evaluation only).
             
         Returns:
             Dict with:
@@ -489,6 +506,7 @@ class HybridHRMBase(nn.Module):
                 q_continue: Final Q-values for continuing [B]
                 steps: Number of ACT steps taken
                 target_q_continue: Q-learning target (training only)
+                intermediate_hiddens: List of hidden states per step (if return_intermediate)
         """
         B = input_emb.size(0)
         device = input_emb.device
@@ -505,6 +523,9 @@ class HybridHRMBase(nn.Module):
         final_q_halt = None
         final_q_continue = None
         target_q_continue = None
+        
+        # Optional intermediate tracking
+        intermediate_hiddens = [] if return_intermediate else None
         
         for act_step in range(self.halt_max_steps):
             is_last_step = (act_step == self.halt_max_steps - 1)
@@ -529,6 +550,10 @@ class HybridHRMBase(nn.Module):
             final_hidden = hidden
             final_q_halt = q_halt
             final_q_continue = q_continue
+            
+            # Collect intermediate hidden states for per-step analysis
+            if return_intermediate:
+                intermediate_hiddens.append(hidden.detach())
             
             # Halting logic (during training, or eval with allow_early_halt_eval)
             if (self.training or self.allow_early_halt_eval) and self.halt_max_steps > 1 and not is_last_step:
@@ -568,13 +593,16 @@ class HybridHRMBase(nn.Module):
                     torch.maximum(next_q_halt, next_q_continue)
                 )
         
-        return {
+        result = {
             'hidden': final_hidden,
             'q_halt': final_q_halt,
             'q_continue': final_q_continue,
             'steps': int(steps.float().mean().item()),
             'target_q_continue': target_q_continue,
         }
+        if return_intermediate:
+            result['intermediate_hiddens'] = intermediate_hiddens
+        return result
     
     # ========== Async Batching Methods (HRM-style) ==========
     
@@ -602,6 +630,8 @@ class HybridHRMBase(nn.Module):
             current_input=torch.zeros(batch_size, self.seq_len, dtype=torch.long, device=device),
             current_labels=torch.zeros(batch_size, self.seq_len, dtype=torch.long, device=device),
             current_puzzle_ids=torch.zeros(batch_size, dtype=torch.long, device=device),
+            L_inj_mem=None,
+            H_inj_mem=None,
         )
     
     def _reset_ptr_state(self, old_state, fresh_state, halted_mask: torch.Tensor):
@@ -743,6 +773,20 @@ class HybridHRMBase(nn.Module):
         new_L_ptr = self._reset_ptr_state(carry.L_ptr_state, fresh_L_ptr, replace_mask)
         new_H_ptr = self._reset_ptr_state(carry.H_ptr_state, fresh_H_ptr, replace_mask)
         
+        # Reset injection memory for replaced samples
+        # For tensor memories: zero out halted entries; for None: stay None
+        def _reset_inj_mem(old_mem, replace_mask):
+            if old_mem is None:
+                return None
+            if isinstance(old_mem, torch.Tensor):
+                # Memory is [B, T, D] - zero out replaced samples
+                mask_expanded = replace_mask.view(-1, 1, 1)
+                return torch.where(mask_expanded, torch.zeros_like(old_mem), old_mem)
+            return None  # Unknown format, reset to None
+        
+        new_L_inj_mem = _reset_inj_mem(carry.L_inj_mem, replace_mask)
+        new_H_inj_mem = _reset_inj_mem(carry.H_inj_mem, replace_mask)
+        
         return PoTAsyncCarry(
             z_H=new_z_H,
             z_L=new_z_L,
@@ -753,6 +797,8 @@ class HybridHRMBase(nn.Module):
             current_input=new_current_input,
             current_labels=new_current_labels,
             current_puzzle_ids=new_current_puzzle_ids,
+            L_inj_mem=new_L_inj_mem,
+            H_inj_mem=new_H_inj_mem,
         )
     
     def forward_single_step_async(
@@ -781,7 +827,7 @@ class HybridHRMBase(nn.Module):
         
         z_H, z_L = carry.z_H, carry.z_L
         L_ptr_state, H_ptr_state = carry.L_ptr_state, carry.H_ptr_state
-        L_inj_mem, H_inj_mem = None, None  # Initialize injection memory
+        L_inj_mem, H_inj_mem = carry.L_inj_mem, carry.H_inj_mem  # Preserve injection memory across ACT steps
         
         # Get RoPE cos/sin (None if not using RoPE)
         cos_sin = self._get_rope_cos_sin(self.seq_len)
@@ -847,7 +893,8 @@ class HybridHRMBase(nn.Module):
                     temp_H_ptr = H_ptr_state
                     
                     # One more reasoning step (without grad)
-                    temp_L_inj_mem, temp_H_inj_mem = None, None
+                    # Preserve injection memory for accurate Q-target estimate
+                    temp_L_inj_mem, temp_H_inj_mem = L_inj_mem, H_inj_mem
                     for H_step in range(self.H_cycles):
                         for L_step in range(self.L_cycles):
                             temp_z_L, temp_L_ptr, temp_L_inj_mem = self.L_level(temp_z_L, temp_z_H + input_emb, temp_L_ptr, injection_memory=temp_L_inj_mem, cos_sin=cos_sin)
@@ -872,6 +919,8 @@ class HybridHRMBase(nn.Module):
             current_input=carry.current_input,
             current_labels=carry.current_labels,
             current_puzzle_ids=carry.current_puzzle_ids,
+            L_inj_mem=L_inj_mem,
+            H_inj_mem=H_inj_mem,
         )
         
         outputs = {

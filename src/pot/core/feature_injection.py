@@ -27,8 +27,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-INJECTION_MODES = ["none", "broadcast", "film", "depth_token", "cross_attn", "alpha_gated"]
-InjectionMode = Literal["none", "broadcast", "film", "depth_token", "cross_attn", "alpha_gated"]
+INJECTION_MODES = ["none", "broadcast", "broadcast_memory", "film", "depth_token", "cross_attn", "alpha_gated"]
+InjectionMode = Literal["none", "broadcast", "broadcast_memory", "film", "depth_token", "cross_attn", "alpha_gated"]
 
 
 class GatedBroadcastInjection(nn.Module):
@@ -69,6 +69,112 @@ class GatedBroadcastInjection(nn.Module):
         # Broadcast and add with gating
         injection = gate.unsqueeze(1) * r_proj.unsqueeze(1)  # [B, 1, D]
         return x + injection
+
+
+class GatedBroadcastWithMemoryInjection(nn.Module):
+    """
+    Gated broadcast injection with memory accumulation.
+    
+    Like GatedBroadcastInjection, but maintains a sliding-window memory bank
+    of past controller states across depth steps (and ACT steps when memory
+    is preserved in ACTCarry). At each step:
+    
+    1. Append current controller state to memory bank
+    2. Cap memory at memory_size entries
+    3. Compute a summary of memory via a learned attention query
+    4. Gate and broadcast the summary to all tokens
+    
+    This combines broadcast's simplicity with cross_attn's ability to
+    accumulate context over multiple reasoning iterations.
+    
+    Args:
+        d_model: Token embedding dimension
+        d_ctrl: Controller state dimension
+        memory_size: Maximum number of states to store in memory
+        n_heads: Number of attention heads for memory aggregation
+        use_layernorm: If True, apply LayerNorm to projected features
+        dropout: Attention dropout
+    """
+    
+    def __init__(
+        self,
+        d_model: int,
+        d_ctrl: int,
+        memory_size: int = 16,
+        n_heads: int = 4,
+        use_layernorm: bool = True,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        self.memory_size = memory_size
+        
+        # Project controller state to memory space
+        self.memory_proj = nn.Linear(d_ctrl, d_model)
+        
+        # Learned query for attending over memory bank
+        self.summary_query = nn.Parameter(torch.randn(1, 1, d_model) * 0.02)
+        
+        # Attention over memory to produce summary
+        self.mem_attn = nn.MultiheadAttention(
+            embed_dim=d_model,
+            num_heads=n_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        
+        # Gate to control injection strength
+        self.gate = nn.Linear(d_model, 1)
+        
+        # Layer norm for output
+        self.ln = nn.LayerNorm(d_model) if use_layernorm else nn.Identity()
+    
+    def forward(
+        self,
+        x: torch.Tensor,  # [B, S, D]
+        r: torch.Tensor,  # [B, d_ctrl]
+        memory: Optional[torch.Tensor] = None,  # [B, T, D]
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Accumulate controller state in memory, summarize, and broadcast.
+        
+        Returns:
+            x_out: [B, S, D] tokens with injected memory summary
+            memory: [B, T+1, D] updated memory bank (capped at memory_size)
+        """
+        B = x.size(0)
+        
+        # Project current controller state to memory space
+        r_proj = self.memory_proj(r)  # [B, D]
+        r_proj = r_proj.unsqueeze(1)  # [B, 1, D]
+        
+        # Initialize or update memory
+        if memory is None:
+            memory = r_proj
+        else:
+            memory = torch.cat([memory, r_proj], dim=1)
+            # Keep only last memory_size entries
+            if memory.size(1) > self.memory_size:
+                memory = memory[:, -self.memory_size:, :]
+        
+        # Attend over memory with learned query to get summary
+        query = self.summary_query.expand(B, -1, -1)  # [B, 1, D]
+        summary, _ = self.mem_attn(
+            query=query,
+            key=memory,
+            value=memory,
+            need_weights=False,
+        )  # [B, 1, D]
+        
+        summary = self.ln(summary)  # [B, 1, D]
+        
+        # Compute gate from summary
+        gate = torch.sigmoid(self.gate(summary))  # [B, 1, 1]
+        
+        # Broadcast gated summary to all tokens
+        injection = gate * summary  # [B, 1, D]
+        x_out = x + injection  # Broadcasts to [B, S, D]
+        
+        return x_out, memory
 
 
 class AlphaGatedInjection(nn.Module):
@@ -355,6 +461,7 @@ class FeatureInjector(nn.Module):
     Modes:
     - "none": Routing-only (no injection) - backward compatible
     - "broadcast": Gated broadcast of r to all tokens
+    - "broadcast_memory": Gated broadcast with memory bank accumulation
     - "film": FiLM modulation (gamma * x + beta)
     - "depth_token": Prepend learnable depth token
     - "cross_attn": Cross-attention to depth memory bank
@@ -393,6 +500,14 @@ class FeatureInjector(nn.Module):
             self.injector = None
         elif mode == "broadcast":
             self.injector = GatedBroadcastInjection(d_model, d_ctrl, use_layernorm=use_layernorm)
+        elif mode == "broadcast_memory":
+            self.injector = GatedBroadcastWithMemoryInjection(
+                d_model, d_ctrl,
+                memory_size=memory_size,
+                n_heads=n_heads,
+                dropout=dropout,
+                use_layernorm=use_layernorm,
+            )
         elif mode == "film":
             self.injector = FiLMInjection(d_model, d_ctrl)
         elif mode == "depth_token":
@@ -435,12 +550,12 @@ class FeatureInjector(nn.Module):
         
         Returns:
             x_out: Injected token embeddings
-            memory: Updated memory (only for cross_attn mode)
+            memory: Updated memory (for cross_attn and broadcast_memory modes)
         """
         if self.mode == "none" or r is None:
             return x, memory
         
-        if self.mode == "cross_attn":
+        if self.mode in ("cross_attn", "broadcast_memory"):
             return self.injector(x, r, memory)
         elif self.mode == "alpha_gated":
             x_out = self.injector(x, r, alpha)

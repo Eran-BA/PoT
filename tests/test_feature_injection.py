@@ -1,9 +1,10 @@
 """
 Tests for Feature Injection Module.
 
-Tests all 6 injection modes:
+Tests all 7 injection modes:
 - none: Routing-only (no injection)
 - broadcast: Gated broadcast of controller features to all tokens
+- broadcast_memory: Gated broadcast with memory bank accumulation
 - film: FiLM modulation (scale and shift)
 - depth_token: Prepend learnable depth token
 - cross_attn: Cross-attention to depth memory bank
@@ -21,6 +22,7 @@ import torch.nn as nn
 from src.pot.core.feature_injection import (
     FeatureInjector,
     GatedBroadcastInjection,
+    GatedBroadcastWithMemoryInjection,
     AlphaGatedInjection,
     FiLMInjection,
     DepthTokenInjection,
@@ -217,6 +219,76 @@ class TestCrossAttentionInjection:
         assert controller_features.grad is not None
 
 
+class TestGatedBroadcastWithMemoryInjection:
+    """Tests for gated broadcast injection with memory bank."""
+    
+    def test_output_shape(self, tokens, controller_features, d_model, d_ctrl):
+        """Output should have same shape as input."""
+        injector = GatedBroadcastWithMemoryInjection(d_model, d_ctrl, memory_size=8, n_heads=2)
+        output, memory = injector(tokens, controller_features, memory=None)
+        assert output.shape == tokens.shape
+    
+    def test_memory_initialization(self, tokens, controller_features, d_model, d_ctrl, batch_size):
+        """Memory should be initialized with projected controller features."""
+        injector = GatedBroadcastWithMemoryInjection(d_model, d_ctrl, memory_size=8, n_heads=2)
+        output, memory = injector(tokens, controller_features, memory=None)
+        assert memory.shape == (batch_size, 1, d_model)
+    
+    def test_memory_accumulation(self, tokens, controller_features, d_model, d_ctrl, batch_size):
+        """Memory should accumulate across steps."""
+        injector = GatedBroadcastWithMemoryInjection(d_model, d_ctrl, memory_size=8, n_heads=2)
+        
+        # First step
+        output1, memory1 = injector(tokens, controller_features, memory=None)
+        assert memory1.shape[1] == 1
+        
+        # Second step
+        output2, memory2 = injector(tokens, controller_features, memory=memory1)
+        assert memory2.shape[1] == 2
+        
+        # Third step
+        output3, memory3 = injector(tokens, controller_features, memory=memory2)
+        assert memory3.shape[1] == 3
+    
+    def test_memory_capping(self, tokens, controller_features, d_model, d_ctrl):
+        """Memory should be capped at memory_size."""
+        memory_size = 3
+        injector = GatedBroadcastWithMemoryInjection(d_model, d_ctrl, memory_size=memory_size, n_heads=2)
+        
+        memory = None
+        for _ in range(10):
+            _, memory = injector(tokens, controller_features, memory=memory)
+        
+        assert memory.shape[1] == memory_size
+    
+    def test_gradient_flow(self, tokens, controller_features, d_model, d_ctrl):
+        """Gradients should flow through to controller features."""
+        injector = GatedBroadcastWithMemoryInjection(d_model, d_ctrl, memory_size=8, n_heads=2)
+        tokens.requires_grad_(True)
+        controller_features.requires_grad_(True)
+        
+        output, memory = injector(tokens, controller_features, memory=None)
+        loss = output.sum()
+        loss.backward()
+        
+        assert tokens.grad is not None
+        assert controller_features.grad is not None
+    
+    def test_broadcast_behavior(self, controller_features, d_model, d_ctrl, batch_size, seq_len):
+        """All tokens should receive the same injection (broadcast)."""
+        injector = GatedBroadcastWithMemoryInjection(d_model, d_ctrl, memory_size=8, n_heads=2)
+        
+        # Use zero tokens so the injection is the only signal
+        tokens = torch.zeros(batch_size, seq_len, d_model)
+        output, memory = injector(tokens, controller_features, memory=None)
+        
+        # Check that the injection is the same across all token positions
+        # (since tokens are zero, output IS the injection)
+        for b in range(batch_size):
+            diffs = (output[b] - output[b, 0:1]).abs().max()
+            assert diffs < 1e-5, f"Injection differs across tokens: max diff = {diffs}"
+
+
 class TestAlphaGatedInjection:
     """Tests for alpha-modulated injection."""
     
@@ -381,6 +453,21 @@ class TestFeatureInjector:
         assert memory is not None
         assert memory.shape == (batch_size, 1, d_model)
     
+    def test_broadcast_memory_mode(self, tokens, controller_features, d_model, d_ctrl, batch_size):
+        """Broadcast memory mode should return output and memory."""
+        injector = FeatureInjector(d_model, d_ctrl, mode="broadcast_memory", memory_size=8, n_heads=2)
+        output, memory = injector(tokens, controller_features)
+        assert output.shape == tokens.shape
+        assert memory is not None
+        assert memory.shape == (batch_size, 1, d_model)
+    
+    def test_broadcast_memory_mode_accumulates(self, tokens, controller_features, d_model, d_ctrl, batch_size):
+        """Broadcast memory mode should accumulate memory across calls."""
+        injector = FeatureInjector(d_model, d_ctrl, mode="broadcast_memory", memory_size=8, n_heads=2)
+        output1, memory1 = injector(tokens, controller_features)
+        output2, memory2 = injector(tokens, controller_features, memory=memory1)
+        assert memory2.shape == (batch_size, 2, d_model)
+    
     def test_alpha_gated_mode(self, tokens, controller_features, d_model, d_ctrl, batch_size):
         """Alpha-gated mode should use routing weights to modulate injection."""
         injector = FeatureInjector(d_model, d_ctrl, mode="alpha_gated")
@@ -488,6 +575,43 @@ class TestReasoningModuleIntegration:
         output, ptr_state, inj_mem = module(hidden, injection)
         assert output.shape == hidden.shape
         assert inj_mem is not None
+    
+    def test_reasoning_module_with_broadcast_memory_injection(self, reasoning_module_params, batch_size, seq_len):
+        """ReasoningModule with 'broadcast_memory' injection should work."""
+        from src.pot.models.reasoning_module import ReasoningModule
+        
+        module = ReasoningModule(
+            **reasoning_module_params,
+            injection_mode="broadcast_memory",
+            injection_kwargs={"memory_size": 8, "n_heads": 2}
+        )
+        hidden = torch.randn(batch_size, seq_len, reasoning_module_params["d_model"])
+        injection = torch.randn(batch_size, seq_len, reasoning_module_params["d_model"])
+        
+        output, ptr_state, inj_mem = module(hidden, injection)
+        assert output.shape == hidden.shape
+        assert inj_mem is not None
+    
+    def test_reasoning_module_broadcast_memory_accumulates(self, reasoning_module_params, batch_size, seq_len):
+        """broadcast_memory injection memory should grow across calls."""
+        from src.pot.models.reasoning_module import ReasoningModule
+        
+        module = ReasoningModule(
+            **reasoning_module_params,
+            injection_mode="broadcast_memory",
+            injection_kwargs={"memory_size": 8, "n_heads": 2}
+        )
+        hidden = torch.randn(batch_size, seq_len, reasoning_module_params["d_model"])
+        injection = torch.randn(batch_size, seq_len, reasoning_module_params["d_model"])
+        
+        # First call
+        output1, ptr_state1, inj_mem1 = module(hidden, injection)
+        assert inj_mem1 is not None
+        assert inj_mem1.shape[1] == 1
+        
+        # Second call with preserved memory
+        output2, ptr_state2, inj_mem2 = module(hidden, injection, ptr_state=ptr_state1, injection_memory=inj_mem1)
+        assert inj_mem2.shape[1] == 2
 
 
 # =============================================================================
@@ -571,6 +695,90 @@ class TestHybridSolverIntegration:
         logits, q_halt, q_continue, steps = model(inputs, puzzle_ids)
         assert logits.shape == (2, 81, 10)
     
+    def test_solver_with_broadcast_memory_injection(self, solver_params):
+        """Solver with 'broadcast_memory' injection should work."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        
+        model = HybridPoHHRMSolver(
+            **solver_params,
+            injection_mode="broadcast_memory",
+            injection_kwargs={"memory_size": 8, "n_heads": 2}
+        )
+        inputs = torch.randint(0, 10, (2, 81))
+        puzzle_ids = torch.zeros(2, dtype=torch.long)
+        
+        logits, q_halt, q_continue, steps = model(inputs, puzzle_ids)
+        assert logits.shape == (2, 81, 10)
+    
+    def test_solver_with_broadcast_memory_act(self, solver_params):
+        """Solver with 'broadcast_memory' and ACT (multi-step) should preserve memory across steps."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        
+        params = {**solver_params, "halt_max_steps": 3}
+        model = HybridPoHHRMSolver(
+            **params,
+            injection_mode="broadcast_memory",
+            injection_kwargs={"memory_size": 8, "n_heads": 2}
+        )
+        model.eval()
+        
+        inputs = torch.randint(0, 10, (2, 81))
+        puzzle_ids = torch.zeros(2, dtype=torch.long)
+        
+        logits, q_halt, q_continue, steps, target_q = model(inputs, puzzle_ids)
+        assert logits.shape == (2, 81, 10)
+    
+    def test_solver_with_cross_attn_act_memory_preserved(self, solver_params):
+        """Cross-attn with ACT should preserve injection memory across ACT steps."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        
+        params = {**solver_params, "halt_max_steps": 3}
+        model = HybridPoHHRMSolver(
+            **params,
+            injection_mode="cross_attn",
+            injection_kwargs={"memory_size": 8, "n_heads": 2}
+        )
+        model.eval()
+        
+        inputs = torch.randint(0, 10, (2, 81))
+        puzzle_ids = torch.zeros(2, dtype=torch.long)
+        
+        logits, q_halt, q_continue, steps, target_q = model(inputs, puzzle_ids)
+        assert logits.shape == (2, 81, 10)
+    
+    def test_solver_forward_with_intermediate(self, solver_params):
+        """forward_with_intermediate should return per-step logits."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        
+        params = {**solver_params, "halt_max_steps": 3}
+        model = HybridPoHHRMSolver(**params, injection_mode="broadcast")
+        model.eval()
+        
+        inputs = torch.randint(0, 10, (2, 81))
+        puzzle_ids = torch.zeros(2, dtype=torch.long)
+        
+        result = model.forward_with_intermediate(inputs, puzzle_ids)
+        
+        assert result['logits'].shape == (2, 81, 10)
+        assert len(result['intermediate_logits']) == 3  # halt_max_steps
+        for step_logits in result['intermediate_logits']:
+            assert step_logits.shape == (2, 81, 10)
+    
+    def test_solver_forward_with_intermediate_no_act(self, solver_params):
+        """forward_with_intermediate without ACT should return single step."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        
+        model = HybridPoHHRMSolver(**solver_params, injection_mode="broadcast")
+        model.eval()
+        
+        inputs = torch.randint(0, 10, (2, 81))
+        puzzle_ids = torch.zeros(2, dtype=torch.long)
+        
+        result = model.forward_with_intermediate(inputs, puzzle_ids)
+        
+        assert result['logits'].shape == (2, 81, 10)
+        assert len(result['intermediate_logits']) == 1
+    
     def test_solver_training_step(self, solver_params):
         """Solver with injection should be trainable."""
         from src.pot.models.sudoku_solver import HybridPoHHRMSolver
@@ -594,6 +802,32 @@ class TestHybridSolverIntegration:
             if param.requires_grad:
                 # Not all parameters may have gradients in every forward pass
                 pass  # Just checking no errors occur
+    
+    def test_solver_training_step_broadcast_memory(self, solver_params):
+        """Solver with broadcast_memory injection should be trainable."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        import torch.nn.functional as F
+        
+        model = HybridPoHHRMSolver(
+            **solver_params,
+            injection_mode="broadcast_memory",
+            injection_kwargs={"memory_size": 8, "n_heads": 2}
+        )
+        model.train()
+        
+        inputs = torch.randint(0, 10, (2, 81))
+        targets = torch.randint(1, 10, (2, 81))
+        puzzle_ids = torch.zeros(2, dtype=torch.long)
+        
+        logits, q_halt, q_continue, steps = model(inputs, puzzle_ids)
+        
+        # Compute loss and backward
+        loss = F.cross_entropy(logits.view(-1, 10), targets.view(-1))
+        loss.backward()
+        
+        # Check that at least some parameters have gradients
+        grads_found = sum(1 for p in model.parameters() if p.grad is not None)
+        assert grads_found > 0
 
 
 # =============================================================================
@@ -649,6 +883,15 @@ class TestParameterCounts:
         params = sum(p.numel() for p in injector.parameters())
         # Should be larger than other modes
         assert params > 0
+    
+    def test_broadcast_memory_mode_params(self, base_params):
+        """Broadcast memory mode should have memory_proj + attn + gate + ln + query parameters."""
+        injector = FeatureInjector(**base_params, mode="broadcast_memory", memory_size=8, n_heads=2)
+        params = sum(p.numel() for p in injector.parameters())
+        # Should be larger than broadcast (has attention + memory_proj + summary_query)
+        broadcast_injector = FeatureInjector(**base_params, mode="broadcast")
+        broadcast_params = sum(p.numel() for p in broadcast_injector.parameters())
+        assert params > broadcast_params
     
     def test_alpha_gated_mode_params(self, base_params):
         """Alpha-gated mode should have proj + optional gate parameters."""

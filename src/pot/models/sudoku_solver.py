@@ -14,7 +14,7 @@ License: Apache 2.0
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from src.pot.core.hrm_controller import HRMPointerController, HRMState
 from src.pot.core.controller_factory import create_controller
@@ -470,6 +470,53 @@ class HybridPoHHRMSolver(HybridHRMBase):
             hidden, q_halt, q_continue, steps = self.reasoning_loop(input_emb)
             logits = self.output_proj(hidden)
             return logits, q_halt, q_continue, steps
+    
+    def forward_with_intermediate(
+        self, input_seq: torch.Tensor, puzzle_ids: torch.Tensor
+    ) -> Dict[str, Any]:
+        """
+        Forward pass that returns intermediate hidden states per ACT step.
+        
+        Use this during evaluation to analyze per-step accuracy improvement.
+        Only works when halt_max_steps > 1 (ACT enabled).
+        
+        Returns:
+            Dict with:
+                logits: Final output logits [B, 81, vocab_size]
+                intermediate_logits: List of logits per ACT step
+                steps: Number of reasoning steps
+                q_halt: Final Q-values for halting [B]
+                q_continue: Final Q-values for continuing [B]
+        """
+        input_emb = self._compute_input_embedding(input_seq, puzzle_ids)
+        
+        if self.halt_max_steps > 1:
+            act_out = self.act_forward(input_emb, return_intermediate=True)
+            hidden = act_out['hidden']
+            logits = self.output_proj(hidden)
+            
+            # Compute logits for each intermediate step
+            intermediate_logits = []
+            for h in act_out.get('intermediate_hiddens', []):
+                intermediate_logits.append(self.output_proj(h))
+            
+            return {
+                'logits': logits,
+                'intermediate_logits': intermediate_logits,
+                'steps': act_out['steps'],
+                'q_halt': act_out['q_halt'],
+                'q_continue': act_out['q_continue'],
+            }
+        else:
+            hidden, q_halt, q_continue, steps = self.reasoning_loop(input_emb)
+            logits = self.output_proj(hidden)
+            return {
+                'logits': logits,
+                'intermediate_logits': [logits],
+                'steps': steps,
+                'q_halt': q_halt,
+                'q_continue': q_continue,
+            }
     
     # ========== Async Batching Methods (HRM-style) ==========
     
