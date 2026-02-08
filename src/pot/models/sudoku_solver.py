@@ -383,6 +383,10 @@ class HybridPoHHRMSolver(HybridHRMBase):
         use_edit_mask: bool = False,  # Learned per-token update mask
         randomize_steps: bool = False,  # Randomize L_cycles during training
         min_L_cycles: int = None,  # Minimum L_cycles when randomizing
+        num_games: int = 1,  # Multi-game: number of parallel hypotheses
+        game_select: str = "argmin",  # Multi-game: selection mode
+        game_noise_std: float = 0.1,  # Multi-game: init diversity noise
+        game_select_beta: float = 1.0,  # Multi-game: softmax temperature
     ):
         # Initialize base class with ACT parameters
         super().__init__(
@@ -410,6 +414,10 @@ class HybridPoHHRMSolver(HybridHRMBase):
         )
         
         self.vocab_size = vocab_size
+        self.num_games = num_games
+        self.game_select = game_select
+        self.game_noise_std = game_noise_std
+        self.game_select_beta = game_select_beta
         embed_init_std = 1.0 / self.embed_scale
         
         # Sudoku-specific: Input embedding
@@ -448,6 +456,7 @@ class HybridPoHHRMSolver(HybridHRMBase):
         Forward pass for Sudoku solving.
         
         Uses ACT wrapper if halt_max_steps > 1, otherwise uses simple reasoning_loop.
+        When num_games > 1, runs multi-game portfolio reasoning with edge commitment.
         
         Returns:
             logits: Output logits [B, 81, vocab_size]
@@ -456,6 +465,10 @@ class HybridPoHHRMSolver(HybridHRMBase):
             steps: Number of reasoning steps
             target_q_continue: Q-learning target (only if ACT enabled and training)
         """
+        # Multi-game: run M independent trajectories and select winner
+        if self.num_games > 1:
+            return self.forward_multi_game(input_seq, puzzle_ids)
+        
         input_emb = self._compute_input_embedding(input_seq, puzzle_ids)
         
         if self.halt_max_steps > 1:
@@ -570,6 +583,106 @@ class HybridPoHHRMSolver(HybridHRMBase):
                 'input_emb': input_emb.detach(),
                 'steps': steps,
             }
+    
+    # ========== Multi-Game Methods (Portfolio Reasoning) ==========
+    
+    def forward_multi_game(
+        self, input_seq: torch.Tensor, puzzle_ids: torch.Tensor
+    ):
+        """
+        Multi-game forward: run M independent reasoning trajectories and select the best.
+        
+        Each game shares weights but has independent latent state (different z_H/z_L init).
+        Selection is discrete (argmin entropy or softmax sampling). No trajectory averaging.
+        
+        Args:
+            input_seq: Input sequence [B, 81]
+            puzzle_ids: Puzzle IDs [B]
+            
+        Returns:
+            Same signature as forward(): (logits, q_halt, q_continue, steps[, target_q])
+            but logits come from the selected winner game per sample.
+        """
+        import torch.nn.functional as F
+        
+        B = input_seq.size(0)
+        M = self.num_games
+        device = input_seq.device
+        
+        # Compute input embedding ONCE (shared encoder)
+        input_emb = self._compute_input_embedding(input_seq, puzzle_ids)
+        
+        # Expand input_emb for M games: [B, 81, D] -> [M*B, 81, D]
+        input_emb_expanded = input_emb.repeat(M, 1, 1)  # [M*B, 81, D]
+        
+        # Initialize diverse carry states (different z_H/z_L per game)
+        carry = self._init_carry_diverse(B, M, device, noise_std=self.game_noise_std)
+        
+        # Run ACT forward on the expanded batch
+        # We temporarily override _init_carry to use our diverse carry
+        # by directly calling act_forward internals
+        if self.halt_max_steps > 1:
+            # Save original _init_carry and replace with one that returns our carry
+            _orig_init_carry = self._init_carry
+            self._init_carry = lambda b, d: carry
+            
+            act_out = self.act_forward(input_emb_expanded)
+            
+            # Restore original
+            self._init_carry = _orig_init_carry
+            
+            hidden = act_out['hidden']  # [M*B, 81, D]
+            q_halt = act_out['q_halt']  # [M*B]
+            q_continue = act_out['q_continue']  # [M*B]
+            steps = act_out['steps']
+            target_q_continue = act_out.get('target_q_continue')
+        else:
+            hidden, q_halt, q_continue, steps = self.reasoning_loop(input_emb_expanded)
+            target_q_continue = None
+        
+        # Compute logits for all games
+        all_logits = self.output_proj(hidden)  # [M*B, 81, V]
+        
+        # Reshape to [M, B, 81, V]
+        V = all_logits.size(-1)
+        all_logits = all_logits.view(M, B, 81, V)
+        all_q_halt = q_halt.view(M, B)
+        all_q_continue = q_continue.view(M, B)
+        
+        # ---- Game Selection: discrete commitment ----
+        # Use output entropy as selection criterion (no label peeking)
+        # Lower entropy = more confident = better
+        with torch.no_grad():
+            probs = F.softmax(all_logits, dim=-1)  # [M, B, 81, V]
+            log_probs = F.log_softmax(all_logits, dim=-1)  # [M, B, 81, V]
+            # Per-cell entropy, then mean over cells -> per-game-per-sample score
+            entropy = -(probs * log_probs).sum(dim=-1).mean(dim=-1)  # [M, B]
+            
+            if self.game_select == "argmin":
+                # Select game with lowest entropy (most confident)
+                winner_idx = entropy.argmin(dim=0)  # [B]
+            else:
+                # Softmax sampling over negative entropy
+                selection_logits = -self.game_select_beta * entropy  # [M, B]
+                selection_probs = F.softmax(selection_logits, dim=0)  # [M, B]
+                winner_idx = torch.multinomial(selection_probs.t(), 1).squeeze(-1)  # [B]
+        
+        # Gather winner outputs: select one game per sample
+        batch_idx = torch.arange(B, device=device)
+        logits = all_logits[winner_idx, batch_idx]  # [B, 81, V]
+        q_halt_out = all_q_halt[winner_idx, batch_idx]  # [B]
+        q_continue_out = all_q_continue[winner_idx, batch_idx]  # [B]
+        
+        # Handle target_q_continue for ACT training
+        if target_q_continue is not None:
+            target_q_continue = target_q_continue.view(M, B)
+            target_q_continue = target_q_continue[winner_idx, batch_idx]  # [B]
+            return logits, q_halt_out, q_continue_out, steps, target_q_continue
+        
+        if self.halt_max_steps > 1:
+            return logits, q_halt_out, q_continue_out, steps, None
+        else:
+            return logits, q_halt_out, q_continue_out, steps
     
     # ========== Async Batching Methods (HRM-style) ==========
     

@@ -1091,6 +1091,138 @@ class TestEditMask:
 
 
 # =============================================================================
+# Test Multi-Game Portfolio Reasoning
+# =============================================================================
+
+class TestMultiGame:
+    """Tests for multi-game portfolio reasoning."""
+    
+    @pytest.fixture
+    def solver_params(self):
+        return {
+            "vocab_size": 10,
+            "d_model": 64,
+            "n_heads": 4,
+            "H_layers": 1,
+            "L_layers": 1,
+            "d_ff": 128,
+            "H_cycles": 1,
+            "L_cycles": 2,
+            "T": 2,
+            "halt_max_steps": 2,
+        }
+    
+    def test_single_game_default(self, solver_params):
+        """num_games=1 should be the default and behave normally."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        
+        model = HybridPoHHRMSolver(**solver_params)
+        assert model.num_games == 1
+        
+        inputs = torch.randint(0, 10, (2, 81))
+        puzzle_ids = torch.zeros(2, dtype=torch.long)
+        model.eval()
+        
+        logits, q_halt, q_continue, steps, target_q = model(inputs, puzzle_ids)
+        assert logits.shape == (2, 81, 10)
+    
+    def test_multi_game_forward(self, solver_params):
+        """num_games > 1 should produce valid output with correct shape."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        
+        model = HybridPoHHRMSolver(**solver_params, num_games=3)
+        model.eval()
+        
+        inputs = torch.randint(0, 10, (2, 81))
+        puzzle_ids = torch.zeros(2, dtype=torch.long)
+        
+        logits, q_halt, q_continue, steps, target_q = model(inputs, puzzle_ids)
+        # Output should be [B, 81, V], NOT [M*B, 81, V]
+        assert logits.shape == (2, 81, 10)
+        assert q_halt.shape == (2,)
+        assert q_continue.shape == (2,)
+    
+    def test_multi_game_trainable(self, solver_params):
+        """Multi-game should be trainable with gradients flowing."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        import torch.nn.functional as F
+        
+        model = HybridPoHHRMSolver(**solver_params, num_games=2)
+        model.train()
+        
+        inputs = torch.randint(0, 10, (2, 81))
+        targets = torch.randint(1, 10, (2, 81))
+        puzzle_ids = torch.zeros(2, dtype=torch.long)
+        
+        logits, q_halt, q_continue, steps, target_q = model(inputs, puzzle_ids)
+        loss = F.cross_entropy(logits.view(-1, 10), targets.view(-1))
+        loss.backward()
+        
+        grads_found = sum(1 for p in model.parameters() if p.grad is not None)
+        assert grads_found > 0
+    
+    def test_multi_game_softmax_select(self, solver_params):
+        """Softmax selection mode should work."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        
+        model = HybridPoHHRMSolver(
+            **solver_params, num_games=3,
+            game_select="sample_softmax", game_select_beta=2.0,
+        )
+        model.eval()
+        
+        inputs = torch.randint(0, 10, (2, 81))
+        puzzle_ids = torch.zeros(2, dtype=torch.long)
+        
+        logits, q_halt, q_continue, steps, target_q = model(inputs, puzzle_ids)
+        assert logits.shape == (2, 81, 10)
+    
+    def test_multi_game_no_extra_params(self, solver_params):
+        """Multi-game should NOT add any extra learnable parameters."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        
+        model_single = HybridPoHHRMSolver(**solver_params, num_games=1)
+        model_multi = HybridPoHHRMSolver(**solver_params, num_games=4)
+        
+        params_single = sum(p.numel() for p in model_single.parameters())
+        params_multi = sum(p.numel() for p in model_multi.parameters())
+        
+        assert params_single == params_multi, "Multi-game should share weights, not add params"
+    
+    def test_multi_game_no_act(self, solver_params):
+        """Multi-game should work without ACT (halt_max_steps=1)."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        
+        params = {**solver_params, "halt_max_steps": 1}
+        model = HybridPoHHRMSolver(**params, num_games=2)
+        model.eval()
+        
+        inputs = torch.randint(0, 10, (2, 81))
+        puzzle_ids = torch.zeros(2, dtype=torch.long)
+        
+        logits, q_halt, q_continue, steps = model(inputs, puzzle_ids)
+        assert logits.shape == (2, 81, 10)
+    
+    def test_diverse_init_different_per_game(self, solver_params):
+        """_init_carry_diverse should produce different z_H/z_L per game."""
+        from src.pot.models.sudoku_solver import HybridPoHHRMSolver
+        
+        model = HybridPoHHRMSolver(**solver_params, num_games=3)
+        B, M = 2, 3
+        
+        carry = model._init_carry_diverse(B, M, torch.device('cpu'), noise_std=0.1)
+        
+        # z_H should be [M*B, 81, 64]
+        assert carry.z_H.shape == (M * B, 81, 64)
+        
+        # Game 0 and Game 1 should have different z_H (due to noise)
+        game0_z = carry.z_H[:B]
+        game1_z = carry.z_H[B:2*B]
+        diff = (game0_z - game1_z).abs().mean()
+        assert diff > 0.01, f"Games should have different init, but diff={diff}"
+
+
+# =============================================================================
 # Test Parameter Counts
 # =============================================================================
 

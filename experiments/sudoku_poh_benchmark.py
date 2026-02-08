@@ -202,6 +202,17 @@ def main():
                        help='Randomize L_cycles per ACT step during training (anti-shortcut)')
     parser.add_argument('--min-L-cycles', type=int, default=None,
                        help='Minimum L_cycles when randomizing (default: L_cycles // 2)')
+    
+    # Multi-game portfolio reasoning
+    parser.add_argument('--num-games', type=int, default=1,
+                       help='Number of parallel reasoning games (1 = standard, >1 = multi-game portfolio)')
+    parser.add_argument('--game-select', type=str, default='argmin',
+                       choices=['argmin', 'sample_softmax'],
+                       help='Multi-game selection mode: argmin entropy or softmax sampling')
+    parser.add_argument('--game-noise-std', type=float, default=0.1,
+                       help='Noise std for per-game initialization diversity')
+    parser.add_argument('--game-select-beta', type=float, default=1.0,
+                       help='Temperature for softmax game selection')
 
     # Feature injection modes
     parser.add_argument('--injection-mode', type=str, default='none',
@@ -413,6 +424,10 @@ def main():
             use_edit_mask=args.edit_mask,
             randomize_steps=args.randomize_steps,
             min_L_cycles=args.min_L_cycles,
+            num_games=args.num_games,
+            game_select=args.game_select,
+            game_noise_std=args.game_noise_std,
+            game_select_beta=args.game_select_beta,
         ).to(device)
         print_rank0(f"Hybrid model: H_cycles={args.H_cycles}, L_cycles={args.L_cycles}")
         if args.edit_mask:
@@ -420,6 +435,9 @@ def main():
         if args.randomize_steps:
             min_lc = args.min_L_cycles if args.min_L_cycles is not None else max(2, args.L_cycles // 2)
             print_rank0(f"Randomize steps: ENABLED (L_cycles sampled from [{min_lc}, {args.L_cycles}] during training)")
+        if args.num_games > 1:
+            print_rank0(f"Multi-game: ENABLED ({args.num_games} games, select={args.game_select}, "
+                  f"noise_std={args.game_noise_std}, beta={args.game_select_beta})")
         print_rank0(f"H_layers={args.H_layers}, L_layers={args.L_layers}, dropout={args.dropout}")
         print_rank0(f"Controller: {args.controller}")
         print_rank0(f"Injection mode: {args.injection_mode}")

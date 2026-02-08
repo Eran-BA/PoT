@@ -406,6 +406,48 @@ class HybridHRMBase(nn.Module):
             L_inj_mem=None, H_inj_mem=None,
         )
     
+    def _init_carry_diverse(
+        self, B: int, M: int, device: torch.device, noise_std: float = 0.1,
+    ) -> ACTCarry:
+        """
+        Initialize carry state for M parallel games with diverse z_H/z_L.
+        
+        Creates M*B batch entries where each game chunk gets different random
+        noise added to the base H_init/L_init. Shared weights, independent states.
+        
+        Args:
+            B: Original batch size
+            M: Number of games (hypotheses)
+            device: Device
+            noise_std: Standard deviation of per-game initialization noise
+            
+        Returns:
+            ACTCarry with batch size M*B, each game chunk differently initialized
+        """
+        MB = M * B
+        
+        # Base initialization (same for all games)
+        z_H_base = self.H_init.view(1, 1, -1).expand(MB, self.seq_len, -1).clone()
+        z_L_base = self.L_init.view(1, 1, -1).expand(MB, self.seq_len, -1).clone()
+        
+        # Add per-game diversity noise
+        # Each game chunk [m*B : (m+1)*B] gets different noise
+        if noise_std > 0 and M > 1:
+            for m in range(M):
+                start = m * B
+                end = (m + 1) * B
+                z_H_base[start:end] += torch.randn_like(z_H_base[start:end]) * noise_std
+                z_L_base[start:end] += torch.randn_like(z_L_base[start:end]) * noise_std
+        
+        L_ptr_state = self._init_controller_state(self.L_level.pointer_controller, MB, device)
+        H_ptr_state = self._init_controller_state(self.H_level.pointer_controller, MB, device)
+        
+        return ACTCarry(
+            z_H=z_H_base, z_L=z_L_base,
+            L_ptr_state=L_ptr_state, H_ptr_state=H_ptr_state,
+            L_inj_mem=None, H_inj_mem=None,
+        )
+    
     def _single_act_step(
         self, 
         input_emb: torch.Tensor,
