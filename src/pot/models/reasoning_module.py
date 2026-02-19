@@ -87,12 +87,14 @@ class RoPEMultiheadAttention(nn.Module):
         q: torch.Tensor,
         k: torch.Tensor, 
         v: torch.Tensor,
+        causal: bool = False,
     ) -> torch.Tensor:
         """
         Flash Attention path - O(N) memory, fused CUDA kernels.
         
         Args:
             q, k, v: [B, T, n_heads, head_dim]
+            causal: If True, apply causal (lower-triangular) masking.
             
         Returns:
             output: [B, T, n_heads, head_dim]
@@ -110,7 +112,7 @@ class RoPEMultiheadAttention(nn.Module):
         attn_output = flash_attn_func(
             q, k, v,
             dropout_p=self.dropout if self.training else 0.0,
-            causal=False,  # Non-causal for bidirectional reasoning
+            causal=causal,
         )
         # Handle different flash_attn versions
         if isinstance(attn_output, tuple):
@@ -128,6 +130,7 @@ class RoPEMultiheadAttention(nn.Module):
         k: torch.Tensor,
         v: torch.Tensor,
         attn_mask: Optional[torch.Tensor] = None,
+        causal: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Standard PyTorch attention path - O(N²) memory.
@@ -135,6 +138,7 @@ class RoPEMultiheadAttention(nn.Module):
         Args:
             q, k, v: [B, T, n_heads, head_dim]
             attn_mask: Optional attention mask
+            causal: If True and no attn_mask provided, apply causal masking.
             
         Returns:
             output: [B, T, n_heads, head_dim]
@@ -150,6 +154,12 @@ class RoPEMultiheadAttention(nn.Module):
         # Scaled dot-product attention
         scale = D ** -0.5
         attn_weights = torch.matmul(q, k.transpose(-2, -1)) * scale  # [B, n_heads, T, T]
+        
+        if causal and attn_mask is None:
+            attn_mask = torch.triu(
+                torch.full((T, T), float('-inf'), device=q.device, dtype=q.dtype),
+                diagonal=1,
+            )
         
         if attn_mask is not None:
             attn_weights = attn_weights + attn_mask
@@ -173,6 +183,7 @@ class RoPEMultiheadAttention(nn.Module):
         cos_sin: Optional[CosSin] = None,
         need_weights: bool = False,
         attn_mask: Optional[torch.Tensor] = None,
+        causal: bool = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
         Forward pass with RoPE and optional Flash Attention.
@@ -185,6 +196,7 @@ class RoPEMultiheadAttention(nn.Module):
             need_weights: Whether to return attention weights (default False)
                          Note: Flash Attention doesn't support returning weights
             attn_mask: Optional attention mask (only used in standard path)
+            causal: If True, apply causal (lower-triangular) masking.
             
         Returns:
             output: [B, T, D]
@@ -209,11 +221,11 @@ class RoPEMultiheadAttention(nn.Module):
         # Choose attention implementation
         if self.use_flash_attn and not need_weights and attn_mask is None:
             # Flash Attention path (fast, O(N) memory)
-            attn_output = self._flash_attention(q, k, v)
+            attn_output = self._flash_attention(q, k, v, causal=causal)
             attn_weights = None
         else:
             # Standard attention path (supports weights and masks)
-            attn_output, attn_weights = self._standard_attention(q, k, v, attn_mask)
+            attn_output, attn_weights = self._standard_attention(q, k, v, attn_mask, causal=causal)
             if not need_weights:
                 attn_weights = None
         
@@ -348,6 +360,7 @@ class ReasoningModule(nn.Module):
         depth_step: int = 0,  # For transformer controller
         injection_memory: Optional[torch.Tensor] = None,  # For cross_attn mode
         cos_sin: Optional[CosSin] = None,  # For RoPE: (cos, sin) from RotaryEmbedding
+        causal: bool = False,
     ) -> Tuple[torch.Tensor, Any, Optional[torch.Tensor]]:
         """
         Forward pass with input injection and PoT head routing.
@@ -361,6 +374,7 @@ class ReasoningModule(nn.Module):
             depth_step: Current depth step (used by transformer controller)
             injection_memory: Memory for cross_attn injection mode [B, T, d_model]
             cos_sin: Optional (cos, sin) tuple from RotaryEmbedding for RoPE attention
+            causal: If True, apply causal masking in attention layers.
             
         Returns:
             output: Processed hidden state [B, seq_len, d_model]
@@ -426,9 +440,9 @@ class ReasoningModule(nn.Module):
             # Attention with PoT head routing
             # Use RoPE if available (RoPEMultiheadAttention accepts cos_sin)
             if self.use_rope:
-                attn_out, _ = attn(x, x, x, cos_sin=cos_sin, need_weights=False)
+                attn_out, _ = attn(x, x, x, cos_sin=cos_sin, need_weights=False, causal=causal)
             else:
-                attn_out, _ = attn(x, x, x, need_weights=False)
+                attn_out, _ = attn(x, x, x, need_weights=False, causal=causal)
             d_head = D // self.n_heads
             attn_out_heads = attn_out.view(B, T, self.n_heads, d_head)
             
