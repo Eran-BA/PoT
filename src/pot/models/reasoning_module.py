@@ -433,16 +433,23 @@ class ReasoningModule(nn.Module):
             # Pass alpha for alpha_gated mode (ignored by other modes)
             x, injection_memory = self.injector(x, features, injection_memory, alpha=route_weights)
         
+        # Pre-compute causal mask for nn.MultiheadAttention (non-RoPE path)
+        causal_mask = None
+        if causal and not self.use_rope:
+            causal_mask = torch.triu(
+                torch.full((T, T), float('-inf'), device=x.device, dtype=x.dtype),
+                diagonal=1,
+            )
+
         for attn, ffn, norm1, norm2 in zip(
             self.attn_layers, self.ffn_layers,
             self.norm1_layers, self.norm2_layers
         ):
             # Attention with PoT head routing
-            # Use RoPE if available (RoPEMultiheadAttention accepts cos_sin)
             if self.use_rope:
                 attn_out, _ = attn(x, x, x, cos_sin=cos_sin, need_weights=False, causal=causal)
             else:
-                attn_out, _ = attn(x, x, x, need_weights=False, causal=causal)
+                attn_out, _ = attn(x, x, x, need_weights=False, attn_mask=causal_mask)
             d_head = D // self.n_heads
             attn_out_heads = attn_out.view(B, T, self.n_heads, d_head)
             
