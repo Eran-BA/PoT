@@ -361,6 +361,7 @@ class ReasoningModule(nn.Module):
         injection_memory: Optional[torch.Tensor] = None,  # For cross_attn mode
         cos_sin: Optional[CosSin] = None,  # For RoPE: (cos, sin) from RotaryEmbedding
         causal: bool = False,
+        block_size: Optional[int] = None,
     ) -> Tuple[torch.Tensor, Any, Optional[torch.Tensor]]:
         """
         Forward pass with input injection and PoT head routing.
@@ -433,13 +434,21 @@ class ReasoningModule(nn.Module):
             # Pass alpha for alpha_gated mode (ignored by other modes)
             x, injection_memory = self.injector(x, features, injection_memory, alpha=route_weights)
         
-        # Pre-compute causal mask for nn.MultiheadAttention (non-RoPE path)
+        # Pre-compute causal mask
         causal_mask = None
-        if causal and not self.use_rope:
-            causal_mask = torch.triu(
-                torch.full((T, T), float('-inf'), device=x.device, dtype=x.dtype),
-                diagonal=1,
-            )
+        if causal:
+            if block_size is not None and block_size < T:
+                block_ids = torch.arange(T, device=x.device) // block_size
+                causal_mask = torch.where(
+                    block_ids.unsqueeze(1) >= block_ids.unsqueeze(0),
+                    torch.tensor(0.0, device=x.device, dtype=x.dtype),
+                    torch.tensor(float('-inf'), device=x.device, dtype=x.dtype),
+                )
+            elif block_size is None and not self.use_rope:
+                causal_mask = torch.triu(
+                    torch.full((T, T), float('-inf'), device=x.device, dtype=x.dtype),
+                    diagonal=1,
+                )
 
         for attn, ffn, norm1, norm2 in zip(
             self.attn_layers, self.ffn_layers,
@@ -447,7 +456,10 @@ class ReasoningModule(nn.Module):
         ):
             # Attention with PoT head routing
             if self.use_rope:
-                attn_out, _ = attn(x, x, x, cos_sin=cos_sin, need_weights=False, causal=causal)
+                if causal_mask is not None:
+                    attn_out, _ = attn(x, x, x, cos_sin=cos_sin, need_weights=False, attn_mask=causal_mask)
+                else:
+                    attn_out, _ = attn(x, x, x, cos_sin=cos_sin, need_weights=False, causal=causal)
             else:
                 attn_out, _ = attn(x, x, x, need_weights=False, attn_mask=causal_mask)
             d_head = D // self.n_heads

@@ -293,6 +293,7 @@ class HybridHRMBase(nn.Module):
         input_emb: torch.Tensor,
         hrm_grad_style: Optional[bool] = None,
         causal: bool = False,
+        block_size: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
         """
         Core two-timescale reasoning loop.
@@ -341,20 +342,20 @@ class HybridHRMBase(nn.Module):
                         # Skip the very last L_step of the very last H_step
                         is_last_L = (H_step == self.H_cycles - 1) and (L_step == self.L_cycles - 1)
                         if not is_last_L:
-                            z_L, L_ptr_state, L_inj_mem = self.L_level(z_L, z_H + input_emb, L_ptr_state, injection_memory=L_inj_mem, cos_sin=cos_sin, causal=causal)
+                            z_L, L_ptr_state, L_inj_mem = self.L_level(z_L, z_H + input_emb, L_ptr_state, injection_memory=L_inj_mem, cos_sin=cos_sin, causal=causal, block_size=block_size)
                     
                     # Skip the very last H_step
                     is_last_H = (H_step == self.H_cycles - 1)
                     if not is_last_H:
-                        z_H, H_ptr_state, H_inj_mem = self.H_level(z_H, z_L, H_ptr_state, injection_memory=H_inj_mem, cos_sin=cos_sin, causal=causal)
+                        z_H, H_ptr_state, H_inj_mem = self.H_level(z_H, z_L, H_ptr_state, injection_memory=H_inj_mem, cos_sin=cos_sin, causal=causal, block_size=block_size)
             
             # Detach to cut gradient history
             z_H = z_H.detach()
             z_L = z_L.detach()
             
             # ONLY these 2 calls get gradients
-            z_L, L_ptr_state, L_inj_mem = self.L_level(z_L, z_H + input_emb, L_ptr_state, injection_memory=L_inj_mem, cos_sin=cos_sin, causal=causal)
-            z_H, H_ptr_state, H_inj_mem = self.H_level(z_H, z_L, H_ptr_state, injection_memory=H_inj_mem, cos_sin=cos_sin, causal=causal)
+            z_L, L_ptr_state, L_inj_mem = self.L_level(z_L, z_H + input_emb, L_ptr_state, injection_memory=L_inj_mem, cos_sin=cos_sin, causal=causal, block_size=block_size)
+            z_H, H_ptr_state, H_inj_mem = self.H_level(z_H, z_L, H_ptr_state, injection_memory=H_inj_mem, cos_sin=cos_sin, causal=causal, block_size=block_size)
         else:
             # Alternative: All calls in last H_cycle get gradients
             for H_step in range(self.H_cycles):
@@ -362,17 +363,17 @@ class HybridHRMBase(nn.Module):
                 
                 for L_step in range(self.L_cycles):
                     if use_grad:
-                        z_L, L_ptr_state, L_inj_mem = self.L_level(z_L, z_H + input_emb, L_ptr_state, injection_memory=L_inj_mem, cos_sin=cos_sin, causal=causal)
+                        z_L, L_ptr_state, L_inj_mem = self.L_level(z_L, z_H + input_emb, L_ptr_state, injection_memory=L_inj_mem, cos_sin=cos_sin, causal=causal, block_size=block_size)
                     else:
                         with torch.no_grad():
-                            z_L, L_ptr_state, L_inj_mem = self.L_level(z_L, z_H + input_emb, L_ptr_state, injection_memory=L_inj_mem, cos_sin=cos_sin, causal=causal)
+                            z_L, L_ptr_state, L_inj_mem = self.L_level(z_L, z_H + input_emb, L_ptr_state, injection_memory=L_inj_mem, cos_sin=cos_sin, causal=causal, block_size=block_size)
                         z_L = z_L.detach()
                 
                 if use_grad:
-                    z_H, H_ptr_state, H_inj_mem = self.H_level(z_H, z_L, H_ptr_state, injection_memory=H_inj_mem, cos_sin=cos_sin, causal=causal)
+                    z_H, H_ptr_state, H_inj_mem = self.H_level(z_H, z_L, H_ptr_state, injection_memory=H_inj_mem, cos_sin=cos_sin, causal=causal, block_size=block_size)
                 else:
                     with torch.no_grad():
-                        z_H, H_ptr_state, H_inj_mem = self.H_level(z_H, z_L, H_ptr_state, injection_memory=H_inj_mem, cos_sin=cos_sin, causal=causal)
+                        z_H, H_ptr_state, H_inj_mem = self.H_level(z_H, z_L, H_ptr_state, injection_memory=H_inj_mem, cos_sin=cos_sin, causal=causal, block_size=block_size)
                     z_H = z_H.detach()
         
         # Normalize output
