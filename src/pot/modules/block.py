@@ -21,7 +21,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from models.layers import MultiHeadSelfAttention
+try:
+    # Editable installs of PoT commonly put `src/` on sys.path, exposing
+    # the legacy top-level `models` package.
+    from models.layers import MultiHeadSelfAttention
+except ModuleNotFoundError:
+    # CI smoke tests run with `PYTHONPATH=$PWD`, which exposes `src.models`.
+    from src.models.layers import MultiHeadSelfAttention
 
 
 # ========== Routing Primitives ==========
