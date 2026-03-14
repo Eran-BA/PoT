@@ -15,10 +15,9 @@ Year: 2025
 License: Apache 2.0
 """
 
-# Only import layers that don't require transformers at module load time
-# This allows src.pot.modules to import MultiHeadSelfAttention without
-# triggering the transformers dependency
-from src.models.layers import (
+# Only import layers that don't require transformers at module load time.
+# This keeps `models.layers` usable when `pot` is installed as a dependency.
+from .layers import (
     BiaffinePointer,
     BiaffineLabeler,
     MultiHeadSelfAttention,
@@ -50,24 +49,24 @@ __all__ = [
 def __getattr__(name):
     """Lazy import models that require transformers to avoid mandatory dependency."""
     if name == "ParserBase":
-        from src.models.base import ParserBase
+        from .base import ParserBase
         return ParserBase
     if name == "BaselineParser":
-        from src.models.baseline import BaselineParser
+        from .baseline import BaselineParser
         return BaselineParser
     if name == "VanillaBlock":
-        from src.models.baseline import VanillaBlock
+        from .baseline import VanillaBlock
         return VanillaBlock
     if name == "PoHParser":
-        from src.models.poh import PoHParser
+        from .poh import PoHParser
         return PoHParser
     if name == "PointerMoHTransformerBlock":
-        from src.models.pointer_block import PointerMoHTransformerBlock
+        from .pointer_block import PointerMoHTransformerBlock
         return PointerMoHTransformerBlock
     if name == "PoHGPT":
-        from src.pot.models.poh_gpt import PoHGPT
+        from pot.models.poh_gpt import PoHGPT
         return PoHGPT
     if name == "BaselineGPT":
-        from src.models.baseline_gpt import BaselineGPT
+        from .baseline_gpt import BaselineGPT
         return BaselineGPT
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

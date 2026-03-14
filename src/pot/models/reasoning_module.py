@@ -16,11 +16,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple, Any, Dict
 
-from src.pot.core.hrm_controller import HRMPointerController, HRMState
-from src.pot.core.controller_factory import create_controller, CONTROLLER_TYPES
-from src.pot.core.feature_injection import FeatureInjector, INJECTION_MODES
-from src.pot.models.hrm_layers import RMSNorm, SwiGLU
-from src.pot.modules.rope import RotaryEmbedding, apply_rotary_pos_emb, CosSin
+from ..core.hrm_controller import HRMPointerController, HRMState
+from ..core.controller_factory import create_controller, CONTROLLER_TYPES
+from ..core.feature_injection import FeatureInjector, INJECTION_MODES
+from .hrm_layers import RMSNorm, SwiGLU
+from ..modules.rope import RotaryEmbedding, apply_rotary_pos_emb, CosSin
 
 # Try to import Flash Attention for faster long-sequence attention
 try:

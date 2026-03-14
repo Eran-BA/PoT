@@ -21,7 +21,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.models.layers import MultiHeadSelfAttention
+from models.layers import MultiHeadSelfAttention
 
 
 # ========== Routing Primitives ==========

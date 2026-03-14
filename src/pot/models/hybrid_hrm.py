@@ -33,12 +33,12 @@ import torch.nn as nn
 from typing import Optional, Tuple, Dict, Any
 from dataclasses import dataclass
 
-from src.pot.models.reasoning_module import ReasoningModule
-from src.pot.models.hrm_layers import RMSNorm
-from src.pot.core.hrm_controller import HRMState
-from src.pot.core.depth_transformer_controller import DepthControllerCache
-from src.pot.core.lstm_controllers import LSTMDepthState, xLSTMDepthState
-from src.pot.modules.rope import RotaryEmbedding, CosSin
+from .reasoning_module import ReasoningModule
+from .hrm_layers import RMSNorm
+from ..core.hrm_controller import HRMState
+from ..core.depth_transformer_controller import DepthControllerCache
+from ..core.lstm_controllers import LSTMDepthState, xLSTMDepthState
+from ..modules.rope import RotaryEmbedding, CosSin
 
 
 @dataclass

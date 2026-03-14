@@ -1,72 +1,51 @@
 """
-PoH model implementations.
+PoT model implementations.
 
-This package contains task-specific models and architectures built on top
-of the core PoH modules.
-
-Author: Eran Ben Artzy
-Year: 2025
+This module exposes the public model surface lazily so submodules can be
+imported safely when `pot` is installed as a dependency.
 """
 
-from .poh_gpt import PoHGPT
-from .reasoning_module import ReasoningModule
-from .hybrid_hrm import HybridHRMBase, ACTCarry, PoTAsyncCarry
-from .puzzle_embedding import PuzzleEmbedding
-from .hrm_layers import RMSNorm, SwiGLU
-from .adaptive_halting import QHaltingController
-from .sudoku_solver import PoHSudokuSolver, HybridPoHHRMSolver, BaselineSudokuSolver
-from .hybrid_nli import HybridPoHHRMForNLI
-from .arc_solver import HybridPoHARCSolver, BaselineARCSolver
-from .blocksworld_solver import (
-    HybridPoTBlocksworldSolver,
-    BaselineBlocksworldSolver,
-    SimplePoTBlocksworldSolver,
-)
-from .blocksworld_critic import (
-    BlocksworldCritic,
-    BlocksworldActorCritic,
-    create_actor_critic,
-)
-from .sokoban_solver import (
-    PoTSokobanSolver,
-    HybridPoTSokobanSolver,
-    BaselineSokobanSolver,
-    SokobanActorCritic,
-    SokobanConvEncoder,
-)
+from importlib import import_module
 
-__all__ = [
-    "PoHGPT",
-    "ReasoningModule",
-    "HybridHRMBase",
-    "ACTCarry",
-    "PoTAsyncCarry",
-    "PuzzleEmbedding",
-    "RMSNorm",
-    "SwiGLU",
-    "QHaltingController",
-    # Sudoku solvers
-    "PoHSudokuSolver",
-    "HybridPoHHRMSolver",
-    "BaselineSudokuSolver",
-    # NLI
-    "HybridPoHHRMForNLI",
-    # ARC solvers
-    "HybridPoHARCSolver",
-    "BaselineARCSolver",
-    # Blocksworld solvers
-    "HybridPoTBlocksworldSolver",
-    "BaselineBlocksworldSolver",
-    "SimplePoTBlocksworldSolver",
-    # Blocksworld critic (PPO)
-    "BlocksworldCritic",
-    "BlocksworldActorCritic",
-    "create_actor_critic",
-    # Sokoban solvers
-    "PoTSokobanSolver",
-    "HybridPoTSokobanSolver",
-    "BaselineSokobanSolver",
-    "SokobanActorCritic",
-    "SokobanConvEncoder",
-]
+
+_EXPORTS = {
+    "PoHGPT": (".poh_gpt", "PoHGPT"),
+    "ReasoningModule": (".reasoning_module", "ReasoningModule"),
+    "HybridHRMBase": (".hybrid_hrm", "HybridHRMBase"),
+    "ACTCarry": (".hybrid_hrm", "ACTCarry"),
+    "PoTAsyncCarry": (".hybrid_hrm", "PoTAsyncCarry"),
+    "PuzzleEmbedding": (".puzzle_embedding", "PuzzleEmbedding"),
+    "RMSNorm": (".hrm_layers", "RMSNorm"),
+    "SwiGLU": (".hrm_layers", "SwiGLU"),
+    "QHaltingController": (".adaptive_halting", "QHaltingController"),
+    "PoHSudokuSolver": (".sudoku_solver", "PoHSudokuSolver"),
+    "HybridPoHHRMSolver": (".sudoku_solver", "HybridPoHHRMSolver"),
+    "BaselineSudokuSolver": (".sudoku_solver", "BaselineSudokuSolver"),
+    "HybridPoHHRMForNLI": (".hybrid_nli", "HybridPoHHRMForNLI"),
+    "HybridPoHARCSolver": (".arc_solver", "HybridPoHARCSolver"),
+    "BaselineARCSolver": (".arc_solver", "BaselineARCSolver"),
+    "HybridPoTBlocksworldSolver": (".blocksworld_solver", "HybridPoTBlocksworldSolver"),
+    "BaselineBlocksworldSolver": (".blocksworld_solver", "BaselineBlocksworldSolver"),
+    "SimplePoTBlocksworldSolver": (".blocksworld_solver", "SimplePoTBlocksworldSolver"),
+    "BlocksworldCritic": (".blocksworld_critic", "BlocksworldCritic"),
+    "BlocksworldActorCritic": (".blocksworld_critic", "BlocksworldActorCritic"),
+    "create_actor_critic": (".blocksworld_critic", "create_actor_critic"),
+    "PoTSokobanSolver": (".sokoban_solver", "PoTSokobanSolver"),
+    "HybridPoTSokobanSolver": (".sokoban_solver", "HybridPoTSokobanSolver"),
+    "BaselineSokobanSolver": (".sokoban_solver", "BaselineSokobanSolver"),
+    "SokobanActorCritic": (".sokoban_solver", "SokobanActorCritic"),
+    "SokobanConvEncoder": (".sokoban_solver", "SokobanConvEncoder"),
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str):
+    if name not in _EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, symbol_name = _EXPORTS[name]
+    module = import_module(module_name, __name__)
+    value = getattr(module, symbol_name)
+    globals()[name] = value
+    return value
 
